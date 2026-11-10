@@ -1,0 +1,61 @@
+# ==================== 凭证（最高优先级，绝不能提交） ====================
+config/private.py
+private.py
+*.pem
+*.key
+.env
+.env.*
+
+# ==================== Python ====================
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+build/
+dist/
+*.egg-info/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+venv/
+.venv/
+env/
+
+# ==================== 数据与产物（体积大 / 含业务数据） ====================
+*.db
+*.db-journal
+*.db-wal
+*.db-shm
+*.sqlite
+*.sqlite3
+outputs/
+logs/
+data/
+*.csv
+*.parquet
+*.feather
+
+# 图片产物（图表是运行时生成，不入库）
+*.png
+*.jpg
+*.jpeg
+*.svg
+*.pdf
+
+# ==================== 运行态状态 ====================
+*_sent_lock.json
+*_lock.json
+*_state.json
+*.pid
+*.log
+*.tmp
+*.bak
+*.bak.*
+*_bak_*
+
+# ==================== 系统 ====================
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/
