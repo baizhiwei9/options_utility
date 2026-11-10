@@ -163,17 +163,25 @@ class TestDataHubImports(unittest.TestCase):
             raise unittest.SkipTest('未找到同级 data_hub 目录')
 
     def test_akshare_source_no_undefined_name(self):
-        """#6 fetch_sector_flow 里用的 datetime / List 必须可解析。"""
+        """#6 fetch_sector_flow 里用的 datetime 必须可解析。
+
+        2026-11-10 修正误报：List 在本文件只出现在类型注解（Optional[List[str]]）里，
+        且文件顶部有 `from __future__ import annotations`，注解在运行期不求值，
+        缺 List 不会 NameError。原断言把「注解名」当「运行期名」，属误报。
+        真正需要检查的是函数体里实打实调用的 datetime（现已改为函数内局部 import）。
+        """
         p = os.path.join(PARENT, 'data_hub', 'sources', 'akshare_source.py')
         src = open(p, encoding='utf-8').read()
         names = _imported_names(src)
         self.assertIn('datetime', names, 'akshare_source.py 缺 datetime 导入')
-        self.assertIn('List', names, 'akshare_source.py 缺 List 导入')
 
     def test_tushare_source_imports_list(self):
+        """tushare_source 若哪天去掉 future annotations，就必须补 import List。"""
         p = os.path.join(PARENT, 'data_hub', 'sources', 'tushare_source.py')
-        names = _imported_names(open(p, encoding='utf-8').read())
-        self.assertIn('List', names, 'tushare_source.py 缺 List 导入')
+        src = open(p, encoding='utf-8').read()
+        if 'from __future__ import annotations' in src:
+            self.skipTest('文件有 future annotations，注解不参与运行期求值，List 可缺失')
+        self.assertIn('List', _imported_names(src), 'tushare_source.py 缺 List 导入')
 
 
 class TestNoHardcodedHostPaths(unittest.TestCase):
