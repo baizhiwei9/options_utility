@@ -41,6 +41,7 @@ import sys
 import json
 import time
 from datetime import datetime, timedelta
+import opt_store as _store  # 统一存储层：历史数据落 data/options.db
 from collections import defaultdict
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
@@ -50,6 +51,13 @@ from option_monitor import get_option_contracts_sina
 sys.path.insert(0, '/Coze/Drive/蓁宝/所有对话/主对话')
 from email_sender import send_email  # noqa: E402
 from alert.trigger import trigger  # noqa: E402
+
+# 判定内核统一走 alert 引擎：阈值、级别、口径文案全部来自 alert/rules.py
+from alert.engine import judge_all  # noqa: E402
+from alert.rules import (  # noqa: E402
+    OI_VOLUME_RULES, VOLUME_RATIO_THRESHOLD, VOL_TO_OI_RATIO_THRESHOLD,
+    MIN_VOLUME_FILTER as MIN_VOLUME,
+)
 
 WORK_DIR = _OPT_ROOT  # 项目根（原为 /Coze/Drive/期权风险监控）
 OUTPUT_DIR = os.path.join(WORK_DIR, 'outputs')
@@ -66,10 +74,8 @@ VOL_TARGETS = {
     '中证1000':   {'code': 'MO',      'exchange': 'CFFEX',  'spot_code': 'sh000852'},
 }
 
-# 放量阈值
-VOLUME_RATIO_THRESHOLD = 2.0      # 今日量/昨日量 >= 2倍
-VOL_TO_OI_RATIO_THRESHOLD = 0.3   # 今日量/昨日持仓 >= 30%
-MIN_VOLUME = 500                  # 最小成交量过滤（排除太小的合约）
+# 放量阈值与最小成交量护栏统一来自 alert/rules.py（唯一真源），此处不再定义。
+# VOLUME_RATIO_THRESHOLD / VOL_TO_OI_RATIO_THRESHOLD / MIN_VOLUME 均由顶部 import 提供。
 ALREADY_ALERTED_FILE = os.path.join(OUTPUT_DIR, 'volume_alerted.json')
 
 # 邮件收件人
@@ -81,14 +87,10 @@ def get_contract_key(maturity, opt_type, strike):
 
 
 def load_yesterday_data(target_name, today_str):
-    """加载昨日成交量和持仓量数据"""
-    hist_file = os.path.join(VOL_HISTORY_DIR, f'{target_name}_vol_history.json')
-    if not os.path.exists(hist_file):
+    """加载昨日成交量和持仓量数据（数据源：data/options.db 的 volume_history）。"""
+    hist = _store.load_series(_store.SERIES_VOLUME, target_name)
+    if not hist:
         return {}, {}
-    
-    with open(hist_file) as f:
-        hist = json.load(f)
-    
     dates = sorted(hist.keys(), reverse=True)
     for d in dates:
         if d < today_str:  # 找昨天及之前最近的
@@ -96,19 +98,15 @@ def load_yesterday_data(target_name, today_str):
             vol_data = {k: v.get('volume', 0) for k, v in day_data.items()}
             oi_data = {k: v.get('oi', 0) for k, v in day_data.items()}
             return vol_data, oi_data
-    
     return {}, {}
 
 
 def save_today_data(target_name, today_str, contracts_data):
-    """保存今日数据到历史"""
-    hist_file = os.path.join(VOL_HISTORY_DIR, f'{target_name}_vol_history.json')
-    if os.path.exists(hist_file):
-        with open(hist_file) as f:
-            hist = json.load(f)
-    else:
-        hist = {}
-    
+    """保存今日成交量/OI 到历史库，只保留最近 40 个交易日。
+
+    2026-11-10 从 JSON 文件改为 SQLite（data/options.db），
+    原 outputs/volume_history/{target}_vol_history.json 不再读写。
+    """
     data = {}
     for c in contracts_data:
         key = get_contract_key(c['maturity_date'], c['call_put'], c['exercise_price'])
@@ -116,17 +114,8 @@ def save_today_data(target_name, today_str, contracts_data):
             'volume': c.get('volume', 0),
             'oi': c.get('oi', 0),
         }
-    
-    hist[today_str] = data
-    
-    # 只保留40天
-    if len(hist) > 40:
-        oldest = sorted(hist.keys())[:-40]
-        for d in oldest:
-            del hist[d]
-    
-    with open(hist_file, 'w') as f:
-        json.dump(hist, f, ensure_ascii=False, indent=2)
+    _store.upsert_day(_store.SERIES_VOLUME, target_name, today_str, data)
+    _store.trim_series(_store.SERIES_VOLUME, target_name, 40)
 
 
 def get_tier(oi):
@@ -136,8 +125,37 @@ def get_tier(oi):
     else: return '超大'
 
 
-def analyze_volume_surge(target_name, contracts, yest_vol, yest_oi, spot_price):
-    """分析放量合约"""
+def evaluate_contract(today_vol, yest_vol, yest_oi, today):
+    """用统一引擎判定单合约是否放量 / 换手异常。
+
+    两条规则（OI_VOLUME_RULES）：
+        今日量 / 昨日量   >= 2 倍   → 🟡单合约放量
+        今日量 / 昨日持仓 >= 30%    → 🟡换手异常
+
+    两个护栏不属于阈值规则，放在取数阶段处理（避免阈值散落两处）：
+        - today_vol < MIN_VOLUME(500)：小合约比值噪声太大，直接不喂给引擎
+        - yest_vol <= 100：昨日基数过小，倍数会失真成几百倍，vol_ratio 置 None
+          引擎会跳过该指标，但换手规则仍可独立触发 —— 与原 OR 逻辑一致
+
+    返回 Summary；无任何指标可判时返回 None（等价于原「过滤太小的」跳过）。
+    """
+    if today_vol < MIN_VOLUME:
+        return None
+    asof = today.strftime('%Y%m%d')
+    vol_ratio = (today_vol / yest_vol) if yest_vol > 100 else None
+    vol_oi_ratio = (today_vol / yest_oi) if yest_oi > 0 else None
+    data = {
+        'vol_ratio': [(asof, vol_ratio)] if vol_ratio is not None else [],
+        'vol_oi_ratio': [(asof, vol_oi_ratio)] if vol_oi_ratio is not None else [],
+    }
+    if not data['vol_ratio'] and not data['vol_oi_ratio']:
+        return None
+    return judge_all(OI_VOLUME_RULES, data, today=today)
+
+
+def analyze_volume_surge(target_name, contracts, yest_vol, yest_oi, spot_price, today=None):
+    """分析放量合约（判定由 alert 引擎负责，本函数只管组装与语义解读）"""
+    today = today or datetime.now().date()
     surges = []
     total_vol_today = 0
     total_vol_yest = 0
@@ -152,27 +170,21 @@ def analyze_volume_surge(target_name, contracts, yest_vol, yest_oi, spot_price):
         total_vol_today += today_vol
         total_vol_yest += yv
         
-        # 过滤太小的
-        if today_vol < MIN_VOLUME:
+        # 判定走统一引擎：阈值/口径全部来自 alert/rules.py 的 OI_VOLUME_RULES。
+        # 引擎内部已处理「成交量过小」「昨日基数过小」两个护栏。
+        summary = evaluate_contract(today_vol, yv, yo, today)
+        if summary is None or not summary.fired:
             continue
-        
-        # 计算放量倍数
+        is_surge = True
+        # reason 保持原有可读格式：量仓比 30% / 同比 2.1 倍
+        reason = []
+        for e in summary.fired:
+            if e.rule.key == 'oi_volume.turnover':
+                reason.append(f'量仓比{e.value * 100:.0f}%')
+            else:
+                reason.append(f'同比{e.value:.1f}倍')
         vol_ratio = today_vol / yv if yv > 0 else float('inf')
         vol_oi_ratio = today_vol / yo if yo > 0 else 0
-        
-        # 判断是否放量异常
-        is_surge = False
-        reason = []
-        
-        # 量仓比超高（今日换手超过30%昨日持仓）
-        if vol_oi_ratio >= VOL_TO_OI_RATIO_THRESHOLD and yo > 0:
-            is_surge = True
-            reason.append(f'量仓比{vol_oi_ratio*100:.0f}%')
-        
-        # 同比放大（今日已超过昨日全天2倍）
-        if vol_ratio >= VOLUME_RATIO_THRESHOLD and yv > 100:
-            is_surge = True
-            reason.append(f'同比{vol_ratio:.1f}倍')
         
         if is_surge:
             tier = get_tier(oi_now) if oi_now > 0 else get_tier(yo)
@@ -235,30 +247,19 @@ def analyze_volume_surge(target_name, contracts, yest_vol, yest_oi, spot_price):
 
 
 def load_alerted_contracts(today_str):
-    """加载今日已告警的合约，避免重复告警"""
-    if not os.path.exists(ALREADY_ALERTED_FILE):
-        return {}
-    with open(ALREADY_ALERTED_FILE) as f:
-        data = json.load(f)
+    """加载今日已告警的合约，避免重复告警。2026-11-10 起存 data/options.db。"""
+    data = _store.load_state('oi_volume', 'alerted', {})
     return data.get(today_str, {})
 
 
 def save_alerted_contracts(today_str, alerted):
-    """保存今日已告警合约"""
-    if os.path.exists(ALREADY_ALERTED_FILE):
-        with open(ALREADY_ALERTED_FILE) as f:
-            data = json.load(f)
-    else:
-        data = {}
+    """保存今日已告警合约，自动清理 3 天前的。"""
+    data = _store.load_state('oi_volume', 'alerted', {})
     data[today_str] = alerted
-    
-    # 清理3天前的
     for d in list(data.keys()):
         if d < today_str and (datetime.strptime(today_str, '%Y%m%d') - datetime.strptime(d, '%Y%m%d')).days > 3:
             del data[d]
-    
-    with open(ALREADY_ALERTED_FILE, 'w') as f:
-        json.dump(data, f, ensure_ascii=False, indent=2)
+    _store.save_state('oi_volume', 'alerted', data)
 
 
 def send_email_alert(today_str, all_surges, run_time_str):
@@ -403,7 +404,7 @@ def main():
         
         # 分析放量
         surges, total_today, total_yest = analyze_volume_surge(
-            name, contracts, yest_vol, yest_oi, spot_price
+            name, contracts, yest_vol, yest_oi, spot_price, today=now.date()
         )
         
         # 更新今日数据

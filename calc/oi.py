@@ -36,6 +36,8 @@ import json
 import math
 import datetime
 from collections import defaultdict
+
+import opt_store as _store  # 统一存储层：历史数据落 data/options.db
 from statistics import quantiles
 
 # ============ 路径 ============
@@ -344,22 +346,17 @@ def get_history_path(symbol):
 
 
 def load_oi_history(symbol):
-    """加载某标的的OI历史数据"""
-    path = get_history_path(symbol)
-    if os.path.exists(path):
-        try:
-            with open(path, 'r') as f:
-                return json.load(f)
-        except:
-            pass
-    return {}
+    """加载某标的的 OI 历史数据，返回 {date: {contract_key: oi}}。
+
+    2026-11-10 从 JSON 文件改为 SQLite（data/options.db），
+    原 outputs/oi_history/{symbol}_oi_history.json 不再读写。
+    """
+    return _store.load_series(_store.SERIES_OI, symbol)
 
 
 def save_oi_history(symbol, history):
-    """保存OI历史数据"""
-    path = get_history_path(symbol)
-    with open(path, 'w') as f:
-        json.dump(history, f, ensure_ascii=False)
+    """保存 OI 历史数据（整体替换）。"""
+    _store.save_series(_store.SERIES_OI, symbol, history)
 
 
 def update_oi_history(symbol, contracts, trade_date):

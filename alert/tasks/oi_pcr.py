@@ -39,6 +39,7 @@ import sys
 import json
 import datetime
 import argparse
+import opt_store as _store  # 统一存储层：历史数据落 data/options.db
 
 SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
 PROJECT_DIR = os.path.dirname(SCRIPT_DIR)
@@ -60,9 +61,13 @@ from feishu_card_utils import (  # noqa: E402
 
 # ========== 配置（统一真源：scripts/targets_config.py）==========
 # 标的清单/展示名/阈值一律从 targets_config 引入，禁止在此重复定义
-from targets import (  # noqa: E402
-    MONITOR_TARGETS as TARGETS, DISPLAY_NAME, OI_PCR_THRESHOLD as PCR_THRESHOLD,
-)
+from targets import MONITOR_TARGETS as TARGETS, DISPLAY_NAME  # noqa: E402
+
+# 判定内核统一走 alert 引擎：阈值、级别、口径文案全部来自 alert/rules.py，
+# 本脚本不再自带阈值常量（改阈值只改 rules.py 一处）。
+from alert.engine import judge_all  # noqa: E402
+from alert.rules import OI_PCR_RULES, OI_PCR_THRESHOLD as PCR_THRESHOLD  # noqa: E402
+
 DATA_MIN_CONTRACTS = 10      # 单标的合约数下限，低于此视为数据异常
 
 
@@ -82,6 +87,29 @@ def calc_oi_pcr(contracts):
     n_p = sum(1 for c in contracts if c.get('option_type') == 'P')
     pcr = round(put_oi / call_oi, 4) if call_oi > 0 else None
     return pcr, call_oi, put_oi, n_c, n_p
+
+
+def evaluate(valid_rows, today):
+    """用统一引擎判定全合约持仓 PCR。
+
+    判定逻辑全部由 alert.engine 提供，本函数只负责**取数与组装序列**：
+
+        全合约 Put OI / Call OI > 1.5 → 红灯
+
+    阈值、级别、口径文案来自 alert/rules.py 的 OI_PCR_RULES，本脚本不写阈值。
+
+    返回 {target: Evaluation}。`Evaluation.triggered` 即原 `pcr > 阈值` 的
+    判断结果，语义与原实现一致，上层幂等锁 / 卡片渲染无需改逻辑。
+    """
+    asof = today.strftime('%Y%m%d')
+    out = {}
+    for r in valid_rows:
+        # 单点序列即可：THRESHOLD 类型只取末值，不需要历史窗口。
+        # asof 取当日，避免引擎 max_stale_days 把实时数据误判为陈旧。
+        summary = judge_all(OI_PCR_RULES, {'pcr': [(asof, r['pcr'])]}, today=today)
+        if summary.evaluations:
+            out[r['target']] = summary.evaluations[0]
+    return out
 
 
 def collect():
@@ -116,24 +144,32 @@ def collect():
 
 
 def load_state(date_str):
-    path = os.path.join(SNAPSHOT_DIR, f'{date_str}.json')
-    if os.path.exists(path):
-        try:
-            with open(path, encoding='utf-8') as f:
-                return json.load(f), path
-        except Exception:
-            pass
+    """加载当日状态。2026-11-10 起存 data/options.db 的 state_store。
+
+    第二个返回值保留为 None，仅为兼容原有 `state, path = load_state(...)` 调用形式。
+    """
+    try:
+        st = _store.load_state('oi_pcr', f'state_{date_str}', None)
+        if st:
+            return st, None
+    except Exception:
+        pass
     return {'date': date_str, 'intraday': {'pushed': [], 'rows': []},
-            'close': {'pushed': [], 'rows': []}}, path
+            'close': {'pushed': [], 'rows': []}}, None
 
 
-def save_state(state, path):
-    with open(path, 'w', encoding='utf-8') as f:
-        json.dump(state, f, ensure_ascii=False, indent=2)
+def save_state(state, path=None):
+    """保存当日状态。path 参数已废弃，保留只为兼容旧调用。"""
+    date_str = state.get('date') or datetime.now().strftime('%Y%m%d')
+    try:
+        _store.save_state('oi_pcr', f'state_{date_str}', state)
+    except Exception as e:
+        print(f'  [WARN] 状态保存失败: {e}')
 
 
-def build_card(triggered, rows, errors, session, now_str):
+def build_card(triggered, rows, errors, session, now_str, evals=None):
     """构建飞书红色报警卡片"""
+    evals = evals or {}
     session_label = '盘中预警' if session == 'intraday' else '收盘确认'
     header = build_card_header(
         f'🚨 持仓量PCR极端值报警·{session_label}',
@@ -152,7 +188,9 @@ def build_card(triggered, rows, errors, session, now_str):
         if r['pcr'] is None:
             pcr_s = '⚠️无数据'
         else:
-            pcr_s = f"🔴 **{r['pcr']:.3f}**" if r['pcr'] > PCR_THRESHOLD else f"{r['pcr']:.3f}"
+            ev = evals.get(r['target'])
+            hit = bool(ev and ev.triggered)
+            pcr_s = f"🔴 **{r['pcr']:.3f}**" if hit else f"{r['pcr']:.3f}"
         table_rows.append([
             DISPLAY_NAME[r['target']], pcr_s,
             f"{r['put_oi']:,}/{r['call_oi']:,}" if r.get('call_oi') else '-',
@@ -198,7 +236,8 @@ def main():
     state[session]['rows'] = rows
 
     valid = [r for r in rows if r['ok'] and r['pcr'] is not None]
-    triggered_now = [r for r in valid if r['pcr'] > PCR_THRESHOLD]
+    evals = evaluate(valid, now.date())
+    triggered_now = [r for r in valid if evals.get(r['target']) and evals[r['target']].triggered]
     already = set(state[session].get('pushed', []))
     to_push = [r for r in triggered_now if r['target'] not in already]
 
@@ -207,13 +246,15 @@ def main():
           f'valid={len(valid)}/{len(rows)} triggered={len(triggered_now)} '
           f'to_push={len(to_push)}')
     for r in rows:
+        ev = evals.get(r['target'])
         print(f"  {r['target']:8s} pcr={r['pcr']} src={r['source']} "
-              f"n={r.get('n_contracts', '-')} {r.get('error', '')}")
+              f"n={r.get('n_contracts', '-')} {r.get('error', '')}"
+              + (f" | {ev.detail}" if ev else ''))
     if errors:
         print(f'[OI-PCR][数据缺失] {"; ".join(errors)}')
 
     if to_push:
-        card = build_card(to_push, rows, errors, session, now_str)
+        card = build_card(to_push, rows, errors, session, now_str, evals)
         if args.dry_run:
             print('[OI-PCR][dry-run] 卡片预览:')
             print(json.dumps(card, ensure_ascii=False, indent=2)[:2000])

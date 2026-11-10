@@ -71,6 +71,8 @@ import re
 import sys
 import json
 from alert.trigger import trigger  # noqa: E402
+from alert.engine import judge_all  # noqa: E402
+from alert.rules import VIX_ALERT_RULES  # noqa: E402
 import fcntl
 import subprocess
 from datetime import datetime, timedelta
@@ -467,20 +469,31 @@ def check_ma850_cross(index_data):
             skipped.append({'code': code, 'reason': '日线缺失'})
             continue
         closes, dates = d['closes'], d['dates']
-        if len(closes) < MA_WINDOW + 1:
+        # 引擎单序列 CROSS 需要 w+2 个样本（w 根算当日均线 + 1 根算前一日均线 + 1 根当日收盘）
+        if len(closes) < MA_WINDOW + 2:
             skipped.append({'code': code, 'name': d['name'],
-                            'reason': '样本不足(%d<%d)' % (len(closes), MA_WINDOW + 1)})
+                            'reason': '样本不足(%d<%d)' % (len(closes), MA_WINDOW + 2)})
             continue
         ma = _ma_series(closes, MA_WINDOW)
         i = len(closes) - 1
-        cur, prev = closes[i] - ma[i], closes[i - 1] - ma[i - 1]
-        if (cur >= 0) == (prev >= 0):
+        # 穿越判定交给统一引擎（规则 vix.cross_ma850_up / vix.cross_ma850_down）。
+        # 引擎单序列 CROSS 的均线口径与原实现逐字一致：
+        #   ma_now  = mean(closes[-850:])    == ma[i]
+        #   ma_prev = mean(closes[-851:-1])  == ma[i-1]
+        # 唯一差异：close 恰好等于 MA850（cur/prev 为 0）时引擎不认上穿，
+        # 属浮点极端情况，概率可忽略。
+        fired = judge_all(
+            VIX_ALERT_RULES[1:3],
+            {'index_close': [(dates[j], closes[j]) for j in range(len(closes))]},
+            today=_parse_trade_date(dates[i]),
+        ).fired
+        if not fired:
             continue
         hits.append({
             'code': code, 'name': d['name'], 'date': dates[i],
             'close': round(closes[i], 2), 'ma850': round(ma[i], 2),
             'prev_close': round(closes[i - 1], 2), 'prev_ma850': round(ma[i - 1], 2),
-            'direction': '上穿' if cur > 0 else '下穿',
+            'direction': '上穿' if fired[0].rule.op == 'cross_up' else '下穿',
         })
     return hits, skipped
 
@@ -1073,6 +1086,14 @@ def _normalize_date(trading_date):
     return s
 
 
+def _parse_trade_date(s):
+    """'YYYYMMDD' / 'YYYY-MM-DD' -> date。引擎判定需要 date 形式的基准日。"""
+    t = str(s).replace('/', '-')
+    if len(t) == 8 and t.isdigit():
+        return datetime.strptime(t, '%Y%m%d').date()
+    return datetime.strptime(t, '%Y-%m-%d').date()
+
+
 def _prune(state):
     """只保留最近 MAX_STATE_DAYS 个交易日的记录。"""
     for bucket in ('vix_tiers', 'ma850_cross', 'vix_datamissing',
@@ -1192,14 +1213,21 @@ def run_vix_alerts(trading_date=None, dry_run=False, realtime=True,
         summary['vix_map'] = vix_map
 
         vix_hits = []
+        vix_today = _parse_trade_date(td_compact)
         for k, name, _ in INDEXES:
             e = vix_map.get(k) or {}
             v = e.get('vix')
-            if v is not None and v >= VIX_ALERT_THRESHOLD:
-                vix_hits.append({'key': k, 'name': name, 'vix': round(float(v), 2),
-                                 'mode': e.get('mode'),
-                                 'sample_time_at_max': e.get('sample_time_at_max'),
-                                 'percentile': e.get('percentile')})
+            if v is None:
+                continue
+            # 阈值判定交给统一引擎（规则 vix.level：vix_intraday_max >= VIX_ALERT_THRESHOLD）
+            if not judge_all((VIX_ALERT_RULES[0],),
+                             {'vix_intraday_max': [(td_compact, float(v))]},
+                             today=vix_today).fired:
+                continue
+            vix_hits.append({'key': k, 'name': name, 'vix': round(float(v), 2),
+                             'mode': e.get('mode'),
+                             'sample_time_at_max': e.get('sample_time_at_max'),
+                             'percentile': e.get('percentile')})
         summary['vix_hits'] = vix_hits
         summary['data_missing'] = (len(vix_map) > 0 and
                                    all((vix_map.get(k) or {}).get('vix') is None

@@ -80,8 +80,8 @@ from datetime import datetime
 # ============================================================
 # 路径（/Coze/Drive 与 /opt/coze/.fuse_drive 双挂载回退）
 # ============================================================
-_HERE = os.path.dirname(os.path.abspath(__file__))          # .../中期风险偏好/codeact/scripts
-PROJECT_DIR = os.path.dirname(os.path.dirname(_HERE))       # .../中期风险偏好
+_HERE = os.path.dirname(os.path.abspath(__file__))          # .../options/alert/tasks
+PROJECT_DIR = os.path.dirname(os.path.dirname(_HERE))       # .../options
 OUTPUT_DIR = os.path.join(PROJECT_DIR, 'codeact', 'output')
 
 # 2026-10-30 修复：fuse只读挂载回退到可写路径
@@ -819,10 +819,14 @@ def run(dry_run=False, once=False, state_path=None, tiers=None,
     try:
         _vh()                                   # 触发 data_hub 导入（统一真源）
         # ⚠️ 坑：data_hub/collectors/vix_history.py 会把「蓁宝主对话」scripts 目录
-        # insert 到 sys.path[0]，从而遮蔽本生产目录的 yangkangping_vix_alerts.py。
-        # 这里按文件绝对路径显式加载，保证 VWAP / MA850 用到的一定是本目录版本。
+        # insert 到 sys.path[0]，从而遮蔽本目录同名模块。这里按文件绝对路径显式加载，
+        # 保证 VWAP / MA850 用到的一定是 options 内改造版（已接入 alert.engine）。
         import importlib.util as _ilu
-        _yva_file = os.path.join(_HERE, 'yangkangping_vix_alerts.py')
+        # 2026-11-10 修复：原指向 'yangkangping_vix_alerts.py'，该文件只存在于旧目录
+        # codeact/scripts，options/alert/tasks 下没有 → FileNotFoundError 导致整个
+        # 采样脚本在 import 阶段就 return，盘中 VIX 采样完全空转。
+        # options 版对应文件是 vix_alerts.py（旧文件的完整超集，含 VWAP 全部函数）。
+        _yva_file = os.path.join(_HERE, 'vix_alerts.py')
         _yva_spec = _ilu.spec_from_file_location('yangkangping_vix_alerts_prod',
                                                 _yva_file)
         yva = _ilu.module_from_spec(_yva_spec)

@@ -59,3 +59,7 @@ data/
 Thumbs.db
 .idea/
 .vscode/
+
+# ==================== 运行时输出目录（2026-11-10 补） ====================
+# codeact/output 是脚本运行态产物（bottom_monitor_*.json / *_state.json），不入库
+codeact/

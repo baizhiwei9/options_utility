@@ -62,6 +62,7 @@ import os
 import sys
 import json
 import argparse
+import opt_store as _store  # 统一存储层：历史数据落 data/options.db
 import datetime as dt_module
 from datetime import datetime, timedelta
 from collections import defaultdict
@@ -78,6 +79,13 @@ sys.path.insert(0, SCRIPT_DIR)
 sys.path.insert(0, '/Coze/Drive/蓁宝/所有对话/主对话')
 from email_sender import send_email  # noqa: E402
 from alert.trigger import trigger  # noqa: E402
+
+# 判定内核统一走 alert 引擎：MACD 六类信号的阈值/级别/口径文案全部来自
+# alert/rules.py 的 PCR_MACD_RULES，本脚本不再自己写判定条件。
+from alert.engine import judge_all  # noqa: E402
+from alert.rules import (  # noqa: E402
+    PCR_MACD_RULES, PCR_MACD_SIGNAL_MAP, PCR_MACD_RULE_BY_SIGNAL,
+)
 
 # ========== MACD 参数 ==========
 MACD_FAST = 10
@@ -155,138 +163,119 @@ def calc_macd(pcr_series, fast=MACD_FAST, slow=MACD_SLOW, signal=MACD_SIGNAL):
 
 # ===================== 信号检测 =====================
 
+# signal_type → 展示名。这是**历史输出格式的兼容层**（下游邮件、3 月三栏图、
+# 幂等文件、--signals 参数都按这套 signal_type + signal_name 工作），不是判定
+# 逻辑；判定阈值与级别在 alert/rules.py 的 PCR_MACD_RULES。
+_SIGNAL_NAMES = {
+    'golden_cross': '金叉',
+    'death_cross': '死叉',
+    'zero_cross_up': 'DIF上穿零轴',
+    'zero_cross_down': 'DIF下穿零轴',
+    'dea_zero_cross_up': 'DEA上穿零轴',
+    'dea_zero_cross_down': 'DEA下穿零轴',
+}
+_ZERO = 0.0
+
+
+def _parse_date(s):
+    """'YYYYMMDD' / 'YYYY-MM-DD' → date；失败返回 None。"""
+    for fmt in ('%Y%m%d', '%Y-%m-%d'):
+        try:
+            return datetime.strptime(str(s), fmt).date()
+        except Exception:
+            continue
+    return None
+
+
 def detect_signals(macd_data, signal_types=None):
+    """检测 6 类 MACD 信号（判定由 alert.engine 统一负责）。
+
+    阈值、级别、口径文案全部来自 alert/rules.py 的 PCR_MACD_RULES；
+    本函数只负责**逐点组装序列**，并把引擎结果翻译回原来的 signal dict 格式
+    —— 下游邮件、3 月三栏图、幂等文件、--signals 参数都依赖这个格式。
+
+    六种信号（signal_type → 规则 key）：
+        golden_cross        DIF 上穿 DEA     pcr_macd.golden
+        death_cross         DIF 下穿 DEA     pcr_macd.dead
+        zero_cross_up       DIF 上穿零轴     pcr_macd.dif_zero_up
+        zero_cross_down     DIF 下穿零轴     pcr_macd.dif_zero_down
+        dea_zero_cross_up   DEA 上穿零轴     pcr_macd.dea_zero_up
+        dea_zero_cross_down DEA 下穿零轴     pcr_macd.dea_zero_down
+
+    等价性说明：原实现金叉判「histogram 由负转正」，而 histogram = DIF − DEA，
+    所以等价于「DIF 上穿 DEA」，正是引擎 cross_up 的语义；零轴穿越用
+    compare_indicator='macd_zero'（取数阶段喂成常数 0 序列）表达。
+
+    Args:
+        macd_data: [{date, pcr, dif, dea, histogram}, ...]，时间升序
+        signal_types: 只检测这些类型；None = 全部六种
+
+    Returns:
+        list of dict，字段与原实现完全一致
     """
-    检测信号：
-      - golden_cross: 金叉 (DIF上穿DEA)
-      - death_cross: 死叉 (DIF下穿DEA)
-      - zero_cross_up: DIF上穿零轴
-      - zero_cross_down: DIF下穿零轴
-      - dea_zero_cross_up: DEA上穿零轴
-      - dea_zero_cross_down: DEA下穿零轴
-    
-    signal_types: 要检测的信号类型列表，None=全部
-    返回: list of dict
-    """
-    signals = []
     if signal_types is None:
-        signal_types = ['golden_cross', 'death_cross', 
-                        'zero_cross_up', 'zero_cross_down',
-                        'dea_zero_cross_up', 'dea_zero_cross_down']
-    
+        signal_types = list(PCR_MACD_SIGNAL_MAP.keys())
+    rules = tuple(PCR_MACD_RULE_BY_SIGNAL[s]
+                  for s in signal_types if s in PCR_MACD_RULE_BY_SIGNAL)
+
+    signals = []
+    if not rules:
+        return signals
+
+    # 规则 key → signal_type，用于把引擎结果翻回老标识
+    key_to_sig = {r.key: s for s, r in PCR_MACD_RULE_BY_SIGNAL.items()}
+
     for i in range(1, len(macd_data)):
         prev = macd_data[i - 1]
         curr = macd_data[i]
-        
-        # 金叉: histogram由负转正
-        if 'golden_cross' in signal_types:
-            if prev['histogram'] <= 0 and curr['histogram'] > 0:
-                signals.append({
-                    'date': curr['date'],
-                    'signal_type': 'golden_cross',
-                    'signal_name': '金叉',
-                    'pcr': curr['pcr'],
-                    'dif': curr['dif'],
-                    'dea': curr['dea'],
-                    'histogram': curr['histogram'],
-                    'prev_dif': prev['dif'],
-                    'prev_dea': prev['dea'],
-                })
-        
-        # 死叉: histogram由正转负
-        if 'death_cross' in signal_types:
-            if prev['histogram'] >= 0 and curr['histogram'] < 0:
-                signals.append({
-                    'date': curr['date'],
-                    'signal_type': 'death_cross',
-                    'signal_name': '死叉',
-                    'pcr': curr['pcr'],
-                    'dif': curr['dif'],
-                    'dea': curr['dea'],
-                    'histogram': curr['histogram'],
-                    'prev_dif': prev['dif'],
-                    'prev_dea': prev['dea'],
-                })
-        
-        # DIF上穿零轴
-        if 'zero_cross_up' in signal_types:
-            if prev['dif'] <= 0 and curr['dif'] > 0:
-                signals.append({
-                    'date': curr['date'],
-                    'signal_type': 'zero_cross_up',
-                    'signal_name': 'DIF上穿零轴',
-                    'pcr': curr['pcr'],
-                    'dif': curr['dif'],
-                    'dea': curr['dea'],
-                    'histogram': curr['histogram'],
-                    'prev_dif': prev['dif'],
-                    'prev_dea': prev['dea'],
-                })
-        
-        # DIF下穿零轴
-        if 'zero_cross_down' in signal_types:
-            if prev['dif'] >= 0 and curr['dif'] < 0:
-                signals.append({
-                    'date': curr['date'],
-                    'signal_type': 'zero_cross_down',
-                    'signal_name': 'DIF下穿零轴',
-                    'pcr': curr['pcr'],
-                    'dif': curr['dif'],
-                    'dea': curr['dea'],
-                    'histogram': curr['histogram'],
-                    'prev_dif': prev['dif'],
-                    'prev_dea': prev['dea'],
-                })
-        
-        # DEA上穿零轴
-        if 'dea_zero_cross_up' in signal_types:
-            if prev['dea'] <= 0 and curr['dea'] > 0:
-                signals.append({
-                    'date': curr['date'],
-                    'signal_type': 'dea_zero_cross_up',
-                    'signal_name': 'DEA上穿零轴',
-                    'pcr': curr['pcr'],
-                    'dif': curr['dif'],
-                    'dea': curr['dea'],
-                    'histogram': curr['histogram'],
-                    'prev_dif': prev['dif'],
-                    'prev_dea': prev['dea'],
-                })
-        
-        # DEA下穿零轴
-        if 'dea_zero_cross_down' in signal_types:
-            if prev['dea'] >= 0 and curr['dea'] < 0:
-                signals.append({
-                    'date': curr['date'],
-                    'signal_type': 'dea_zero_cross_down',
-                    'signal_name': 'DEA下穿零轴',
-                    'pcr': curr['pcr'],
-                    'dif': curr['dif'],
-                    'dea': curr['dea'],
-                    'histogram': curr['histogram'],
-                    'prev_dif': prev['dif'],
-                    'prev_dea': prev['dea'],
-                })
-    
+        d0, d1 = str(prev['date']), str(curr['date'])
+        today = _parse_date(d1)
+        if today is None:
+            continue
+        # CROSS 双序列只需前一日与当日两点；today 传当日，避免 max_stale_days
+        # 把回测的历史点当成陈旧数据跳过。
+        summary = judge_all(
+            rules,
+            {
+                'macd_dif': [(d0, float(prev['dif'])), (d1, float(curr['dif']))],
+                'macd_dea': [(d0, float(prev['dea'])), (d1, float(curr['dea']))],
+                'macd_zero': [(d0, _ZERO), (d1, _ZERO)],
+            },
+            today=today,
+        )
+        for ev in summary.fired:
+            sig_type = key_to_sig.get(ev.rule.key)
+            if sig_type is None:
+                continue
+            signals.append({
+                'date': curr['date'],
+                'signal_type': sig_type,
+                'signal_name': _SIGNAL_NAMES[sig_type],
+                'pcr': curr['pcr'],
+                'dif': curr['dif'],
+                'dea': curr['dea'],
+                'histogram': curr['histogram'],
+                'prev_dif': prev['dif'],
+                'prev_dea': prev['dea'],
+            })
+
     return signals
 
 
 # ===================== 数据采集 =====================
 
 def load_pcr_history(target_name):
-    """加载PCR历史数据"""
-    path = os.path.join(PCR_HISTORY_DIR, f'{target_name}_pcr_history.json')
-    if os.path.exists(path):
-        with open(path, 'r') as f:
-            return json.load(f)
-    return {}
+    """加载 PCR 历史数据，返回 {date: {...}}。
+
+    2026-11-10 从 JSON 文件改为 SQLite（data/options.db），
+    原 outputs/pcr_history/{target}_pcr_history.json 不再读写。
+    """
+    return _store.load_series(_store.SERIES_PCR, target_name)
 
 
 def save_pcr_history(target_name, data):
-    """保存PCR历史数据"""
-    path = os.path.join(PCR_HISTORY_DIR, f'{target_name}_pcr_history.json')
-    with open(path, 'w') as f:
-        json.dump(data, f, ensure_ascii=False, indent=2)
+    """保存 PCR 历史数据（整体替换）。"""
+    _store.save_series(_store.SERIES_PCR, target_name, data)
 
 
 def get_daily_pcr_from_tushare(target_name, trade_date):
@@ -705,17 +694,13 @@ def send_email_alert(target_name, signals, today_str, chart_path=None):
 
 
 def load_alerted():
-    """加载已告警记录（幂等保护）"""
-    if os.path.exists(ALERTED_FILE):
-        with open(ALERTED_FILE, 'r') as f:
-            return json.load(f)
-    return {}
+    """加载已告警记录（幂等保护）。2026-11-10 起存 data/options.db 的 state_store。"""
+    return _store.load_state('pcr_macd', 'alerted', {})
 
 
 def save_alerted(alerted):
-    """保存已告警记录"""
-    with open(ALERTED_FILE, 'w') as f:
-        json.dump(alerted, f, ensure_ascii=False, indent=2)
+    """保存已告警记录。"""
+    _store.save_state('pcr_macd', 'alerted', alerted)
 
 
 # ===================== 监控主逻辑 =====================

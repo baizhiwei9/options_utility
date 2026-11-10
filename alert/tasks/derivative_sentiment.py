@@ -110,7 +110,9 @@ os.makedirs(OUTPUT_DIR, exist_ok=True)
 # 复用option_monitor.py的路径
 OPTION_MONITOR_DIR = _opt_os.path.join(_OPT_ROOT, "calc")  # 期权链/指标计算统一收归 calc/
 FEISHU_PUSH_PATH = _opt_os.path.join(_OPT_ROOT, "alert", "notifier", "feishu_push.py")
-BOTTOM_MONITOR_PATH = "/Coze/Drive/中期风险偏好/codeact/scripts/market_bottom_monitor.py"
+# 2026-11-10：原指向 /Coze/Drive/中期风险偏好/codeact/scripts/market_bottom_monitor.py，
+# 该目录已不存在（旧版副本，与 options 版有 206 行差异）。改指 options 内真源。
+BOTTOM_MONITOR_PATH = _opt_os.path.join(_OPT_ROOT, "alert", "tasks", "bottom_redline.py")
 
 # 添加复用路径
 for p in [OPTION_MONITOR_DIR, os.path.dirname(FEISHU_PUSH_PATH), os.path.dirname(BOTTOM_MONITOR_PATH)]:

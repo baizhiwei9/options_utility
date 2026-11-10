@@ -41,6 +41,7 @@ import sys
 import json
 import time
 from datetime import datetime
+import opt_store as _store  # 统一存储层：历史数据落 data/options.db
 from collections import defaultdict
 from email.mime.text import MIMEText
 from email.mime.multipart import MIMEMultipart
@@ -53,6 +54,14 @@ from fetch import get_option_chain
 sys.path.insert(0, '/Coze/Drive/蓁宝/所有对话/主对话')
 from email_sender import send_email  # noqa: E402
 from alert.trigger import trigger  # noqa: E402
+
+# 判定内核统一走 alert 引擎：分档阈值、级别、口径文案全部来自 alert/rules.py
+from alert.engine import judge_all  # noqa: E402
+from alert.rules import (  # noqa: E402
+    OI_INTRADAY_TIER_SPLITS, OI_INTRADAY_TIER_ABS,
+    OI_INTRADAY_TIER_RULES, OI_INTRADAY_EMAIL_RULE,
+    OI_INTRADAY_MIN_CHG,
+)
 
 WORK_DIR = _OPT_ROOT  # 项目根（原为 /Coze/Drive/期权风险监控）
 OUTPUT_DIR = os.path.join(WORK_DIR, 'outputs')
@@ -70,9 +79,9 @@ EMAIL_CONFIG = {
     'to_addr': EMAIL_TO_ADDR,
 }
 
-# 邮件告警阈值：增仓≥50%才发邮件（比飞书更严格）
-EMAIL_ALERT_PCT = 0.50
-EMAIL_ALERT_MIN_CHG = 1000  # 至少增仓1000张才值得发邮件
+# 邮件/飞书阈值全部来自 alert/rules.py（唯一真源），此处不再定义：
+#   OI_INTRADAY_TIER_PCT / OI_INTRADAY_TIER_ABS / OI_INTRADAY_ALERT_PCT /
+#   OI_INTRADAY_MIN_CHG / OI_INTRADAY_TIER_RULES / OI_INTRADAY_EMAIL_RULE
 
 # 监控标的（和日终分析一致）
 INTRADAY_TARGETS = {
@@ -84,47 +93,78 @@ INTRADAY_TARGETS = {
     '中证1000':   {'code': 'MO',      'exchange': 'CFFEX'},
 }
 
-# 异动阈值（和日终分析一致）
-TIER_THRESHOLDS = {
-    '小':   {'pct': 0.50, 'abs': 200},   # 日增>=50% 且 >=200张
-    '中':   {'pct': 0.30, 'abs': 0},     # 日增>=30%
-    '大':   {'pct': 0.20, 'abs': 2000},  # 日增>=20% 或 >=2000张
-    '超大': {'pct': 0.10, 'abs': 5000},  # 日增>=10% 或 >=5000张
-}
+# 异动阈值（分档参数）统一来自 alert/rules.py 的 OI_INTRADAY_TIER_*，
+# 本脚本只保留「怎么分档」这个分组逻辑，不保留任何阈值数字。
+_TIER_NAMES = ('小', '中', '大', '超大')
 
 
 def get_tier(oi):
-    if oi < 500: return '小'
-    elif oi < 2000: return '中'
-    elif oi < 10000: return '大'
-    else: return '超大'
+    """按持仓量归档。分界值来自 alert/rules.py 的 OI_INTRADAY_TIER_SPLITS。"""
+    for i, split in enumerate(OI_INTRADAY_TIER_SPLITS):
+        if oi < split:
+            return _TIER_NAMES[i]
+    return _TIER_NAMES[-1]
 
 
-def is_abnormal(oi, oi_chg, oi_chg_pct):
-    """判断是否达到异动阈值"""
+def is_abnormal(oi, oi_chg, oi_chg_pct, today=None):
+    """用统一引擎判定单合约盘中是否异动（飞书常规告警）。
+
+    判定逻辑全部由 alert.engine 提供，本函数只负责**分档 + 组装序列**：
+
+        小档  持仓 <500 张    增幅 ≥50%  **且** 增仓 ≥200 张
+        中档  500~2000 张     增幅 ≥30%
+        大档  2000~10000 张   增幅 ≥20%  **或** 增仓 ≥2000 张
+        超大   ≥10000 张      增幅 ≥10%  **或** 增仓 ≥5000 张
+
+    阈值与档位分界全部来自 alert/rules.py，本脚本不写数字。
+
+    小档的 AND 语义用取数阶段护栏实现：引擎 judge_all 是 OR，
+    增仓没到 200 张时直接不喂数据，等价于 AND。
+    「只监控增仓」这个前置条件同理留在取数阶段（oi_chg <= 0 直接返回）。
+
+    Returns:
+        (abnormal: bool, reason: str)
+    """
     if oi_chg <= 0:
         return False, ''  # 只监控增仓异动
-    
+
     tier = get_tier(oi)
-    th = TIER_THRESHOLDS[tier]
-    
-    reasons = []
-    if th['abs'] > 0 and oi_chg >= th['abs']:
-        reasons.append(f'绝对增仓≥{th["abs"]}张')
-    if oi_chg_pct >= th['pct']:
-        reasons.append(f'增幅≥{th["pct"]*100:.0f}%')
-    
-    # 小合约必须同时满足两个条件
-    if tier == '小':
-        if len(reasons) == 2:
-            return True, f'{tier}档: ' + ' + '.join(reasons)
-        else:
-            return False, ''
-    # 中/大/超大满足其一即可
-    elif reasons:
-        return True, f'{tier}档: ' + ' + '.join(reasons)
-    
-    return False, ''
+    abs_floor = OI_INTRADAY_TIER_ABS.get(tier, 0)
+    # 小档是 AND：绝对增仓不达标直接不算异动
+    if tier == '小' and abs_floor > 0 and oi_chg < abs_floor:
+        return False, ''
+
+    today = today or datetime.now().date()
+    asof = today.strftime('%Y%m%d')
+    summary = judge_all(
+        OI_INTRADAY_TIER_RULES[tier],
+        {
+            'oi_chg_pct': [(asof, oi_chg_pct)],
+            'oi_chg_abs': [(asof, float(oi_chg))],
+        },
+        today=today,
+    )
+    if not summary.fired:
+        return False, ''
+    return True, f'{tier}档: ' + ' + '.join(e.rule.name for e in summary.fired)
+
+
+def is_email_abnormal(oi_chg, oi_chg_pct, today=None):
+    """邮件档判定（比飞书更严格）：增幅 ≥50% 且增仓 ≥1000 张。
+
+    AND 语义用取数阶段护栏实现，阈值来自 alert/rules.py 的
+    OI_INTRADAY_EMAIL_RULE / OI_INTRADAY_MIN_CHG。
+    """
+    if oi_chg < OI_INTRADAY_MIN_CHG:
+        return False
+    today = today or datetime.now().date()
+    asof = today.strftime('%Y%m%d')
+    summary = judge_all(
+        (OI_INTRADAY_EMAIL_RULE,),
+        {'oi_chg_pct': [(asof, oi_chg_pct)]},
+        today=today,
+    )
+    return bool(summary.fired)
 
 
 def interpret_contract(opt_type, strike, spot_price, oi_chg_pct):
@@ -174,14 +214,10 @@ def interpret_contract(opt_type, strike, spot_price, oi_chg_pct):
 
 
 def load_yesterday_oi(target_name, today_str):
-    """加载昨日收盘OI数据（从oi_history）"""
-    hist_file = os.path.join(OI_HISTORY_DIR, f'{target_name}_oi_history.json')
-    if not os.path.exists(hist_file):
+    """加载昨日收盘 OI（数据源：data/options.db 的 oi_history）。"""
+    hist = _store.load_series(_store.SERIES_OI, target_name)
+    if not hist:
         return {}
-    
-    with open(hist_file) as f:
-        hist = json.load(f)
-    
     dates = sorted(hist.keys(), reverse=True)
     for d in dates:
         if d < today_str:
@@ -218,32 +254,23 @@ def estimate_spot(contracts):
 
 
 def load_alerted(today_str):
-    if not os.path.exists(ALERTED_FILE):
-        return {}
-    with open(ALERTED_FILE) as f:
-        data = json.load(f)
+    """加载当日已告警记录（飞书）。2026-11-10 起存 data/options.db 的 state_store。"""
+    data = _store.load_state('oi_intraday', 'alerted', {})
     return data.get(today_str, {})
 
 
 def save_alerted(today_str, alerted):
-    if os.path.exists(ALERTED_FILE):
-        with open(ALERTED_FILE) as f:
-            data = json.load(f)
-    else:
-        data = {}
+    """保存当日已告警记录（飞书），自动清理 3 天前的。"""
+    data = _store.load_state('oi_intraday', 'alerted', {})
     data[today_str] = alerted
-    
-    # 清理3天前的
     for d in list(data.keys()):
         if d < today_str:
             try:
                 if (datetime.strptime(today_str, '%Y%m%d') - datetime.strptime(d, '%Y%m%d')).days > 3:
                     del data[d]
-            except:
+            except Exception:
                 del data[d]
-    
-    with open(ALERTED_FILE, 'w') as f:
-        json.dump(data, f, ensure_ascii=False, indent=2)
+    _store.save_state('oi_intraday', 'alerted', data)
 
 
 def send_alerts(today_str, run_time_str, new_alerts):
@@ -257,10 +284,10 @@ def send_alerts(today_str, run_time_str, new_alerts):
     for a in new_alerts:
         by_target[a['target']].append(a)
     
-    # 筛选需要发邮件的（增仓≥50% 且 绝对增仓≥1000张）
+    # 筛选需要发邮件的（增幅≥50% 且 增仓≥1000张，阈值来自 alert/rules.py）
     email_alerts = [
-        a for a in new_alerts 
-        if a['oi_chg_pct'] >= EMAIL_ALERT_PCT and a['oi_chg'] >= EMAIL_ALERT_MIN_CHG
+        a for a in new_alerts
+        if is_email_abnormal(a['oi_chg'], a['oi_chg_pct'])
     ]
     
     # ============ 飞书推送（所有异动） ============
@@ -314,11 +341,8 @@ def send_alerts(today_str, run_time_str, new_alerts):
     # ============ 邮件推送（仅极端异动 ≥50%） ============
     if email_alerts:
         # 检查今日是否已发过邮件（避免频繁发）
-        email_alerted = {}
-        if os.path.exists(EMAIL_ALERTED_FILE):
-            with open(EMAIL_ALERTED_FILE) as f:
-                data = json.load(f)
-            email_alerted = data.get(today_str, {})
+        email_alerted = _store.load_state(
+            'oi_intraday', 'email_alerted', {}).get(today_str, {})
         
         new_email_alerts = [a for a in email_alerts if f"{a['target']}_{a['contract_key']}" not in email_alerted]
         
@@ -408,14 +432,9 @@ def send_alerts(today_str, run_time_str, new_alerts):
                         'pct': round(a['oi_chg_pct'], 4),
                     }
                 
-                if os.path.exists(EMAIL_ALERTED_FILE):
-                    with open(EMAIL_ALERTED_FILE) as f:
-                        data = json.load(f)
-                else:
-                    data = {}
-                data[today_str] = email_alerted
-                with open(EMAIL_ALERTED_FILE, 'w') as f:
-                    json.dump(data, f, ensure_ascii=False, indent=2)
+                _email_data = _store.load_state('oi_intraday', 'email_alerted', {})
+                _email_data[today_str] = email_alerted
+                _store.save_state('oi_intraday', 'email_alerted', _email_data)
                 
                 print(f'  ✅ 邮件告警已发送至 {EMAIL_CONFIG["to_addr"]} ({len(new_email_alerts)}个)')
                 
@@ -501,7 +520,7 @@ def main():
             oi_chg_pct = oi_chg / yest_oi
             
             # 判断异动
-            abnormal, reason = is_abnormal(curr_oi, oi_chg, oi_chg_pct)
+            abnormal, reason = is_abnormal(curr_oi, oi_chg, oi_chg_pct, today=now.date())
             if not abnormal:
                 continue
             

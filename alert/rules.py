@@ -58,8 +58,12 @@ __all__ = [
     'SKEW5D_RED', 'PCR20_RED', 'OI_PCR_THRESHOLD', 'PCT_NORMAL',
     # 规则组
     'SKEW10_RULES', 'OI_PCR_RULES', 'PCR_MACD_RULES',
+    'PCR_MACD_SIGNAL_MAP', 'PCR_MACD_RULE_BY_SIGNAL',
     'BASIS_INTRADAY_RULES', 'BASIS_MA20_RULES',
     'OI_VOLUME_RULES', 'OI_INTRADAY_RULES',
+    'OI_INTRADAY_TIER_SPLITS', 'OI_INTRADAY_TIER_PCT', 'OI_INTRADAY_TIER_ABS',
+    'OI_INTRADAY_TIER_RULES', 'OI_INTRADAY_EMAIL_RULE',
+    'OI_INTRADAY_ALERT_PCT', 'OI_INTRADAY_MIN_CHG',
     'VIX_ALERT_RULES', 'BOTTOM_REDLINE_RULES', 'BOTTOM_REDLINE_TRIGGER_COUNT',
     'RULE_GROUPS', 'all_rules',
 ]
@@ -102,6 +106,16 @@ MIN_VOLUME_FILTER = 500           # 最小成交量过滤，排除流动性过�
 
 OI_INTRADAY_ALERT_PCT = 0.50      # 盘中持仓变化 ≥ 50% → 异动
 OI_INTRADAY_MIN_CHG = 1000        # 且绝对增仓 ≥ 1000 张才值得报警
+
+# 盘中异动按持仓规模分档给不同灵敏度：持仓越小越容易被单笔大单撬动，
+# 阈值越严（防止小合约噪音刷屏）；持仓越大越迟钝，阈值越松。
+# 分界值 (500, 2000, 10000) 张 → 小 / 中 / 大 / 超大。
+OI_INTRADAY_TIER_SPLITS = (500, 2000, 10000)
+OI_INTRADAY_TIER_PCT = {'小': 0.50, '中': 0.30, '大': 0.20, '超大': 0.10}
+# 每档的绝对增仓阈值。0 表示该档不看绝对增仓，只看增幅。
+# 「小」档是 AND 语义（增幅与绝对增仓必须同时满足），由取数阶段护栏实现；
+# 「大」「超大」档是 OR 语义，两条规则任一触发即可。
+OI_INTRADAY_TIER_ABS = {'小': 200, '中': 0, '大': 2000, '超大': 5000}
 
 
 # =============================================================================
@@ -191,7 +205,64 @@ PCR_MACD_RULES: Tuple[AlertRule, ...] = (
         level=LEVEL_YELLOW, channels=(CH_EMAIL,),
         note='PCR 转弱，对冲情绪升温',
     ),
+    # ---- 以下四条是原脚本 detect_signals 里有、但之前没在规则表里声明的信号 ----
+    # 零轴穿越用 CROSS 双序列表达：indicator 穿 compare_indicator，
+    # compare_indicator='macd_zero' 由取数阶段喂成常数 0 序列。
+    # 这样「DIF 上穿 0」= dif 序列上穿零轴序列，与引擎 cross_up 语义完全一致。
+    AlertRule(
+        key='pcr_macd.dif_zero_up',
+        name='🟢DIF上穿零轴',
+        indicator='macd_dif',
+        compare_indicator='macd_zero',
+        kind=CROSS, op='cross_up',
+        level=LEVEL_INFO, channels=(CH_EMAIL,),
+        note='DIF 上穿零轴，PCR 中期动能转强',
+    ),
+    AlertRule(
+        key='pcr_macd.dif_zero_down',
+        name='🔴DIF下穿零轴',
+        indicator='macd_dif',
+        compare_indicator='macd_zero',
+        kind=CROSS, op='cross_down',
+        level=LEVEL_YELLOW, channels=(CH_EMAIL,),
+        note='DIF 下穿零轴，PCR 中期动能转弱',
+    ),
+    AlertRule(
+        key='pcr_macd.dea_zero_up',
+        name='🟢DEA上穿零轴',
+        indicator='macd_dea',
+        compare_indicator='macd_zero',
+        kind=CROSS, op='cross_up',
+        level=LEVEL_INFO, channels=(CH_EMAIL,),
+        note='DEA 上穿零轴，慢线确认转强',
+    ),
+    AlertRule(
+        key='pcr_macd.dea_zero_down',
+        name='🔴DEA下穿零轴',
+        indicator='macd_dea',
+        compare_indicator='macd_zero',
+        kind=CROSS, op='cross_down',
+        level=LEVEL_YELLOW, channels=(CH_EMAIL,),
+        note='DEA 下穿零轴，慢线确认转弱',
+    ),
 )
+
+# 原脚本的 signal_type → 规则 key 映射。日常监控/回测/绘图仍用 signal_type
+# 这套老标识（输出字典、幂等文件、--signals 参数都依赖它），
+# 这里只做「老标识 → 新规则」的翻译，判定本身交给引擎。
+PCR_MACD_SIGNAL_MAP: Dict[str, str] = {
+    'golden_cross': 'pcr_macd.golden',
+    'death_cross': 'pcr_macd.dead',
+    'zero_cross_up': 'pcr_macd.dif_zero_up',
+    'zero_cross_down': 'pcr_macd.dif_zero_down',
+    'dea_zero_cross_up': 'pcr_macd.dea_zero_up',
+    'dea_zero_cross_down': 'pcr_macd.dea_zero_down',
+}
+
+PCR_MACD_RULE_BY_KEY: Dict[str, AlertRule] = {r.key: r for r in PCR_MACD_RULES}
+PCR_MACD_RULE_BY_SIGNAL: Dict[str, AlertRule] = {
+    sig: PCR_MACD_RULE_BY_KEY[key] for sig, key in PCR_MACD_SIGNAL_MAP.items()
+}
 
 
 # =============================================================================
@@ -224,26 +295,40 @@ BASIS_INTRADAY_RULES: Tuple[AlertRule, ...] = (
 # =============================================================================
 # 六、基差 MA20 拐头（原 basis_ma20_turn.py）
 # =============================================================================
-# 原来用「MA20 三日变化 > 0.5σ」判断拐头，本质是 CHANGE 类型，
-# 阈值 0.5σ 由 60 日滚动标准差动态给出，这里把 σ 倍数固化为参数。
+# 原实现的判定是「**状态转移**」而不是「单点阈值」：
+#
+#     states[i] = 'down' if slope < -th   （th = 0.5σ·√k，σ 取 60 日滚动）
+#     states[i] = 'up'   if slope > +th
+#     states[i] = 'flat' 其它
+#     拐头 ⇔ states[i-1] == 'down' and states[i] in ('up', 'flat')
+#
+# 也就是说：MA20 的三日变化「自下行区间转出」才算拐头。
+# 之前这里写成 `op='>', threshold=0.0`（slope > 0 就算），
+# 丢掉了 0.5σ 自适应阈值，会把大量微弱上行误判成拐头；
+# 另一条 `op='==' threshold=0.0` 是浮点相等，几乎恒假，等于死规则。
+#
+# 正确表达用 CROSS 双序列：序列 A 上穿序列 B
+#     A = basis_ma20_slope  （MA20 的 k 日变化，单位：点）
+#     B = basis_ma20_floor  （下轨 = -th，即 -0.5σ·√k，逐日自适应）
+# 引擎判 `v0 <= c0 and v1 > c1`，即「昨日在下轨下（down）、今日回到下轨上
+# （up 或 flat）」，与原 states 状态转移等价。
+# （边界上原实现是 `<` / `>=`，引擎是 `<=` / `>`，仅 slope 恰等于下轨时不同，
+#  浮点上几乎不重合，可接受。）
+#
+# dir 的 up / flat 只影响文案强度，不是独立报警条件，因此这里只保留一条规则；
+# 保留原来两条会导致同一次拐头触发两次（一次 yellow 一次 info）。
 BASIS_MA20_RULES: Tuple[AlertRule, ...] = (
     AlertRule(
-        key='basis_ma20.turn_up',
-        name='🟡贴水MA20拐头向上',
+        key='basis_ma20.turn',
+        name='🟡贴水MA20拐头',
         indicator='basis_ma20_slope',
-        kind=THRESHOLD, op='>', threshold=0.0,
+        compare_indicator='basis_ma20_floor',
+        kind=CROSS, op='cross_up',
         level=LEVEL_YELLOW, channels=(CH_EMAIL,),
-        note=f'MA{BASIS_MA_WINDOW} {BASIS_SLOPE_DAYS} 日变化超 '
-             f'{BASIS_THR_MULT}σ（σ 取 {BASIS_SIG_WINDOW} 日滚动），'
+        min_samples=20,
+        note=f'MA{BASIS_MA_WINDOW} 的 {BASIS_SLOPE_DAYS} 日变化自下行区间'
+             f'（−{BASIS_THR_MULT}σ 下轨，σ 取 {BASIS_SIG_WINDOW} 日滚动）上穿，'
              f'冷却 {BASIS_COOLDOWN_DAYS} 天',
-    ),
-    AlertRule(
-        key='basis_ma20.turn_flat',
-        name='🟡贴水MA20走平',
-        indicator='basis_ma20_slope',
-        kind=THRESHOLD, op='==', threshold=0.0,
-        level=LEVEL_INFO, channels=(CH_EMAIL,),
-        note='贴水收敛动能衰减，趋势可能转换',
     ),
 )
 
@@ -276,17 +361,102 @@ OI_VOLUME_RULES: Tuple[AlertRule, ...] = (
 # =============================================================================
 # 八、盘中持仓异动（原 oi_intraday.py）
 # =============================================================================
+# 原实现有两层阈值，这里全部参数化：
+#
+#   A. 飞书常规告警（按持仓规模分档，见 OI_INTRADAY_TIER_*）
+#        小档  持仓 <500 张    增幅 ≥50%  **且** 增仓 ≥200 张   （AND）
+#        中档  500~2000 张     增幅 ≥30%                       （单条件）
+#        大档  2000~10000 张   增幅 ≥20%  **或** 增仓 ≥2000 张 （OR）
+#        超大   ≥10000 张      增幅 ≥10%  **或** 增仓 ≥5000 张 （OR）
+#
+#   B. 邮件告警（比飞书更严格，只在真正大异动时发）
+#        增幅 ≥50%  **且** 增仓 ≥1000 张
+#
+# 档位判断（get_tier）属于「分组」不属于「阈值」，留在取数阶段；
+# 每档用哪几条规则由下面的 OI_INTRADAY_TIER_RULES 决定。
+# AND 语义（小档、邮件档）由取数阶段的护栏实现 —— 引擎的 judge_all 是 OR，
+# 用护栏把不满足绝对增仓的合约提前筛掉，等价于 AND，且阈值仍只在本文件。
 OI_INTRADAY_RULES: Tuple[AlertRule, ...] = (
     AlertRule(
-        key='oi_intraday.jump',
-        name='🔴盘中持仓异动',
+        key='oi_intraday.small_pct',
+        name='🔴小合约异动',
+        indicator='oi_chg_pct',
+        kind=THRESHOLD, op='>=', threshold=OI_INTRADAY_TIER_PCT['小'],
+        level=LEVEL_RED, channels=(CH_FEISHU,),
+        note=f'持仓<{OI_INTRADAY_TIER_SPLITS[0]} 张：增幅 ≥'
+             f'{OI_INTRADAY_TIER_PCT["小"]:.0%} 且增仓 ≥'
+             f'{OI_INTRADAY_TIER_ABS["小"]} 张',
+    ),
+    AlertRule(
+        key='oi_intraday.mid_pct',
+        name='🔴中合约异动',
+        indicator='oi_chg_pct',
+        kind=THRESHOLD, op='>=', threshold=OI_INTRADAY_TIER_PCT['中'],
+        level=LEVEL_RED, channels=(CH_FEISHU,),
+        note=f'持仓 {OI_INTRADAY_TIER_SPLITS[0]}~{OI_INTRADAY_TIER_SPLITS[1]} 张：'
+             f'增幅 ≥{OI_INTRADAY_TIER_PCT["中"]:.0%}',
+    ),
+    AlertRule(
+        key='oi_intraday.large_pct',
+        name='🔴大合约异动',
+        indicator='oi_chg_pct',
+        kind=THRESHOLD, op='>=', threshold=OI_INTRADAY_TIER_PCT['大'],
+        level=LEVEL_RED, channels=(CH_FEISHU,),
+        note=f'持仓 {OI_INTRADAY_TIER_SPLITS[1]}~{OI_INTRADAY_TIER_SPLITS[2]} 张：'
+             f'增幅 ≥{OI_INTRADAY_TIER_PCT["大"]:.0%} 或增仓 ≥'
+             f'{OI_INTRADAY_TIER_ABS["大"]} 张',
+    ),
+    AlertRule(
+        key='oi_intraday.large_abs',
+        name='🔴大合约大额增仓',
+        indicator='oi_chg_abs',
+        kind=THRESHOLD, op='>=', threshold=float(OI_INTRADAY_TIER_ABS['大']),
+        level=LEVEL_RED, channels=(CH_FEISHU,),
+        unit='张',
+        note=f'持仓 {OI_INTRADAY_TIER_SPLITS[1]}~{OI_INTRADAY_TIER_SPLITS[2]} 张：'
+             f'单日增仓 ≥{OI_INTRADAY_TIER_ABS["大"]} 张',
+    ),
+    AlertRule(
+        key='oi_intraday.xlarge_pct',
+        name='🔴超大合约异动',
+        indicator='oi_chg_pct',
+        kind=THRESHOLD, op='>=', threshold=OI_INTRADAY_TIER_PCT['超大'],
+        level=LEVEL_RED, channels=(CH_FEISHU,),
+        note=f'持仓 ≥{OI_INTRADAY_TIER_SPLITS[2]} 张：增幅 ≥'
+             f'{OI_INTRADAY_TIER_PCT["超大"]:.0%} 或增仓 ≥'
+             f'{OI_INTRADAY_TIER_ABS["超大"]} 张',
+    ),
+    AlertRule(
+        key='oi_intraday.xlarge_abs',
+        name='🔴超大合约大额增仓',
+        indicator='oi_chg_abs',
+        kind=THRESHOLD, op='>=', threshold=float(OI_INTRADAY_TIER_ABS['超大']),
+        level=LEVEL_RED, channels=(CH_FEISHU,),
+        unit='张',
+        note=f'持仓 ≥{OI_INTRADAY_TIER_SPLITS[2]} 张：'
+             f'单日增仓 ≥{OI_INTRADAY_TIER_ABS["超大"]} 张',
+    ),
+    AlertRule(
+        key='oi_intraday.email',
+        name='🔴盘中持仓异动（邮件）',
         indicator='oi_chg_pct',
         kind=THRESHOLD, op='>=', threshold=OI_INTRADAY_ALERT_PCT,
         level=LEVEL_RED, channels=(CH_EMAIL,),
-        note=f'持仓变化 ≥ {OI_INTRADAY_ALERT_PCT:.0%} 且绝对增仓 ≥ '
+        note=f'增幅 ≥{OI_INTRADAY_ALERT_PCT:.0%} 且增仓 ≥'
              f'{OI_INTRADAY_MIN_CHG} 张，防小基数放大',
     ),
 )
+
+# 档位 → 该档参与判定的规则。中档只有增幅一条；大/超大档是 OR，两条都喂。
+OI_INTRADAY_TIER_RULES: Dict[str, Tuple[AlertRule, ...]] = {
+    '小': (OI_INTRADAY_RULES[0],),
+    '中': (OI_INTRADAY_RULES[1],),
+    '大': (OI_INTRADAY_RULES[2], OI_INTRADAY_RULES[3]),
+    '超大': (OI_INTRADAY_RULES[4], OI_INTRADAY_RULES[5]),
+}
+
+# 邮件档单条规则（B 层），供 oi_intraday.py 二次筛选使用
+OI_INTRADAY_EMAIL_RULE = OI_INTRADAY_RULES[6]
 
 
 # =============================================================================
@@ -331,17 +501,9 @@ BOTTOM_REDLINE_RULES: Tuple[AlertRule, ...] = (
     AlertRule(key='bottom.vix_1000', name='VIX1000红线', indicator='vix_1000',
               kind=THRESHOLD, op='>=', threshold=35.0,
               level=LEVEL_RED, channels=(CH_EMAIL,),
-              note='中证1000QVIX 35（该指数 2026-03-13 起停编，仅历史参考）'),
-    AlertRule(key='bottom.vix_500', name='VIX500红线', indicator='vix_500',
-              kind=THRESHOLD, op='>=', threshold=31.0,
-              level=LEVEL_RED, channels=(CH_EMAIL,),
-              note='982 日（2022-09 起）95% 分位'),
-    AlertRule(key='bottom.vix_cyb', name='VIX创业板红线', indicator='vix_cyb',
-              kind=THRESHOLD, op='>=', threshold=42.0,
-              level=LEVEL_RED, channels=(CH_EMAIL,),
-              note='982 日 95% 分位'),
+              note='中证1000 MO 自算 VIX（2026-10-23 起弃 QVIX，统一自算口径）'),
     AlertRule(key='bottom.margin', name='融资余额枯竭', indicator='margin_balance',
-              kind=THRESHOLD, op='<', threshold=2.45,
+              kind=THRESHOLD, op='<=', threshold=2.45,
               level=LEVEL_RED, channels=(CH_EMAIL,),
               unit='万亿',
               note='杠杆资金抛压衰竭'),
@@ -355,6 +517,25 @@ BOTTOM_REDLINE_RULES: Tuple[AlertRule, ...] = (
               level=LEVEL_RED, channels=(CH_EMAIL,),
               unit='天',
               note='连续 3 天以上恐慌抛售'),
+    # ---- 以下 4 条为复合条件，引擎只能表达单阈值分支，实际判定仍在
+    #      bottom_redline.py 的 calc_indicator_XX 内（AND / OR 语义）----
+    AlertRule(key='bottom.volume_combo', name='缩量后放量', indicator='volume_ratio_5d',
+              kind=THRESHOLD, op='>=', threshold=1.3,
+              level=LEVEL_RED, channels=(CH_EMAIL,),
+              note='复合AND：近10日曾缩量<0.7 且 最新放量>1.3 且 近期跌>1%，见 calc_indicator_05_volume'),
+    AlertRule(key='bottom.large_small_ratio', name='大盘小盘极端分化', indicator='large_small_percentile',
+              kind=THRESHOLD, op='>=', threshold=95.0,
+              level=LEVEL_RED, channels=(CH_EMAIL,),
+              note='复合OR：分位≥95 或 ≤5，见 calc_indicator_06_large_small_ratio'),
+    AlertRule(key='bottom.cpi', name='CPI通缩', indicator='cpi_yoy',
+              kind=THRESHOLD, op='<', threshold=0.0,
+              level=LEVEL_RED, channels=(CH_EMAIL,),
+              unit='%',
+              note='复合判定（同比转负 / 连续回落），见 calc_indicator_07_cpi'),
+    AlertRule(key='bottom.emotion', name='情绪极端悲观', indicator='emotion_index',
+              kind=THRESHOLD, op='<', threshold=3.0,
+              level=LEVEL_RED, channels=(CH_EMAIL,),
+              note='韭圈情绪指数 < 3（无公开API，当前恒无数据）'),
     AlertRule(key='bottom.im_support', name='IM支撑破位', indicator='im_close',
               kind=THRESHOLD, op='<=', threshold=6600.0,
               level=LEVEL_RED, channels=(CH_EMAIL,),
@@ -365,22 +546,15 @@ BOTTOM_REDLINE_RULES: Tuple[AlertRule, ...] = (
               level=LEVEL_RED, channels=(CH_EMAIL,),
               unit='点',
               note='科创板成立以来重要支撑'),
-    AlertRule(key='bottom.emotion', name='情绪极端悲观', indicator='emotion_index',
-              kind=THRESHOLD, op='<', threshold=3.0,
-              level=LEVEL_RED, channels=(CH_EMAIL,),
-              note='韭圈情绪指数 < 3'),
     AlertRule(key='bottom.pcr_count', name='PCR全面恐慌', indicator='pcr_trigger_count',
               kind=THRESHOLD, op='>=', threshold=3.0,
               level=LEVEL_RED, channels=(CH_EMAIL,),
               note='5 个指数中 3 个 PCR 超阈值，全面恐慌对冲'),
-    AlertRule(key='bottom.volume_shrink', name='地量', indicator='volume_ratio_5d',
-              kind=THRESHOLD, op='<=', threshold=0.7,
+    AlertRule(key='bottom.tech_sector', name='科技板块超跌', indicator='tech_pct_20d',
+              kind=THRESHOLD, op='<', threshold=-10.0,
               level=LEVEL_RED, channels=(CH_EMAIL,),
-              note='成交量萎缩至 5 日均量 70% 以下'),
-    AlertRule(key='bottom.volume_expand', name='放量换手', indicator='volume_ratio_5d',
-              kind=THRESHOLD, op='>=', threshold=1.3,
-              level=LEVEL_INFO, channels=(CH_EMAIL,),
-              note='成交量放大至 5 日均量 130% 以上'),
+              unit='%',
+              note='半导体ETF 20日跌幅超 10%，科技杀跌到位'),
 )
 
 

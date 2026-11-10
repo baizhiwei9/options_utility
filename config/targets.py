@@ -73,7 +73,9 @@ DISPLAY_NAME = {
 MONITOR_TARGETS = ['300ETF', '500ETF', '创业板ETF', '科创50ETF', '中证1000']
 
 # ========== 报警阈值 ==========
-OI_PCR_THRESHOLD = 1.5      # 全合约持仓量 PCR 报警阈值（严格大于）
+# 2026-11-10：OI_PCR_THRESHOLD 已移除。本文件只负责「标的配置」，
+# 阈值统一由 alert/rules.py 定义（rules.OI_PCR_THRESHOLD = 1.5），
+# 业务侧一律 from alert.rules import，避免阈值双源。
 
 
 def targets_csv():

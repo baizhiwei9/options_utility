@@ -60,6 +60,7 @@ import json
 import datetime
 
 import numpy as np
+import opt_store as _store  # 统一存储层：历史数据落 data/options.db
 
 SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
 PROJECT_DIR = os.path.dirname(SCRIPT_DIR)
@@ -71,6 +72,10 @@ STATE_FILE = os.path.join(OUTPUT_DIR, 'basis_ma20_state.json')
 sys.path.insert(0, '/Coze/Drive/蓁宝/所有对话/主对话')
 from email_sender import send_email  # noqa: E402
 from alert.trigger import trigger  # noqa: E402
+
+# 判定内核统一走 alert 引擎：阈值、级别、口径文案全部来自 alert/rules.py
+from alert.engine import judge_all  # noqa: E402
+from alert.rules import BASIS_MA20_RULES  # noqa: E402
 
 # 监控品种（只做三个：沪深300 / 中证500 / 中证1000）
 TURN_SYMBOLS = ['IF', 'IC', 'IM']
@@ -106,11 +111,9 @@ def load_basis_series(symbol):
     Returns:
         (dates, depths, pcts, spot) —— 按日期升序；depths 为贴水点数（正=贴水）
     """
-    path = os.path.join(HISTORY_DIR, f'{symbol}_basis_history.json')
-    if not os.path.exists(path):
+    raw = _store.load_series(_store.SERIES_BASIS, symbol)
+    if not raw:
         return [], [], [], []
-    with open(path) as f:
-        raw = json.load(f)
 
     dates, depths, pcts, spots = [], [], [], []
     for d in sorted(raw.keys()):
@@ -189,20 +192,69 @@ def detect_turns(dates, states):
     return out
 
 
-def _load_state():
-    if not os.path.exists(STATE_FILE):
-        return {}
+def _to_date(s):
+    """'YYYYMMDD' → date；失败返回 None。"""
     try:
-        with open(STATE_FILE) as f:
-            return json.load(f)
+        return datetime.datetime.strptime(s, '%Y%m%d').date()
+    except Exception:
+        return None
+
+
+def evaluate(dates, slopes, ths, start_j, idx):
+    """用统一引擎判定区间 [start_j, idx] 内的贴水 MA20 拐头。
+
+    判定逻辑全部由 alert.engine 提供，本函数只负责**组装两条序列**：
+
+        序列 A  basis_ma20_slope = MA20 的 k 日变化（点）
+        序列 B  basis_ma20_floor = 下轨 = -0.5σ·√k（逐日自适应）
+
+    A 上穿 B ⇔ 昨日 slope 在下轨之下（state=down）、今日回到下轨之上
+    （state=up/flat），即原 `detect_turns` 的「下行 → 上行/走平」。
+    阈值 0.5σ / σ 窗口 / 冷却天数全部来自 alert/rules.py 的 BASIS_MA20_RULES，
+    本脚本不再写任何阈值。
+
+    为什么循环判多次而不是只判最后两点：原实现支持「上次运行到今日之间漏跑
+    （节假日/故障）」时，把区间内最后一次拐头补捕上来。这里对区间内每个候选 j
+    各调一次引擎，取最后一次触发的 j，语义与原实现一致。
+
+    注意 today 传的是 `dates[j]` 而非真实今天：补捕的是历史某日的拐头事件，
+    传真实 today 会被引擎的 max_stale_days 当成「陈旧数据」跳过。
+
+    Returns:
+        (turn_idx, summary) —— turn_idx 为区间内最后一次拐头的位置，None 表示
+        无拐头；summary 为对应的引擎判定结果（无拐头时 None）。
+    """
+    turn_idx, last_summary = None, None
+    for j in range(max(1, start_j), idx + 1):
+        vals = (slopes[j - 1], slopes[j], ths[j - 1], ths[j])
+        if any(v is None or (isinstance(v, float) and np.isnan(v)) for v in vals):
+            continue
+        today = _to_date(dates[j])
+        if today is None:
+            continue
+        summary = judge_all(BASIS_MA20_RULES, {
+            'basis_ma20_slope': [(dates[j - 1], float(slopes[j - 1])),
+                                 (dates[j], float(slopes[j]))],
+            'basis_ma20_floor': [(dates[j - 1], -float(ths[j - 1])),
+                                 (dates[j], -float(ths[j]))],
+        }, today=today)
+        if summary.fired:
+            turn_idx, last_summary = j, summary
+    return turn_idx, last_summary
+
+
+def _load_state():
+    """加载运行状态。2026-11-10 起存 data/options.db 的 state_store。"""
+    try:
+        return _store.load_state('basis_ma20', 'state', {})
     except Exception:
         return {}
 
 
 def _save_state(state):
+    """保存运行状态。"""
     try:
-        with open(STATE_FILE, 'w', encoding='utf-8') as f:
-            json.dump(state, f, ensure_ascii=False, indent=2)
+        _store.save_state('basis_ma20', 'state', state)
     except Exception as e:
         print(f'  ⚠️ 状态保存失败: {e}')
 
@@ -290,11 +342,10 @@ def analyze(notify=False, force=False, verbose=True, update_state=True):
                     prev_idx = j
                     break
         start_j = (prev_idx + 1) if (prev_idx is not None and prev_idx < idx) else idx
-        turn_idx = None
-        if cur_dir in ('up', 'flat'):
-            for j in range(max(1, start_j), idx + 1):
-                if states[j - 1] == 'down' and states[j] in ('up', 'flat'):
-                    turn_idx = j
+        # 拐头判定走统一引擎：0.5σ 自适应下轨来自 alert/rules.py 的 BASIS_MA20_RULES。
+        # 引擎的 cross_up 判「昨日 slope 在下轨下、今日回到下轨上」，与原
+        # states[j-1]=='down' and states[j] in ('up','flat') 等价。
+        turn_idx, turn_summary = evaluate(dates, slopes, ths, start_j, idx)
         is_turn = turn_idx is not None
         turn_date = dates[turn_idx] if turn_idx is not None else None
         prev_dir_disp = states[(turn_idx - 1) if turn_idx is not None else (idx - 1)]
@@ -334,6 +385,9 @@ def analyze(notify=False, force=False, verbose=True, update_state=True):
             'prev_dir_label': DIR_LABEL[prev_dir_disp],
             'is_turn': bool(is_turn),
             'turn_date': turn_date,
+            # 引擎给的判定口径文案（含上下轨数值），用于邮件/日志留痕
+            'detail': (turn_summary.fired[0].detail
+                       if (turn_summary is not None and turn_summary.fired) else None),
             'blocked': blocked,
             'triggered': bool(is_turn and not blocked),
             'lo20': lo_now,
@@ -370,6 +424,8 @@ def analyze(notify=False, force=False, verbose=True, update_state=True):
             flag = ''
             if it['triggered']:
                 flag = f'  🟢 拐头提醒（{it["prev_dir_label"]} → {it["dir_label"]}）'
+                if it.get('detail'):
+                    flag += f' | {it["detail"]}'
             elif it['is_turn'] and it['blocked']:
                 flag = f'  ⏸ 拐头但{it["blocked"]}'
             print(f'  {sym} {it["name"]}: 贴水 {it["depth"]:.1f}点({it["pct"]:.3f}%) '

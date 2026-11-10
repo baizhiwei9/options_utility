@@ -113,22 +113,59 @@ EMAIL_CONFIG = {
     'receiver': AGENT_EMAIL,  # 主人邮箱
 }
 
+from alert.engine import judge_all  # noqa: E402
+from alert.rules import BOTTOM_REDLINE_RULES  # noqa: E402
+
+# 规则索引：阈值统一从 alert/rules.py 取，杜绝本文件与 rules.py 双源
+_BOTTOM_RULE = {r.key: r for r in BOTTOM_REDLINE_RULES}
+
 # ============ 红线阈值配置（可动态调整）============
 # 阈值来源：基于历史底部区域（2022.10、2024.02、2024.09等）的统计回测
+# 2026-11-10：阈值一律从 alert/rules.py 的 BOTTOM_REDLINE_RULES 派生，
+# 这里只做「键名 → 规则 key」的映射，不再保留独立字面量。
+# 原 vix_500 / vix_cyb 两条是死配置（脚本从未计算，grep 0 次使用），已删除。
 THRESHOLDS = {
-    'vix_1000': 35,           # 中证1000QVIX红线（该指数2026-03-13起停编，仅历史值参考）
-    'vix_500': 31,            # 中证500QVIX红线：982日(2022-09起)95%分位
-    'vix_cyb': 42,            # 创业板QVIX红线：982日(2022-09起)95%分位
-    'margin_balance': 2.45,   # 融资余额万亿阈值：低于此值杠杆资金抛压衰竭
-    'im_basis': 160,          # IM贴水点数：深度贴水反映空头恐慌
-    'consecutive_down': 3,    # 连续大阴线天数：连续3天以上恐慌抛售
-    'im_support': 6600,       # IM支撑点位：历史多次验证的关键位
-    'kc50_support': 1250,     # 科创50支撑点位：科创板成立以来的重要支撑
-    'emotion_index': 3,       # 韭圈情绪指数阈值：<3为极端悲观
-    'pcr_trigger_count': 3,   # PCR触发数量（5个指数中3个）：全面恐慌对冲
-    'volume_shrink_ratio': 0.7,  # 缩量比例（相对5日均量）：地量标志
-    'volume_expand_ratio': 1.3, # 放量比例：放量换手标志
+    'vix_1000': _BOTTOM_RULE['bottom.vix_1000'].threshold,
+    'margin_balance': _BOTTOM_RULE['bottom.margin'].threshold,
+    'im_basis': _BOTTOM_RULE['bottom.im_basis'].threshold,
+    'consecutive_down': _BOTTOM_RULE['bottom.consecutive_down'].threshold,
+    'im_support': _BOTTOM_RULE['bottom.im_support'].threshold,
+    'kc50_support': _BOTTOM_RULE['bottom.kc50'].threshold,
+    'emotion_index': _BOTTOM_RULE['bottom.emotion'].threshold,
+    'pcr_trigger_count': _BOTTOM_RULE['bottom.pcr_count'].threshold,
+    'tech_sector_pct': _BOTTOM_RULE['bottom.tech_sector'].threshold,
+    'large_small_high': _BOTTOM_RULE['bottom.large_small_ratio'].threshold,
+    # 成交量是复合 AND 条件，两个分支阈值仍需本地保留
+    'volume_shrink_ratio': 0.7,
+    'volume_expand_ratio': _BOTTOM_RULE['bottom.volume_combo'].threshold,
 }
+
+
+def _judge_one(rule_key, value, trade_date=None):
+    """用统一引擎判定单阈值红线。
+
+    返回 (triggered, detail)。value 为 None 时直接判 False（数据缺失）。
+    复合条件（成交量 / 大小盘比 / CPI）无法用单阈值规则表达，不走本函数。
+    """
+    if value is None:
+        return False, ''
+    rule = _BOTTOM_RULE.get(rule_key)
+    if rule is None:
+        return False, ''
+    if trade_date is None:
+        td_obj = datetime.now().date()
+    elif isinstance(trade_date, str):
+        td_obj = datetime.strptime(str(trade_date).replace('-', ''), '%Y%m%d').date()
+    else:
+        td_obj = trade_date
+    try:
+        summ = judge_all((rule,),
+                         {rule.indicator: [(td_obj.strftime('%Y%m%d'), float(value))]},
+                         today=td_obj)
+        fired = summ.fired
+        return bool(fired), (fired[0].detail if fired else '')
+    except Exception:
+        return False, ''
 
 # ============ ETF 代码 → 中文简称（仅用于展示，不参与计算）============
 # 2026-10-22 新增：原来 PCR 明细里直接印 ETF 代码（510300/510310+159919），
@@ -167,9 +204,10 @@ os.environ.setdefault('LARK_CLI_NO_PROXY', '1')
 # 2026-10-23：波动率口径由「QVIX 现成值」整体切换为 data_hub 期权链自算 VIX
 #   （data_hub/collectors/vix_history.py，CBOE 分钟到期法），
 #   本脚本不再自行直连 akshare 取 QVIX，只 import 统一接口。
-DATAHUB_SCRIPTS_DIR = '/Coze/Drive/蓁宝/所有对话/主对话/codeact/scripts'
-if DATAHUB_SCRIPTS_DIR not in sys.path:
-    sys.path.insert(0, DATAHUB_SCRIPTS_DIR)
+# 2026-11-10：原此处硬编码 '/Coze/Drive/蓁宝/.../codeact/scripts' 并 insert(0)，
+# 该目录已不存在，且会把 codeact/scripts 的旧版副本抢到 sys.path[0]，
+# 导致下面的 yangkangping_vix_alerts 命中旧代码。父目录
+# /Coze/Drive/dataHub_三级体系（data_hub 所在）已在第 57 行注入，此处直接 import。
 try:
     from data_hub.collectors.vix_history import (
         get_all_vix_percentiles as dh_get_all_vix_percentiles,
@@ -190,14 +228,22 @@ VIX_TIME_BUDGET = int(os.environ.get('VIX_TIME_BUDGET', '150'))
 # ============ 自算VIX 私聊告警（≥30 + 850日均线穿越）============
 # 2026-10-23 新增：共享库 yangkangping_vix_alerts.py（与杨康平顶底判断脚本共用，
 # 同一交易日同一信号只推一次，落独立 state 文件，不影响原有群推送/红线/邮件）。
+# 2026-11-10：优先用 options 内改造版（已接入 alert.engine 统一判定），
+# 原 import yangkangping_vix_alerts 会命中 codeact/scripts 的旧版副本，
+# 导致 VIX 阈值/MA850 穿越的引擎改造在生产链路完全不生效。
 try:
-    import yangkangping_vix_alerts as vix_alerts_mod
+    from alert.tasks import vix_alerts as vix_alerts_mod
     VIX_ALERTS_AVAILABLE = True
     VIX_ALERTS_ERR = ''
 except Exception as _va_err:  # noqa
-    VIX_ALERTS_AVAILABLE = False
-    VIX_ALERTS_ERR = f'{type(_va_err).__name__}: {_va_err}'
-    print(f"⚠️ 自算VIX 私聊告警模块不可用: {VIX_ALERTS_ERR}")
+    try:
+        import yangkangping_vix_alerts as vix_alerts_mod  # 兜底：旧路径（仅当 options 版不可用时）
+        VIX_ALERTS_AVAILABLE = True
+        VIX_ALERTS_ERR = ''
+    except Exception as _va_err2:  # noqa
+        VIX_ALERTS_AVAILABLE = False
+        VIX_ALERTS_ERR = f'{type(_va_err).__name__}: {_va_err} / fallback {type(_va_err2).__name__}: {_va_err2}'
+        print(f"⚠️ 自算VIX 私聊告警模块不可用: {VIX_ALERTS_ERR}")
 
 # dry-run：只打印不实发邮件（测试用，不污染收件箱）
 DRY_RUN = ('--dry-run' in sys.argv) or (os.environ.get('BOTTOM_DRY_RUN', '') == '1')
@@ -620,9 +666,10 @@ def calc_indicator_01_vix(vix_map):
                 'info': '⚠️ 中证1000（MO）自算 VIX 数据缺失'}
 
     vix_val = float(vix_val)
+    triggered, _ = _judge_one('bottom.vix_1000', vix_val)
     return {
         'value': vix_val,
-        'triggered': vix_val >= threshold,
+        'triggered': triggered,
         'source': '中证1000(MO自算)',
         'info': f"当前 {vix_val:.1f}（中证1000 MO 自算VIX），阈值 {threshold}"
     }
@@ -669,7 +716,7 @@ def calc_indicator_02_margin(sse_data, szse_data):
                      f"（沪市 {sse_margin_yi/10000:.2f}万亿，深市缺失，不估算合计）"),
         }
 
-    triggered = total_wan_yi <= THRESHOLDS['margin_balance']
+    triggered, _ = _judge_one('bottom.margin', total_wan_yi)
 
     return {
         'value': total_wan_yi,
@@ -712,7 +759,7 @@ def calc_indicator_03_im_basis(index_data, futures_data):
     discount = -basis  # 正值表示贴水深度
     
     # 判断：贴水 ≥ 160点 触发红线
-    triggered = discount >= THRESHOLDS['im_basis']
+    triggered, _ = _judge_one('bottom.im_basis', discount)
     
     return {
         'value': discount,
@@ -766,7 +813,7 @@ def calc_indicator_04_consecutive_down(index_data):
     else:
         non_first_max = False
     
-    triggered = down_days >= THRESHOLDS['consecutive_down']
+    triggered, _ = _judge_one('bottom.consecutive_down', down_days)
     
     magnitudes_str = " → ".join([f"{m:.1f}%" for m in reversed(down_magnitudes)])
     info = f"连续 {down_days} 根阴线: {magnitudes_str}"
@@ -812,6 +859,7 @@ def calc_indicator_05_volume(index_data):
     recent_big_drop = (recent_10['pct'] < -1.0).any()
     latest_expand = latest_ratio > THRESHOLDS['volume_expand_ratio']
     
+    # 复合 AND（缩量 + 放量 + 大跌），单阈值规则无法表达，保留本地判定
     triggered = had_shrink and latest_expand and recent_big_drop
     
     return {
@@ -857,6 +905,7 @@ def calc_indicator_06_large_small_ratio(hs300_data, zz1000_data):
     percentile = (hist['ratio'] < current_ratio).mean() * 100
     
     # 极端高位或低位触发
+    # 复合 OR（高分位 或 低分位），单阈值规则无法表达，保留本地判定
     triggered = bool(percentile >= 95 or percentile <= 5)
 
     # 2026-10-22 修复：原来文案无条件拼「（极端高位/低位触发）」，
@@ -935,7 +984,7 @@ def calc_indicator_08_im_support(index_data):
     
     latest_close = float(index_data.iloc[-1]['close'])
     # 判断：收盘 ≤ 6600 触发红线
-    triggered = latest_close <= THRESHOLDS['im_support']
+    triggered, _ = _judge_one('bottom.im_support', latest_close)
     
     return {
         'value': latest_close,
@@ -957,7 +1006,7 @@ def calc_indicator_09_kc50_support(kc50_data):
     
     latest_close = float(kc50_data.iloc[-1]['close'])
     # 判断：收盘 ≤ 1250 触发红线
-    triggered = latest_close <= THRESHOLDS['kc50_support']
+    triggered, _ = _judge_one('bottom.kc50', latest_close)
     
     return {
         'value': latest_close,
@@ -1170,7 +1219,7 @@ def calc_indicator_11_pcr(sse_stats, szse_stats, pcr_excl_current=None):
                 high_pcr_items.append(f"{display_label}(量{data['vol_pcr']:.2f})")
     
     # 判断：3个以上PCR偏高触发红线
-    triggered = bool(high_pcr_count >= THRESHOLDS['pcr_trigger_count'])
+    triggered, _ = _judge_one('bottom.pcr_count', high_pcr_count)
 
     # 2026-10-22 新增：缺失项计数，用于「缺失不静默」
     missing_vol = [k for k, v in pcr_data.items() if v.get('vol_pcr') is None]
@@ -1241,8 +1290,8 @@ def calc_indicator_12_tech_sector(semi_data=None):
     else:
         pct_5d = 0
     
-    # 判断：20日跌幅 > 10% 触发红线
-    triggered = pct_20d < -10
+    # 判断：20日跌幅超阈值触发红线（阈值见 rules.bottom.tech_sector）
+    triggered, _ = _judge_one('bottom.tech_sector', pct_20d)
     
     return {
         'value': latest_close,

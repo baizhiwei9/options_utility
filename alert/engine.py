@@ -642,9 +642,30 @@ class IdempotentLock:
     def __init__(self, path: str, keep_days: int = 30) -> None:
         self.path = path
         self.keep_days = keep_days
+        # 2026-11-10 起锁数据统一存 data/options.db 的 state_store。
+        # path 只用来 derive 一个稳定锁名（basename），不再实际读写文件；
+        # DB 不可用时自动回退原 JSON 文件，保证推送幂等不因存储层故障失效。
+        self.key = 'lock:' + os.path.basename(str(path)).replace('.json', '')
         self._data: Dict[str, Dict[str, Any]] = self._load()
 
+    @staticmethod
+    def _db():
+        """延迟导入统一存储层；不可用返回 None（触发文件兜底）。"""
+        try:
+            import opt_store
+            return opt_store
+        except Exception:
+            return None
+
     def _load(self) -> Dict[str, Dict[str, Any]]:
+        db = self._db()
+        if db is not None:
+            try:
+                data = db.load_state('engine', self.key, {})
+                if isinstance(data, dict):
+                    return data
+            except Exception:
+                pass
         if not os.path.exists(self.path):
             return {}
         try:
@@ -655,6 +676,13 @@ class IdempotentLock:
             return {}
 
     def _save(self) -> None:
+        db = self._db()
+        if db is not None:
+            try:
+                db.save_state('engine', self.key, self._data)
+                return
+            except Exception:
+                pass
         os.makedirs(os.path.dirname(os.path.abspath(self.path)), exist_ok=True)
         tmp = self.path + '.tmp'
         with open(tmp, 'w', encoding='utf-8') as f:

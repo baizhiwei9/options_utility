@@ -39,6 +39,7 @@ for _sub in (_OPT_ROOT, _opt_os.path.join(_OPT_ROOT, 'calc'), _opt_os.path.join(
 import os
 import sys
 import json
+import opt_store as _store  # 统一存储层：历史数据落 data/options.db
 import datetime
 
 SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
@@ -55,6 +56,10 @@ from trading_day import check_trading_day as is_trading_day
 sys.path.insert(0, '/Coze/Drive/蓁宝/所有对话/主对话')
 from email_sender import send_email  # noqa: E402
 from alert.trigger import trigger  # noqa: E402
+
+# 判定内核统一走 alert 引擎：阈值、级别、口径文案全部来自 alert/rules.py
+from alert.engine import judge_all  # noqa: E402
+from alert.rules import BASIS_INTRADAY_RULES  # noqa: E402
 
 OUTPUT_DIR = os.path.join(PROJECT_DIR, 'outputs')
 ALERTED_FILE = os.path.join(OUTPUT_DIR, 'basis_alerted.json')
@@ -75,28 +80,20 @@ EMAIL_CONFIG = {
 
 
 def load_alerted(today_str):
-    """加载今日已告警记录"""
-    if not os.path.exists(ALERTED_FILE):
-        return {}
+    """加载今日已告警记录。2026-11-10 起存 data/options.db 的 state_store。"""
     try:
-        with open(ALERTED_FILE) as f:
-            data = json.load(f)
+        data = _store.load_state('basis_intraday', 'alerted', {})
         return data.get(today_str, {})
-    except:
+    except Exception:
         return {}
 
 
 def save_alerted(today_str, alerted):
-    """保存告警记录"""
+    """保存告警记录。"""
     try:
-        if os.path.exists(ALERTED_FILE):
-            with open(ALERTED_FILE) as f:
-                data = json.load(f)
-        else:
-            data = {}
+        data = _store.load_state('basis_intraday', 'alerted', {})
         data[today_str] = alerted
-        with open(ALERTED_FILE, 'w') as f:
-            json.dump(data, f, ensure_ascii=False, indent=2)
+        _store.save_state('basis_intraday', 'alerted', data)
     except Exception as e:
         print(f'  [WARN] 保存告警记录失败: {e}')
 
@@ -175,6 +172,29 @@ def send_email_alert(alerts, today_str, run_time_str):
     )['ok']
 
 
+def evaluate(pctile, today):
+    """用统一引擎判定基差分位极值。
+
+    两条规则共用同一个分位序列（BASIS_INTRADAY_RULES）：
+
+        基差分位 >= 80 → 🟡偏高（期货深度贴水，情绪偏谨慎）
+        基差分位 <= 20 → 🟡偏低（期货升水，情绪偏乐观）
+
+    与 calc/basis.py `check_basis_extreme` 的等价性：
+        后者判「当前基差 ≤ 历史 20% 分位数值」，等价于
+        「(arr < cur) / N ≤ 20%」，即分位 ≤ 20，与本引擎口径一致
+        （仅边界等号与 np.percentile 插值方式有微小差别，不影响实盘触发）。
+        改由引擎判定，是为了让阈值只存在于 alert/rules.py 一处，
+        避免 basis.py 的 LOW/HIGH_PERCENTILE 与 rules.py 各说一套。
+
+    返回 Summary 或 None（分位缺失时）。
+    """
+    if pctile is None:
+        return None
+    asof = today.strftime('%Y%m%d')
+    return judge_all(BASIS_INTRADAY_RULES, {'basis_pct': [(asof, pctile)]}, today=today)
+
+
 def run():
     now = datetime.datetime.now()
     today_str = now.strftime('%Y%m%d')
@@ -222,14 +242,20 @@ def run():
         current_basis_abs = latest['basis_abs']
         
         # 检查极值（用绝对基差计算分位）
-        is_extreme, direction, pctile, low_th, high_th, days = check_basis_extreme(
+        # 分位/阈值数值仍由 calc/basis.py 算，但「是否极值」改由统一引擎判定
+        _extreme_old, _dir_old, pctile, low_th, high_th, days = check_basis_extreme(
             sym, current_basis_abs
         )
-        
+        summary = evaluate(pctile, now.date())
+        fired = summary.fired if summary else []
+        direction = None
+        if fired:
+            direction = 'high' if fired[0].rule.key.endswith('high') else 'low'
+
         print(f'  [{source}] 基差={current_basis_abs:.3f} | 分位={pctile}% | '
               f'阈值=[{low_th:.3f}, {high_th:.3f}] | {days}天')
-        
-        if not is_extreme:
+
+        if not fired:
             print(f'  ✅ 正常区间')
             continue
         
@@ -260,7 +286,7 @@ def run():
         }
         
         dir_label = '📉偏低' if direction == 'low' else '📈偏高'
-        print(f'  🚨 触发极值: {dir_label} (分位{pctile}%)')
+        print(f'  🚨 触发极值: {dir_label} | {fired[0].detail}')
     
     print(f'\n{"="*50}')
     print(f'数据获取: {success_count}/{len(MONITOR_SYMBOLS)} 品种成功')

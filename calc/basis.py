@@ -28,6 +28,8 @@ import datetime
 import numpy as np
 from collections import defaultdict
 
+import opt_store as _store  # 统一存储层：历史数据落 data/options.db
+
 # ========== 监控品种配置 ==========
 BASIS_TARGETS = {
     # 股指期货
@@ -108,32 +110,29 @@ LOOKBACK_DAYS = 250    # 历史回看天数
 
 
 def _history_file(symbol):
+    """历史文件路径（已废弃：数据改存 data/options.db，仅保留给旧调用方）。"""
     return os.path.join(HISTORY_DIR, f'{symbol}_basis_history.json')
 
 
 def load_basis_history(symbol):
-    """加载基差历史数据"""
-    fpath = _history_file(symbol)
-    if not os.path.exists(fpath):
-        return {}
-    try:
-        with open(fpath) as f:
-            return json.load(f)
-    except:
-        return {}
+    """加载基差历史数据，返回 {date: {...}}。
+
+    2026-11-10 从 JSON 文件改为 SQLite。原来每个标的一个
+    outputs/basis_history/{symbol}_basis_history.json，迁移时容易整目录漏搬
+    （表现为"目录存在但为空"，报警任务静默跑不出结果）；
+    现在统一落 data/options.db，迁移只需带走一个文件。
+    """
+    return _store.load_series(_store.SERIES_BASIS, symbol)
 
 
 def save_basis_history(symbol, history):
-    """保存基差历史数据"""
-    fpath = _history_file(symbol)
-    # 按日期排序，只保留最近LOOKBACK_DAYS天
+    """保存基差历史数据，只保留最近 LOOKBACK_DAYS 天。"""
     sorted_dates = sorted(history.keys())
     if len(sorted_dates) > LOOKBACK_DAYS:
         trimmed = {d: history[d] for d in sorted_dates[-LOOKBACK_DAYS:]}
     else:
         trimmed = history
-    with open(fpath, 'w') as f:
-        json.dump(trimmed, f, ensure_ascii=False, indent=2)
+    _store.save_series(_store.SERIES_BASIS, symbol, trimmed)
 
 
 def calc_basis(futures_price, spot_price, category='股指', nominal_duration=None, coupon_rate=None):

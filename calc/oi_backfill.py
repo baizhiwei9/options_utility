@@ -34,6 +34,7 @@ import json
 import time
 import datetime
 from collections import defaultdict
+import opt_store as _store  # 统一存储层：历史数据落 data/options.db
 
 SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
 PROJECT_DIR = os.path.dirname(SCRIPT_DIR)
@@ -198,47 +199,36 @@ def backfill_target(target_name, n_days=20):
     print(f"  过滤后: {len(daily_filtered)} 条")
     
     # 按日期分组
-    history = defaultdict(dict)  # {date: {key: oi}}
-    
+    history = defaultdict(dict)      # {date: {key: oi}}
+    vol_history = defaultdict(dict)  # {date: {key: {volume, oi}}}
+
     for _, row in daily_filtered.iterrows():
         ts_code = row['ts_code']
         trade_date = str(row['trade_date'])
         oi = int(row.get('oi', 0) or 0)
-        
+        vol = int(row.get('vol', 0) or 0)
+
         # 找到合约基本信息
         basic = next((c for c in contracts_basic if c['ts_code'] == ts_code), None)
         if not basic:
             continue
-        
+
         key = f"{basic['maturity_date']}_{basic['call_put']}_{basic['exercise_price']}"
         history[trade_date][key] = oi
-    
-    # 5. 合并到现有历史文件
-    hist_file = os.path.join(OI_HISTORY_DIR, f'{target_name}_oi_history.json')
-    if os.path.exists(hist_file):
-        with open(hist_file, 'r') as f:
-            existing = json.load(f)
-    else:
-        existing = {}
-    
-    # 合并
-    for date, ois in history.items():
-        if date not in existing:
-            existing[date] = {}
-        existing[date].update(ois)
-    
-    # 只保留最近40天
-    all_dates = sorted(existing.keys(), reverse=True)
-    if len(all_dates) > 40:
-        for d in all_dates[40:]:
-            del existing[d]
-    
-    with open(hist_file, 'w') as f:
-        json.dump(existing, f, ensure_ascii=False, indent=2)
-    
-    print(f"  回填完成: {len(history)} 天数据已写入 {hist_file}")
-    print(f"  历史文件现有 {len(existing)} 天数据")
-    
+        # 成交量和 OI 来自同一次 opt_daily 拉取，顺手写 volume_history，
+        # 避免为补成交量再单独消耗一次 Tushare 额度
+        vol_history[trade_date][key] = {'volume': vol, 'oi': oi}
+
+    # 5. 合并进 data/options.db（2026-11-10 起不再写 JSON 文件）
+    _store.upsert_days(_store.SERIES_OI, target_name, history)
+    _store.trim_series(_store.SERIES_OI, target_name, 40)
+    _store.upsert_days(_store.SERIES_VOLUME, target_name, vol_history)
+    _store.trim_series(_store.SERIES_VOLUME, target_name, 40)
+    existing = _store.load_series(_store.SERIES_OI, target_name)
+
+    print(f"  回填完成: {len(history)} 天 OI + {len(vol_history)} 天成交量已入库 {_store.DB_PATH}")
+    print(f"  库内现有 {len(existing)} 天数据")
+
     # 打印每天合约数
     for d in sorted(history.keys()):
         print(f"    {d}: {len(history[d])} 个合约")
