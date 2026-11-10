@@ -83,6 +83,22 @@ def build_hr():
     return {"tag": "hr"}
 
 
+def build_field(tag, content, title=None):
+    """构建带标题的字段块。
+
+    ⚠️ 2026-11-10 补：全工程仅 build_risk_forecast_card() 第 2861 行用到本函数，
+    但从未定义过（历史 bug：带两融数据的旧单卡路径必抛 NameError）。
+    新版多卡入口 build_risk_forecast_cards() 不经过这段，所以长期未暴露。
+
+    Args:
+        tag: 文本标签（'lark_md' / 'plain_text'）
+        content: 正文
+        title: 可选标题（有则加粗前置一行）
+    """
+    body = f"**{title}**\n{content}" if title else content
+    return {"tag": "div", "text": {"tag": tag, "content": body}}
+
+
 def build_note(text, tag=None):
     """构建底部备注
     

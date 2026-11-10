@@ -1,6 +1,6 @@
 {
   "name": "options_utility",
-  "version": "1.1.0",
+  "version": "1.1.1",
   "date": "2026-11-10",
   "merged_from": [
     "GitHub baizhiwei9/options_utility @354e131（A股计算层 + 报警引擎 + 29条规则基线，实为38条）",
@@ -26,6 +26,29 @@
   "verification": {
     "compileall": "0 error / 0 SyntaxWarning",
     "cli_selftest": "pass",
-    "offline_tests": "9/9 pass"
-  }
+    "offline_tests": "23/23 pass",
+    "pyflakes_undefined": "0 (options_utility + data_hub)",
+    "dry_runs": [
+      "us-index",
+      "us-treasury",
+      "cn-us"
+    ]
+  },
+  "post_merge_fixes": {
+    "date": "2026-11-10",
+    "count": 9,
+    "items": [
+      "calc/pcr_macd.py: option_pcr -> pcr (NameError)",
+      "alert/reports/close.py: skew_history_db -> skew_history (x3, SKEW历史库静默停写)",
+      "calc/basis.py: 补 import pandas as pd",
+      "feishu_card_utils.py: 补 build_field 定义",
+      "treasury_analyze.judge(): TLT 缺失守卫前移 + 返回同构",
+      "treasury_analyze.build_oi_distribution(): 全部改 .get() 容错",
+      "data_hub/akshare_source.py: 补 from datetime import datetime / List",
+      "data_hub/tushare_source.py: 补 List",
+      "cli.py: 无 main() 模块用 runpy 兜底（8 个子命令原本无法运行）"
+    ],
+    "regression_tests": "tests/test_regressions.py (14 cases)"
+  },
+  "requires_sibling": "data_hub（baizhiwei9/datahub-three-tier），39 个文件依赖"
 }

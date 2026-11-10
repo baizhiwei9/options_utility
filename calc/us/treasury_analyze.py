@@ -252,10 +252,28 @@ def send_email_alert(subject, body):
 
 def judge(d, hist):
     """汇总判定：四条既有规则 + 新增 OI 变化规则，输出四类标签。"""
+    tlt = (d.get("symbols") or {}).get("TLT")
+    if not tlt:
+        # 2026-11-10：原先硬下标 d["symbols"]["TLT"]，TLT 抓取失败时整个 judge() 抛 KeyError，
+        # 其他标的的报警一起丢掉。与 _sync_checks() 的 .get() 口径保持一致。
+        # ⚠️ 守卫必须放在算规则**之前**（_pct_rules 内部也是硬下标）。
+        # 返回结构与正常分支完全一致（labels/rules/sync_checks/notes），
+        # 否则下游取 labels[...] 会再次报错。
+        return {
+            "run_date": date.today().isoformat(),
+            "level": "数据缺失",
+            "labels": {"direction": "待更新", "structure": "待更新",
+                       "strength": "待更新", "verdict": "TLT 数据缺失，本轮不判定"},
+            "rules": [],
+            "sync_checks": _sync_checks(d, hist),
+            "r5_mode": "无数据",
+            "oi_distribution": build_oi_distribution(d),
+            "notes": ["TLT 抓取失败（或未落盘），本轮跳过美债期权判定，不编造结论"],
+        }
+
     rules = [_pct_rules("TLT", d, hist), _top10_call_share("TLT", d),
              _oi_change_rules("TLT", d, hist)]
 
-    tlt = d["symbols"]["TLT"]
     t = tlt["totals"]
     # ---- 方向 ----
     direction = "只是对冲"
@@ -308,23 +326,28 @@ def judge(d, hist):
 
 
 def build_oi_distribution(d):
-    """当前持仓量分布（供每周报告）：主要标的的到期月/行权价分布 + 主力行权价。"""
+    """当前持仓量分布（供每周报告）：主要标的的到期月/行权价分布 + 主力行权价。
+
+    ⚠️ 2026-11-10：原先 so["top"] / so["distrib_expiry"] 全用硬下标，
+    部分标的响应不完整（缺 top / 缺分布）时整份判定直接 KeyError 崩掉。
+    改为 .get() + 缺字段跳过，与 _sync_checks() 的容错口径一致。
+    """
     out = {}
     for sym in ("TLT", "TLH", "IEF", "XLU"):
-        so = d["symbols"].get(sym)
+        so = (d.get("symbols") or {}).get(sym)
         if not so:
             continue
-        top = so["top"]
-        total = so["totals"]
+        top = so.get("top") or {}
+        total = so.get("totals") or {}
         out[sym] = {
-            "expiry_dist": so["distrib_expiry"],
-            "strike_top": so["distrib_strike"][:6],
+            "expiry_dist": so.get("distrib_expiry") or {},
+            "strike_top": (so.get("distrib_strike") or [])[:6],
             "main_call_strike": top.get("call_top_strike"),
             "main_call_oi": top.get("call_top_oi"),
             "main_put_strike": top.get("put_top_strike"),
             "main_put_oi": top.get("put_top_oi"),
-            "call_oi": total["call_oi"], "put_oi": total["put_oi"],
-            "pcr_oi": total["pcr_oi"],
+            "call_oi": total.get("call_oi"), "put_oi": total.get("put_oi"),
+            "pcr_oi": total.get("pcr_oi"),
         }
     return out
 

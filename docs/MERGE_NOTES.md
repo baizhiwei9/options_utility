@@ -165,3 +165,60 @@ python cli.py cn-us --no-cn --dry-run       # 生成 outputs/cn_us_<日期>.html
 3. 逐个子命令 `--dry-run` 跑一遍，与原脚本同日输出对齐（重点看偏度、PCR、R 值、灯级）。
 4. 改 crontab：`python /path/options_utility/cli.py <子命令> …`。
 5. 观察 1–2 周无异常后再下线原脚本；原链路**本次未做任何修改**，随时可回退。
+---
+
+## 八、2026-11-10 合并后二次审计：又修了 9 个真 bug
+
+> 环境：把 `options_utility` 与同级 `data_hub` 一起部署（本工程有 **39 个文件**依赖 `data_hub`，
+> 目录必须是兄弟关系，或者把 data_hub 所在父目录加进 `PYTHONPATH`）。
+
+| # | 位置 | 症状（实测复现） | 处置 |
+|---|---|---|---|
+| 1 | `calc/pcr_macd.py:383` | 382 行 `import pcr`，383 行调 `option_pcr.get_all_index_pcr()` → `NameError: name 'option_pcr' is not defined`。该函数是 `close.py` / `midday.py` 日报必经路径，异常被外层 try 吞掉 → **PCR+MACD 整段每天静默缺席** | 改为 `pcr.get_all_index_pcr(...)`（签名一致，已验证） |
+| 2 | `alert/reports/close.py:1376/1377/1383` | 1375 行 `import skew_history`，1376 用 `skew_history_db.append_daily()` → `NameError`，同样被 try 吞 → **SKEW 历史库从此不写入，分位列永远「—」且不报错** | 三处全部改为 `skew_history.*` |
+| 3 | `calc/basis.py:276` | 用 `pd.concat(...)` 但模块只 import 了 numpy → 国债类标的（T/TF/TS/TL）跨 300 天拉中债收益率分批时 `NameError: pd` | 文件头补 `import pandas as pd` |
+| 4 | `alert/notifier/feishu_card_utils.py:2861` | 调用从未定义的 `build_field(...)` → 带两融的旧单卡 `build_risk_forecast_card` 必抛 `NameError`（新版多卡入口不经过这段，所以长期未暴露） | 补 `build_field(tag, content, title=None)` 实现 |
+| 5 | `calc/us/treasury_analyze.py:258` | 文档 B5 只把 `_sync_checks()` 改成 `.get()`，**`judge()` 主函数和 `_pct_rules()` 仍是 `d["symbols"]["TLT"]` 硬下标** → TLT 抓取失败时 `KeyError`，其他标的报警全丢 | 守卫前移到算规则**之前**，并返回与正常分支同构的 dict（`labels/rules/sync_checks/notes/oi_distribution` 齐全） |
+| 6 | `calc/us/treasury_analyze.py:build_oi_distribution` | `so["top"] / so["distrib_expiry"] / total["call_oi"]` 硬下标 → 标的响应不完整时整份判定崩 | 全部改 `.get()` + 缺字段跳过 |
+| 7 | `data_hub/sources/akshare_source.py:1921` | `datetime.now()` 未导入 → `fetch_sector_flow()` 返回 `success=False, err="NameError: name 'datetime' is not defined"`（实测） | 顶部补 `from datetime import datetime`；同时补 `List`（2904 行的类型注解） |
+| 8 | `data_hub/sources/tushare_source.py:2468` | 同上，`List` 未导入（有 `from __future__ import annotations`，运行时无影响但静态检查报错） | 补 `from typing import List, Optional` |
+| 9 | `cli.py:_run()` | CLI 声称 29 个子命令，**其中 8 个一调就死**（只有 `if __name__ == "__main__"` 块、没有 `main()`）：`basis-intraday / vix / vix-alerts / bottom / gex / iv-term / basis-daily / us-index-fetch` | `_run()` 增加 `runpy.run_path(..., run_name='__main__')` 兜底，两种形态都支持 |
+
+另外把 3 处残留的主机绝对路径清了（`calc/gex.py`、`calc/option_monitor.py`、`calc/risk_layer.py`
+的 `sys.path.insert(0, '/opt/coze/.fuse_drive/蓁宝/所有对话/主对话')`），改为按项目根推导 `alert/notifier`。
+
+### 回归测试（新增 `tests/test_regressions.py`，14 项）
+
+```
+python -m unittest discover -s tests
+Ran 23 tests in 3.2s
+OK                       ← 原 9 项 + 新增 14 项
+```
+
+覆盖：4 个 NameError 型 bug、美债 TLT 缺失 / 字段残缺、data_hub 两个源的 import、
+3 个文件不得出现硬编码主机路径、CLI 29 个子命令必须可派发。
+
+### 本次实测（带 data_hub，固定样本）
+
+| 项 | 结果 |
+|---|---|
+| `python cli.py selftest` | ✅ 全部通过（50 条规则、BS 反解 0.200000、25Δ put<spot<call） |
+| 离线测试 | ✅ 23/23 |
+| `us-index --dry-run` | ✅ SPX VIX=19.92 分位81.0% R=1.055 rr25=5.10 Flip=7542.5；NDX VXN=28.97；RUT RVX=22.13 |
+| `us-treasury --dry-run` | ✅ 绿灯｜债价反弹｜牛价差｜弱异动｜R1未触发(1.08/0.62) R3 50% R5 当天标准标星 |
+| `cn-us --no-cn --dry-run` | ✅ 生成 `outputs/cn_us_<日期>.html` |
+| `pyflakes` undefined name | options_utility **0** ／ data_hub **0** |
+
+### 部署目录（两个仓库必须并存）
+
+```
+<任意目录>/
+├── data_hub/               ← 来自 baizhiwei9/datahub-three-tier
+└── options_utility/        ← 本工程
+    ├── cli.py
+    ├── calc/ alert/ config/ docs/ tests/ run/
+    └── outputs/ state/ logs/
+```
+
+`python cli.py selftest` 能在任意目录跑；但用到 `data_hub` 的报警任务（39 个文件）要求
+`data_hub` 与 `options_utility` 同级，或把该父目录加进 `PYTHONPATH`。

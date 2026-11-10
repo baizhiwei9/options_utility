@@ -83,7 +83,10 @@ GEX_TARGET_NAMES = list(MULTIPLIER_MAP.keys())
 RISK_FREE_RATE = 0.025
 
 # 飞书推送
-sys.path.insert(0, '/opt/coze/.fuse_drive/蓁宝/所有对话/主对话')
+_HERE = os.path.dirname(os.path.abspath(__file__))
+_NOTIFIER = os.path.join(os.path.dirname(_HERE), 'alert', 'notifier')
+if _NOTIFIER not in sys.path:
+    sys.path.insert(0, _NOTIFIER)
 try:
     from feishu_card_utils import build_card_header, build_data_table, build_hr, build_note, build_markdown
     from feishu_push import push_card_to_feishu

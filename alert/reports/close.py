@@ -1373,14 +1373,14 @@ def main():
     # ---- SKEW 历史库：写入当日 + 补分位（口径与表内同源） ----
     try:
         import skew_history
-        n_sk = skew_history_db.append_daily(trade_date, result['skew'])
-        skew_history_db.attach_percentiles(result['skew'], trade_date)
+        n_sk = skew_history.append_daily(trade_date, result['skew'])
+        skew_history.attach_percentiles(result['skew'], trade_date)
         n_valid = sum(1 for v in result['skew'].values() if v and v.get('skew_pct') is not None)
         print(f"\n📚 SKEW历史库: 写入{n_sk}条, 分位可用{n_valid}/{len(result['skew'])}标的")
         if n_valid < len(result['skew']):
             sample_n = max([v.get('skew_pct_n', 0) for v in result['skew'].values() if v] or [0])
             data_warnings.append(
-                f"📚 SKEW分位样本仅{sample_n}日（需≥{skew_history_db.MIN_SAMPLES}日），分位显示「—」"
+                f"📚 SKEW分位样本仅{sample_n}日（需≥{skew_history.MIN_SAMPLES}日），分位显示「—」"
             )
     except Exception as e:
         print(f"  ⚠️ SKEW分位计算异常: {e}")

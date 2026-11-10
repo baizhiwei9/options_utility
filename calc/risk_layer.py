@@ -1323,7 +1323,10 @@ def build_feishu_card(p):
     五轨风险 → 飞书v2交互式卡片（蓝色主题；有红灯时标题红、有黄灯时橙）。
     只陈述灯色/数值/触发条件，不做方向性研判。
     """
-    sys.path.insert(0, '/opt/coze/.fuse_drive/蓁宝/所有对话/主对话')
+    _HERE = os.path.dirname(os.path.abspath(__file__))
+    _NOTIFIER = os.path.join(os.path.dirname(_HERE), 'alert', 'notifier')
+    if _NOTIFIER not in sys.path:
+        sys.path.insert(0, _NOTIFIER)
     from feishu_card_utils import (
         build_card_header, build_data_table, build_hr,
         build_note, build_markdown,

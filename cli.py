@@ -88,12 +88,27 @@ def _print_list():
 
 
 def _run(module_name, argv):
+    """转发到目标模块。
+
+    两种形态都支持（修 2026-11-10 发现的 CLI 缺陷）：
+      ① 模块有 main()          → 直接调（alert/tasks/*、alert/reports/*）
+      ② 模块只有 __main__ 块  → 以 runpy 运行，等价于 `python3 <模块>.py ...`
+    合并前 29 个子命令里有 8 个属于②（basis-intraday / vix / vix-alerts /
+    bottom / gex / iv-term / basis-daily / us-index-fetch），
+    点进去直接报「模块 xxx 没有 main() 入口」，等于 CLI 里这 8 个是死的。
+    """
     sys.argv = [module_name] + list(argv)
     mod = importlib.import_module(module_name)
     fn = getattr(mod, 'main', None)
-    if fn is None:
-        raise SystemExit('模块 %s 没有 main() 入口' % module_name)
-    return fn()
+    if fn is not None:
+        return fn()
+    # 没有 main()：按脚本方式执行其 __main__ 块
+    path = getattr(mod, '__file__', None)
+    if path and os.path.exists(path):
+        import runpy
+        sys.argv = [path] + list(argv)
+        return runpy.run_path(path, run_name='__main__')
+    raise SystemExit('模块 %s 既无 main() 也无 __file__，无法运行' % module_name)
 
 
 def _selftest():

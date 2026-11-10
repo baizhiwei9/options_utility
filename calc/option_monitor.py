@@ -2031,7 +2031,10 @@ def main():
     
     # 飞书推送（交互式卡片）
     import sys as _sys
-    _sys.path.insert(0, '/opt/coze/.fuse_drive/蓁宝/所有对话/主对话')
+    _HERE = os.path.dirname(os.path.abspath(__file__))
+    _NOTIFIER = os.path.join(os.path.dirname(_HERE), 'alert', 'notifier')
+    if _NOTIFIER not in _sys.path:
+        _sys.path.insert(0, _NOTIFIER)
     from feishu_card_utils import build_option_monitor_card
     from feishu_push import push_card_to_feishu
     

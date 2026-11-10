@@ -380,7 +380,7 @@ def build_pcr_macd_message(trade_date=None):
     
     # ---------- 1. 获取 PCR ----------
     import pcr
-    all_pcr = option_pcr.get_all_index_pcr(
+    all_pcr = pcr.get_all_index_pcr(
         trade_date, smooth_days=5, min_days=3, exclude_current_month=True
     )
     
