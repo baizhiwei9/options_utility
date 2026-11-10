@@ -1,0 +1,20 @@
+# options_utility 运行依赖
+# 安装：python -m pip install -r requirements.txt
+# 说明：合并前工程没有 requirements.txt，靠宿主环境「碰巧装过」；
+#      合并期补上，并把可选依赖单独标注，缺可选依赖只影响对应功能，不影响导入。
+
+# ---- 核心（A股 + 美股两条线的计算都依赖）----
+numpy>=1.24
+pandas>=2.0
+scipy>=1.11          # BS 定价/反解、正态分布
+requests>=2.31       # CBOE / NASDAQ / Treasury.gov 取数
+
+# ---- A股取数与画图 ----
+akshare>=1.12        # 期权链/现货兜底通道
+tushare>=1.2         # 期权链、行权交收主通道（需 token）
+matplotlib>=3.6      # 图表
+mplfinance>=0.12     # 偏度轨 K 线子图
+
+# ---- 可选：仅部分推送/报表功能需要 ----
+# 飞书推送已内置（alert/notifier/feishu_push.py 用 requests 直连 webhook/API）
+# 央行资金面 / 美元流动性指纹卡片渲染为外部工程，配置 CIRCFLOW_DIR 后才启用

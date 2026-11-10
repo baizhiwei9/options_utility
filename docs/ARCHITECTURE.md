@@ -223,3 +223,29 @@ lark-cli 相关任务需同时设置三个环境变量（`LARKSUITE_CLI_CONFIG_D
 
 **换推送渠道 = 改 `alert/trigger.py` 顶部的 `DEFAULT_CHANNELS`**，
 或在 `config/private.py` 写 `ALERT_CHANNELS = ('email',)`，业务代码零改动。
+
+---
+
+## 十、美股两条线的分层（v1.1.0 合并期补充）
+
+合并前美股代码自成一套：三轨在「中美汇总」链路里，美债 ETF 期权在美债监控工程里，
+两边各写一遍 IV 反解、PCR 与推送。并入本工程后按同一套分层归位：
+
+```
+CBOE CDN / NASDAQ / Treasury.gov
+        ↓  calc/us/index_fetch.py、calc/us/treasury_fetch.py（只取数，不做判定）
+outputs/us/*.json
+        ↓  calc/us/index_options.py、calc/us/treasury_analyze.py（只算指标/只出标签）
+alert/tasks/us_index.py、alert/tasks/us_treasury_opt.py（判阈值 → trigger）
+        ↓
+alert/trigger.py ──► 邮件 / 飞书（唯一出口）
+```
+
+三条边界：
+
+1. **取数与计算分离**：抓取模块只落 JSON，计算模块只读 JSON，任何一方挂了不影响另一方单独复跑。
+2. **判定与展示分离**：`US_INDEX_RULES` / `US_TREASURY_RULES` 只管「越阈要报警」；
+   三轨的基线 5 项 / Lv1 / Lv2 / 红灯分级属于**报表展示**，放在 `alert/reports/cn_us.py`，
+   不参与推送判定。
+3. **市场口径不混用**：A 股 GEX 走累计穿零（`calc/gex.py`），美股三轨走分档零交叉
+   （`calc/us/index_options.py`）；两者都叫 Flip 但不可比较，见 `KNOWN_ISSUES` #14。

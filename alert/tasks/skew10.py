@@ -75,7 +75,7 @@ from alert.rules import SKEW10_RULES
 from alert.trigger import trigger
 
 # 统一邮件出口（标题自动带「｜扣子·来源」后缀）
-sys.path.insert(0, '/Coze/Drive/蓁宝/所有对话/主对话')
+sys.path.insert(0, os.path.dirname(_OPT_ROOT))  # 原硬编码主对话目录，改为按项目根推导
 
 # ---------------- 配置 ----------------
 OUTPUT_DIR = _opt_os.path.join(_OPT_ROOT, 'outputs')  # 项目内产物目录

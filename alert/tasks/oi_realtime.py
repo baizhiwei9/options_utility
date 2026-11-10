@@ -51,7 +51,7 @@ from option_monitor import get_option_contracts_sina
 from fetch_eastmoney import get_spot_price as get_sina_spot
 
 # 飞书推送
-sys.path.insert(0, '/opt/coze/.fuse_drive/蓁宝/所有对话/主对话')
+sys.path.insert(0, os.path.dirname(_OPT_ROOT))  # 原为硬编码主对话目录，合并后按项目根推导
 from feishu_card_utils import (
     build_card_header, build_data_table, build_hr,
     build_note, build_markdown,

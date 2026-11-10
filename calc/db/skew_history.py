@@ -62,8 +62,8 @@ def _db_ok(path):
 
 # 历史库候选目录：不同运行环境云盘挂载点不同，逐个探测，取第一个含库文件的
 _LEGACY_CANDIDATES = (
-    '/Coze/Drive/期权风险监控/outputs',               # 云盘逻辑路径
-    '/opt/coze/.fuse_drive/期权风险监控/outputs',      # 云盘真实 FUSE 路径
+    os.environ.get('OPTIONS_LEGACY_DATA_DIR') or '/Coze/Drive/期权风险监控/outputs',  # legacy 云盘逻辑路径
+    '/opt/coze/.fuse_drive/期权风险监控/outputs',      # legacy 云盘真实 FUSE 路径
     '/app/data/期权风险监控/outputs',                  # 容器内数据路径
 )
 

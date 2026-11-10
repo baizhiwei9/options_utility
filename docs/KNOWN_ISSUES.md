@@ -210,3 +210,72 @@ FUSE 云盘上 sqlite `commit()` 返回成功但数据不落盘。
 
 `alert/output/`、`alert/outputs/`、`codeact/` 是复制过程中产生的空目录，
 原脚本里的路径定义会创建它们。确认无引用后可清理。
+
+---
+
+# 合并期（v1.1.0，2026-11-10）新增记录
+
+## ✅ #8 主机绝对路径硬编码（已清理）
+
+13 处 `sys.path.insert(0, '/Coze/Drive/…')` / `'/opt/coze/.fuse_drive/…'`，
+换机器后全部指向不存在的目录；`bottom_redline.py` 的 `OUTPUT_DIR` 还落在
+原工程的只读挂载上，写状态会失败后静默回退。
+
+处置：全部改为按 `_OPT_ROOT` 推导；`bottom_redline` 输出改到 `state/bottom_redline/`；
+环流报告（央行资金面 / 美元流动性指纹渲染）改为**可选外部依赖**，用 `CIRCFLOW_DIR` 指定，
+未配置就跳过该段，不影响其它内容。
+
+## ✅ #9 `calc_skew()` ATM IV 被腰斩 + `iv_skew` 单侧缺失当 0（已修）
+
+- `atm_iv = ((atm_call_iv or 0) + (atm_put_iv or 0)) / 2`：任一侧 IV 反解失败时 ATM IV 只有真实值一半，
+  25Δ 取腿位置随之偏移。
+- `iv_skew = (put_25d_iv or 0) - (call_25d_iv or 0)`：call 侧缺失时偏度≈整条 put IV，
+  足以顶穿 12 点红线造成假红灯。
+
+处置：ATM IV 只对有效值求均值（两侧都失败才退 0.2）；缺失侧以 ATM IV 代理，
+返回新增 `iv_skew_est` 标记估算。**历史库未重算**——该分支只在取腿缺失时触发，
+正常路径数值不变，无需回刷分位。
+
+## ✅ #10 美债 R5 取错「上一交易日」+ `_sync_checks` 缺 TLT 崩溃（已修）
+
+`for s in reversed(oi_snaps): if s["date"] != cur["as_of"]` 在快照未排序时会拿到很早的一条，
+OI 变化被放大成假异动；`d["symbols"]["TLT"]` 直接下标，某周 TLT 抓取失败会让整份判定抛异常。
+
+处置：排序后取严格早于 `as_of` 的最近一条；键取用 `.get()`，缺失显示「待更新」。
+
+## ✅ #11 文档与代码不一致（已修）
+
+- README 曾写「9 组 29 条」规则，实测为 11 组 50 条（合并前 38 + 美股 12）。已按 `all_rules()` 改写。
+- README §2.5 代码块被截断（`summary = ` 后直接跳节），示例不可用。已重写。
+- 旧 README §七 称 `delta_to_strike`「尚未修正」，与本文 #1 及代码实际相反。已删该说法。
+- `docs/` 声称有 `outputs/ state/ logs/ tests/ examples/ bin/`，实际只有前四个（本次补齐），
+  `examples/ bin/` 从未存在，不再保留该描述。
+
+## 🟡 #12 R1 的 AND 语义未进引擎
+
+`us_treasury` 的 R1 = 「call_vol/30日均量 ≥1.5」**且**「call/put vol ≥2.5」。
+`alert/engine.py` 单条规则只服务一个指标，因此 R1 的合成判定仍在
+`calc/us/treasury_analyze.py` 内完成，`rules.py` 里的 `us_tlt.vol_ratio` / `us_tlt.pcr_vol`
+两条规则只用于单指标展示与二次确认。这是 #5 现状的延续，不是新债。
+
+## 🟡 #13 美股两条线依赖本地落盘数据
+
+`calc/us/index_options.py`、`calc/us/treasury_analyze.py` 都从 `outputs/us/` 读 JSON：
+没有 CBOE 指数历史就没有「252 日分位」，没有 NASDAQ 链快照就没有当期 IV/OI。
+缺文件时任务打印缺口并跳过，**不插值、不用旧值冒充当日值**。
+
+## 🟡 #14 两种 Flip 算法并存（口径差异，非 bug）
+
+| 实现 | 算法 | 用在哪 |
+|---|---|---|
+| `calc/gex.py` | 累计 GEX 曲线穿零 → 插值出 Flip 价 | A 股五轨、GEX 监测 |
+| `calc/us/index_options.py` | 各档净 GEX 相邻档符号变化取中点 | 美股三轨 |
+
+两者都对外叫 Flip，数值**不可跨市场比较**，也不宜混进同一张分位图。若要统一，
+需要先决定用累计算法重算美股历史（CBOE 链快照需按日回补）。
+
+## 🟢 #15 科创50 研究脚本未迁入
+
+`probe_opt_*`、`build_iv_panel`、`eval_predictive_power`、`recap*`、`opt_term_scan` 等
+共 60+ 个一次性脚本保留在原目录，不并入主干（避免带入第三套重复 IV/GEX 实现）。
+可复用能力已在 `calc/option_monitor.py` + `calc/db/skew_history.py`。

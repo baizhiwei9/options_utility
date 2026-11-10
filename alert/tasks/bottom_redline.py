@@ -79,13 +79,13 @@ socket.setdefaulttimeout(20)
 
 # ============ 路径配置 ============
 SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
-PROJECT_DIR = os.path.dirname(os.path.dirname(SCRIPT_DIR))  # /Coze/Drive/中期风险偏好/
-OUTPUT_DIR = os.path.join(PROJECT_DIR, 'codeact', 'output')
+PROJECT_DIR = _OPT_ROOT                      # 合并后统一指向 options_utility 项目根
+OUTPUT_DIR = os.path.join(_OPT_ROOT, 'state', 'bottom_redline')
 
 # 2026-10-30 修复：fuse只读挂载回退到可写路径
 # crontab若 cd 到 /Coze/Drive/中期风险偏好（只读），OUTPUT_DIR 也在只读文件系统上，
 # state/result 写入会失败。自动检测并回退到可写路径。
-_WRITABLE_FALLBACK = '/Coze/Drive/蓁宝/所有对话/主对话/codeact/output'
+_WRITABLE_FALLBACK = os.path.join(_OPT_ROOT, 'state', 'bottom_redline_fallback')
 try:
     os.makedirs(OUTPUT_DIR, exist_ok=True)
     _test = os.path.join(OUTPUT_DIR, '.write_test')

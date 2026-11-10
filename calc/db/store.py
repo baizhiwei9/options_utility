@@ -67,7 +67,7 @@ import sys
 _OPT_ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 _LEGACY_CANDIDATES = (
-    '/Coze/Drive/期权风险监控/outputs',
+    os.environ.get('OPTIONS_LEGACY_DATA_DIR') or '/Coze/Drive/期权风险监控/outputs',
     '/opt/coze/.fuse_drive/期权风险监控/outputs',
     '/app/data/期权风险监控/outputs',
 )

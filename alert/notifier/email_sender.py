@@ -15,7 +15,9 @@
 用法
 ----
     import sys
-    sys.path.insert(0, '/Coze/Drive/蓁宝/所有对话/主对话')
+    # 原为硬编码的「主对话」目录；合并后按项目根推导，缺失时不影响本模块
+    _ROOT_DIR = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+    sys.path.insert(0, os.path.dirname(_ROOT_DIR))
     from email_sender import send_email
 
     ok = send_email(

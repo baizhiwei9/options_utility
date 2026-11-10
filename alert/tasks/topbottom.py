@@ -101,8 +101,10 @@ os.makedirs(OUTPUT_DIR, exist_ok=True)
 
 # 复用模块路径
 EXISTING_MONITOR = os.path.join(SCRIPT_DIR, 'derivative_sentiment_monitor.py')
-FEISHU_PUSH_PATH = "/Coze/Drive/蓁宝/所有对话/主对话/feishu_push.py"
-OPTION_MONITOR_DIR = "/Coze/Drive/蓁宝/所有对话/主对话/市场情绪监控/scripts"
+# 2026-11-10 合并期修正：原为三处主机绝对路径，改为「项目内优先 + 环境变量兜底」
+_LEGACY_AGENT_DIR = os.environ.get("LEGACY_AGENT_DIR", os.path.dirname(_OPT_ROOT))
+FEISHU_PUSH_PATH = os.path.join(_OPT_ROOT, "alert", "notifier", "feishu_push.py")
+OPTION_MONITOR_DIR = os.path.join(_LEGACY_AGENT_DIR, "市场情绪监控", "scripts")
 
 # ---- lark-cli 配置引导（crontab 环境不会继承会话环境变量）----
 # 2026-10-23：crontab 直接调度时环境里没有 LARKSUITE_CLI_* 变量，lark-cli 会返回
@@ -118,7 +120,7 @@ os.environ.setdefault('LARK_CLI_NO_PROXY', '1')
 # ============================================================
 # Tushare初始化（2026-10-23：统一走 data_hub 入口，不再硬编码 token）
 # ============================================================
-DATAHUB_SCRIPTS_DIR = '/Coze/Drive/蓁宝/所有对话/主对话/codeact/scripts'
+DATAHUB_SCRIPTS_DIR = os.path.join(_LEGACY_AGENT_DIR, "codeact", "scripts")
 if DATAHUB_SCRIPTS_DIR not in sys.path:
     sys.path.insert(0, DATAHUB_SCRIPTS_DIR)
 try:

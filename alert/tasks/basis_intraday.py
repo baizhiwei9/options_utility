@@ -53,7 +53,7 @@ from basis import (
 from trading_day import check_trading_day as is_trading_day
 
 # 统一邮件出口（标题自动带「｜扣子·来源」后缀）
-sys.path.insert(0, '/Coze/Drive/蓁宝/所有对话/主对话')
+sys.path.insert(0, os.path.dirname(_OPT_ROOT))  # 原为硬编码主对话目录，合并后按项目根推导
 from email_sender import send_email  # noqa: E402
 from alert.trigger import trigger  # noqa: E402
 

@@ -65,6 +65,7 @@ __all__ = [
     'OI_INTRADAY_TIER_RULES', 'OI_INTRADAY_EMAIL_RULE',
     'OI_INTRADAY_ALERT_PCT', 'OI_INTRADAY_MIN_CHG',
     'VIX_ALERT_RULES', 'BOTTOM_REDLINE_RULES', 'BOTTOM_REDLINE_TRIGGER_COUNT',
+    'US_INDEX_RULES', 'US_TREASURY_RULES',
     'RULE_GROUPS', 'all_rules',
 ]
 
@@ -561,6 +562,100 @@ BOTTOM_REDLINE_RULES: Tuple[AlertRule, ...] = (
 # =============================================================================
 # 十一、规则总表（供统一调度 / 文档生成 / 自检使用）
 # =============================================================================
+# =============================================================================
+# 十、美国两条线（2026-11-10 合并期新增）
+# =============================================================================
+# 合并来源：
+#   美股三轨（标普500 / 纳斯达克100 / 罗素2000）← 中美期权风险释放汇总「下篇」判灯口径
+#   美债 ETF 期权（TLT / TLH / IEF / XLU）    ← 美债ETF期权监控模块 R1~R6
+#
+# 与 A 股规则的分工：
+#   · 本文件只放**单指标阈值**，AND/OR 组合判定仍在各业务模块（与 KNOWN_ISSUES #5
+#     的既有约定一致：判定内核逐步接入引擎，推送一律走 trigger()）。
+#   · 三轨「红黄灯」是**分级展示**（基线5项 / Lv1 / Lv2 / 红灯组合），
+#     不是单一阈值，保留在报表层；这里只声明会真正触发推送的越阈规则。
+
+US_INDEX_RULES: Tuple[AlertRule, ...] = (
+    AlertRule(
+        key='us_index.vix_pct', name='🟡美股波动率指数进入高分位区',
+        indicator='idx_pct', kind=THRESHOLD, op='>=', threshold=70.0,
+        level=LEVEL_YELLOW, channels=(CH_EMAIL,),
+        unit='%', note='VIX/VXN/RVX 自身近 252 日分位 ≥70%（Lv1 条件之一）',
+    ),
+    AlertRule(
+        key='us_index.skew_sigma', name='🟡美股 SKEW 突破自身中位+1σ',
+        indicator='skew_z', kind=THRESHOLD, op='>=', threshold=1.0,
+        level=LEVEL_YELLOW, channels=(CH_EMAIL,),
+        unit='σ', note='CBOE SKEW 相对近 252 日中位数偏离 ≥1σ（Lv1 条件之一）',
+    ),
+    AlertRule(
+        key='us_index.flip_break', name='🔴美股现价收破 Gamma Flip 线',
+        indicator='flip_dist', kind=THRESHOLD, op='<=', threshold=0.0,
+        level=LEVEL_RED, channels=(CH_EMAIL, CH_FEISHU),
+        unit='%', note='距线百分比 ≤0 表示现价已在 Flip 线下方（负 Gamma 区），红灯条件',
+    ),
+    AlertRule(
+        key='us_index.r_stress', name='🟡美股近/次月 IV 比进入倒挂',
+        indicator='R', kind=THRESHOLD, op='>=', threshold=1.00,
+        level=LEVEL_YELLOW, channels=(CH_EMAIL,),
+        note='链内近月 IV / 次月 IV ≥1.00，近端恐慌（Lv1 条件之一）',
+    ),
+    AlertRule(
+        key='us_index.skew_pct', name='🔴美股 SKEW 年分位 ≥90%',
+        indicator='skew', kind=PERCENTILE, window=PCT_WINDOW_YEAR, op='>=',
+        threshold=90.0, min_samples=PCT_MIN_SAMPLES,
+        level=LEVEL_RED, channels=(CH_EMAIL, CH_FEISHU),
+        unit='%', note='CBOE SKEW 自身 252 日分位（仅标普500有官方 SKEW 序列）',
+    ),
+    AlertRule(
+        key='us_index.vvix_pct', name='🔴美股 VVIX 年分位 ≥90%',
+        indicator='vvix', kind=PERCENTILE, window=PCT_WINDOW_YEAR, op='>=',
+        threshold=90.0, min_samples=PCT_MIN_SAMPLES,
+        level=LEVEL_RED, channels=(CH_EMAIL, CH_FEISHU),
+        unit='%', note='CBOE VVIX（波动率的波动率，标普500口径）252 日分位',
+    ),
+)
+
+US_TREASURY_RULES: Tuple[AlertRule, ...] = (
+    AlertRule(
+        key='us_tlt.vol_ratio', name='🟡TLT 看涨成交量放量',
+        indicator='call_vol_ratio', kind=THRESHOLD, op='>=', threshold=1.5,
+        level=LEVEL_YELLOW, channels=(CH_EMAIL,),
+        note='TLT 当日 call 成交量 / 期权 30 日均量 ≥1.5（R1 前半）',
+    ),
+    AlertRule(
+        key='us_tlt.pcr_vol', name='🟡TLT 成交 PCR 偏多',
+        indicator='pcr_vol', kind=THRESHOLD, op='>=', threshold=2.5,
+        level=LEVEL_YELLOW, channels=(CH_EMAIL,),
+        note='TLT call/put 成交量比 ≥2.5（R1 后半，与 vol_ratio 同时满足才算 R1 命中）',
+    ),
+    AlertRule(
+        key='us_tlt.top10_call_share', name='🟡TLT 前十大成交合约 call 占比 ≥70%',
+        indicator='top10_call_share', kind=THRESHOLD, op='>=', threshold=0.70,
+        level=LEVEL_YELLOW, channels=(CH_EMAIL,),
+        unit='%', note='R3：按成交量前 10 合约中 call 张数占比',
+    ),
+    AlertRule(
+        key='us_tlt.oi_z_up', name='🔴TLT 持仓量正向异动 ≥2σ',
+        indicator='oi_z', kind=THRESHOLD, op='>=', threshold=2.0,
+        level=LEVEL_RED, channels=(CH_EMAIL,),
+        unit='σ', note='R5：OI 日增相对近一年（不足回退近一月）日增序列的 z 值',
+    ),
+    AlertRule(
+        key='us_tlt.oi_z_down', name='🔴TLT 持仓量反向异动 ≤-2σ',
+        indicator='oi_z', kind=THRESHOLD, op='<=', threshold=-2.0,
+        level=LEVEL_RED, channels=(CH_EMAIL,),
+        unit='σ', note='R5 反向：持仓大幅减少（止损/展期集中平仓）',
+    ),
+    AlertRule(
+        key='us_tlt.call_oi_share', name='🟡TLT 看涨持仓单边堆积',
+        indicator='call_oi_share', kind=THRESHOLD, op='>=', threshold=0.72,
+        level=LEVEL_YELLOW, channels=(CH_EMAIL,),
+        unit='%', note='R5 降级口径（无 OI 历史时按当天标准）：call OI 占比 ≥72%',
+    ),
+)
+
+
 RULE_GROUPS: Dict[str, Tuple[AlertRule, ...]] = {
     'skew10': SKEW10_RULES,
     'oi_pcr': OI_PCR_RULES,
@@ -571,6 +666,8 @@ RULE_GROUPS: Dict[str, Tuple[AlertRule, ...]] = {
     'oi_intraday': OI_INTRADAY_RULES,
     'vix_alert': VIX_ALERT_RULES,
     'bottom_redline': BOTTOM_REDLINE_RULES,
+    'us_index': US_INDEX_RULES,
+    'us_treasury': US_TREASURY_RULES,
 }
 
 

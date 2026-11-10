@@ -90,3 +90,32 @@ if __name__ == '__main__':
     else:
         print('监控标的:', ' / '.join(f'{t}({DISPLAY_NAME[t]})' for t in MONITOR_TARGETS))
         print('标的数:', len(MONITOR_TARGETS))
+
+# =============================================================================
+# 美股两条线（2026-11-10 合并期新增）
+# =============================================================================
+# 与 A 股标的放在同一文件，保持「标的配置单一真源」：改标的只改这里。
+
+# ---------- 美股三轨：官方波动率指数 + CBOE 延迟链 + 对应 ETF ----------
+#   idx      : 官方波动率指数代码（CBOE 历史 CSV，文件名 us_<idx>.json）
+#   etf      : 计算 HV20 用的 ETF
+#   chain    : CBOE 延迟期权链文件（us_chain_<key>.json）
+#   skew/vvix: 仅标普500有官方 SKEW / VVIX 序列
+US_INDEX_TARGETS = {
+    'SPX': {'name': '标普500(S&P 500)', 'idx': 'VIX', 'etf': 'SPY',
+            'chain': 'us_chain_SPX.json', 'skew_file': 'us_SKEW.json',
+            'vvix_file': 'us_VVIX.json'},
+    'NDX': {'name': '纳斯达克100(Nasdaq 100)', 'idx': 'VXN', 'etf': 'QQQ',
+            'chain': 'us_chain_NDX.json', 'skew_file': None, 'vvix_file': None},
+    'RUT': {'name': '罗素2000(Russell 2000)', 'idx': 'RVX', 'etf': 'IWM',
+            'chain': 'us_chain_RUT.json', 'skew_file': None, 'vvix_file': None},
+}
+
+# ---------- 美债 ETF 期权：TLT 主监控，其余为同向验证 ----------
+#   role: main=主监控（R1/R2/R3/R5 只对主标的生效）/ ref=参照
+US_TREASURY_TARGETS = {
+    'TLT': {'name': '20Y+ 长债 ETF', 'role': 'main'},
+    'TLH': {'name': '10-20Y 长债 ETF', 'role': 'ref'},
+    'IEF': {'name': '7-10Y 中债 ETF', 'role': 'ref'},
+    'XLU': {'name': '公用事业（利率敏感股）', 'role': 'ref'},
+}

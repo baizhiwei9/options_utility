@@ -1,0 +1,31 @@
+{
+  "name": "options_utility",
+  "version": "1.1.0",
+  "date": "2026-11-10",
+  "merged_from": [
+    "GitHub baizhiwei9/options_utility @354e131（A股计算层 + 报警引擎 + 29条规则基线，实为38条）",
+    "中美期权风险释放汇总链路（美股三轨 + 偏度/VVIX/GEX报警 + 合并日报）",
+    "美债ETF期权监控模块（R1~R6 + OCC回补）",
+    "科创50期权研究与早期偏度/GEX脚本（能力层吸收，脚本不迁）"
+  ],
+  "entry": "cli.py",
+  "rule_groups": {
+    "skew10": 4,
+    "oi_pcr": 1,
+    "pcr_macd": 6,
+    "basis_intraday": 2,
+    "basis_ma20": 1,
+    "oi_volume": 2,
+    "oi_intraday": 7,
+    "vix_alert": 3,
+    "bottom_redline": 12,
+    "us_index": 6,
+    "us_treasury": 6
+  },
+  "rules_total": 50,
+  "verification": {
+    "compileall": "0 error / 0 SyntaxWarning",
+    "cli_selftest": "pass",
+    "offline_tests": "9/9 pass"
+  }
+}

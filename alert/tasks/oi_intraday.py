@@ -51,7 +51,7 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from fetch import get_option_chain
 
 # 统一邮件出口（标题自动带「｜扣子·来源」后缀）
-sys.path.insert(0, '/Coze/Drive/蓁宝/所有对话/主对话')
+sys.path.insert(0, os.path.dirname(_OPT_ROOT))  # 原为硬编码主对话目录，合并后按项目根推导
 from email_sender import send_email  # noqa: E402
 from alert.trigger import trigger  # noqa: E402
 
@@ -292,7 +292,7 @@ def send_alerts(today_str, run_time_str, new_alerts):
     
     # ============ 飞书推送（所有异动） ============
     try:
-        sys.path.insert(0, '/opt/coze/.fuse_drive/蓁宝/所有对话/主对话')
+        sys.path.insert(0, os.path.dirname(_OPT_ROOT))  # 原为硬编码主对话目录，合并后按项目根推导
         from feishu_push import push_card_to_feishu
         from feishu_card_utils import build_card_header, build_data_table, build_hr, build_markdown
         

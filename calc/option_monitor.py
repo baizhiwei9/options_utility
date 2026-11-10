@@ -780,8 +780,13 @@ def calc_skew(contracts, spot_price, trade_date, r=0.03):
     # ATM IV
     atm_call_iv = bs_iv(spot_price, atm_call['exercise_price'], T, r, atm_call['close'], 'call')
     atm_put_iv = bs_iv(spot_price, atm_put['exercise_price'], T, r, atm_put['close'], 'put')
-    atm_iv = ((atm_call_iv or 0) + (atm_put_iv or 0)) / 2
-    if atm_iv < 0.01: atm_iv = atm_call_iv or atm_put_iv or 0.2
+    # ⚠️ 2026-11-10（合并期修正）：原实现固定除以 2，任一侧 IV 反解失败
+    # （虚值极深/报价缺失）时 ATM IV 会被腰斩一半，进而把 25Δ 取腿位置整体带偏。
+    # 改为只对**有效值**求均值；两侧都失败时再退到 0.2 兜底。
+    _atm_parts = [x for x in (atm_call_iv, atm_put_iv) if x is not None]
+    atm_iv = sum(_atm_parts) / len(_atm_parts) if _atm_parts else 0.0
+    if atm_iv < 0.01:
+        atm_iv = max(_atm_parts) if _atm_parts else 0.2
 
     # 25-delta strikes
     if atm_iv > 0.01:
@@ -797,7 +802,14 @@ def calc_skew(contracts, spot_price, trade_date, r=0.03):
     put_25d_iv = bs_iv(spot_price, near_put25['exercise_price'], T, r, near_put25['close'], 'put')
     call_25d_iv = bs_iv(spot_price, near_call25['exercise_price'], T, r, near_call25['close'], 'call')
 
-    iv_skew = (put_25d_iv or 0) - (call_25d_iv or 0)
+    # 同上：任一侧缺失时不能当 0 处理（会把单侧 IV 全额当成偏度），
+    # 缺失侧以 ATM IV 代理，并在返回里用 iv_skew_est 标明是估算值。
+    _fill = 0
+    if put_25d_iv is None:
+        put_25d_iv = atm_iv; _fill += 1
+    if call_25d_iv is None:
+        call_25d_iv = atm_iv; _fill += 1
+    iv_skew = put_25d_iv - call_25d_iv
 
     # CBOE SKEW
     if atm_iv > 0.01 and put_25d_iv is not None:
@@ -836,6 +848,7 @@ def calc_skew(contracts, spot_price, trade_date, r=0.03):
         'put_25d_iv': round((put_25d_iv or 0) * 100, 2),
         'call_25d_iv': round((call_25d_iv or 0) * 100, 2),
         'iv_skew': round(iv_skew * 100, 2),
+        'iv_skew_est': _fill > 0,          # True = 有取腿缺失，用 ATM IV 代理估算
         'cboe_skew': round(cboe_skew, 2),
         'vol_pcr': round(vol_pcr, 2),
         'oi_pcr': round(oi_pcr, 2),

@@ -356,3 +356,52 @@ def main():
 if __name__ == '__main__':
     main()
 ```
+
+---
+
+## 美股两条线与合并日报（v1.1.0 新增）
+
+### calc/us/index_options.py
+
+```python
+compute() -> dict
+# {'snapshot': 'YYYY-MM-DD',
+#  'targets': {'SPX': {...}, 'NDX': {...}, 'RUT': {...}}}
+# 每个标的字段：idx_last/idx_pct/idx_min252/idx_max252、etf_last/hv20/ivhv、term、
+#   skew{val,date,pct,med,sd}、chain_spot/iv30、near/next/iv_near/iv_next/R、rr、
+#   pcr、gex_norm、flip、flip_dist、n_chain
+```
+
+### calc/us/treasury_fetch.py / treasury_analyze.py / treasury_backfill.py
+
+```python
+treasury_fetch.main()            -> dict          # 抓数 + 落盘 + 追加 OI 快照
+treasury_analyze.judge_from_files(data_file=None, hist_file=None) -> dict
+# {'level': 红灯/黄灯/绿灯, 'labels': {direction, structure, strength, verdict},
+#  'rules': [{rule:'R1'|'R3'|'R5', hit, detail, ...}], 'sync_checks': [...],
+#  'r5_mode': '历史2σ/80分位'|'当天标准(无OI历史)', 'oi_distribution': {...}}
+treasury_backfill.backfill(history_path, data_path, months, symbols) -> None
+```
+
+### calc/cn/forecast.py
+
+```python
+main() -> dict
+# {'generated', 'horizon_days': 5, 'method', 'targets': {key: {last_vol, long_mean, phi,
+#   sigma_log, hv_ewma, forecast: [{date_fmt, point, lo, hi}, ...]}}}
+```
+
+### alert/reports/cn_us.py
+
+```python
+run(dry_run=False, with_cn=True, verbose=True) -> (summary: dict, html_path: str)
+# A股五轨(risk_layer) + 美股三轨(index_options) + 美债ETF期权(treasury_analyze)
+# + 5日预测(forecast) → outputs/cn_us_<日期>.html → trigger() 推送
+```
+
+### cli.py
+
+```bash
+python cli.py list | selftest | <子命令> [原脚本参数…]
+# 与 calc/alert 各脚本的 main() 一一对应，参数原样透传
+```

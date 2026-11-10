@@ -184,3 +184,17 @@
 3. 对比通过后，改 crontab 指向本项目脚本
 4. 观察 1–2 周无异常，再考虑下线原脚本
 5. 数据整体迁入本项目 `outputs/` 后，`calc/db/*` 会自动切换到项目内库（无需改代码）
+
+---
+
+## 十、合并期（v1.1.0）：美股两条线与中美链路怎么归位的
+
+本文件前九节记录的是 **A 股代码从原工程迁入本项目** 的映射；
+v1.1.0 又把「中美期权风险释放汇总」链路与「美债ETF期权监控」模块并了进来，
+这部分归位映射、差异对照与 bug 修复记录统一写在 **`docs/MERGE_NOTES.md`**，
+不在此重复。要点：
+
+- A 股：仍以本项目 `calc/` 为单一真源，中美链路里重复的 A 股计算不再保留。
+- 美股三轨 → `calc/us/index_options.py`，抓数 → `calc/us/index_fetch.py`。
+- 美债 ETF 期权 → `calc/us/treasury_{fetch,analyze,backfill}.py`。
+- 合并日报 → `alert/reports/cn_us.py`；入口 → `cli.py`。
