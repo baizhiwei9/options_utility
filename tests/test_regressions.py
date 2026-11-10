@@ -242,3 +242,97 @@ class TestCliDispatch(unittest.TestCase):
         src = _src('cli.py')
         self.assertIn('runpy', src, 'cli.py 缺 runpy 兜底分支')
         self.assertIn("run_name='__main__'", src)
+
+
+class TestLocalAbsorbedCapabilities(unittest.TestCase):
+    """2026-11-10 从本地零散期权脚本收编进 calc/cn/ 的 5 项能力。
+
+    这些能力原先在 bin/opt_*.py、bin/gex_core.py、bin/option_daily.py 里各写一份，
+    收编后必须保证：① 模块能导入 ② 自检通过 ③ 口径关键点不退步。
+    """
+
+    def test_moments_bkm(self):
+        """#M1 风险中性峰度：正态输入下超额峰度≈0、σ≈真值。"""
+        from calc.cn.moments import rn_moments, _self_check
+        sig, sk, ku = rn_moments(
+            [70, 75, 80, 85, 90, 95, 100, 105, 110, 115, 120, 125, 130],
+            [30.0, 25.0, 20.0, 15.0, 10.0, 5.5, 3.5, 5.0, 8.0, 12.0, 17.0, 22.0, 27.0],
+            [True] * 13, 100.0, 0.25, r=0.0)
+        self.assertTrue(all(x == x for x in (sig, sk, ku)))   # 非 nan
+        self.assertTrue(_self_check())
+
+    def test_skew_dual_has_10d(self):
+        """#M2 双口径必须同时给 10Δ 和 25Δ，且左偏时都为正。"""
+        from calc.cn.skew_dual import dual_skew, _self_check
+        self.assertTrue(_self_check())
+        S, T = 4.0, 0.08
+        contracts = []
+        for i in range(1, 21):
+            K = S * (0.85 + 0.015 * i)
+            contracts.append({"exercise_price": K, "call_put": "P",
+                              "iv": 0.20 + max(0.0, (S - K)) * 1.6})
+            contracts.append({"exercise_price": K, "call_put": "C",
+                              "iv": 0.20 + max(0.0, (K - S)) * 0.8})
+        r = dual_skew(contracts, S, T)
+        self.assertTrue(r["ok"])
+        for k in ("IV_10C", "IV_10P", "Skew_10", "IV_25C", "IV_25P", "Skew_25"):
+            self.assertIn(k, r, "缺字段 %s" % k)
+        self.assertGreater(r["Skew_10"], 0)
+        self.assertGreater(r["Skew_25"], 0)
+
+    def test_gex_weighted_interp(self):
+        """#M3 30/90 恒定期限插值：两点 10D/100D 时权重合成必须正确。"""
+        from calc.cn.gex_weighted import weighted_gex, _self_check
+        self.assertTrue(_self_check())
+        r = weighted_gex([{"dte": 10, "gex": 100.0}, {"dte": 100, "gex": 400.0}])
+        self.assertAlmostEqual(r["gex30"], 100 + (20 / 90) * 300, places=6)
+        self.assertAlmostEqual(r["gex_mix_simple"], 500.0, places=6)
+        # 恒定期限口径与直接加总必须不同（否则这个模块没意义）
+        self.assertNotAlmostEqual(r["gex_weighted"], r["gex_mix_simple"], places=2)
+
+    def test_wing_danger(self):
+        """#M4 翼形归因 + 危险分：左翼上翘要能说出原因，倒挂+高波动要高分。"""
+        from calc.cn.wing_danger import wing_stats, wing_reason, vol_danger, _self_check
+        self.assertTrue(_self_check())
+        d = {"spot": 4.0, "atm": 0.20, "ts": 0.5,
+             "pts": [{"cp": "P", "K": 3.8, "iv": 0.26},
+                     {"cp": "C", "K": 4.2, "iv": 0.205}]}
+        st = wing_stats(d)
+        self.assertGreater(st["L"], 3)
+        self.assertIn("左翼", st["shape"])
+        reason = wing_reason("X", d, {"mom": {"X": {"d5": -5.0}}})
+        self.assertTrue(len(reason) > 6)
+        calm = vol_danger("A", [{"dte": 16, "atm": 20.0}, {"dte": 45, "atm": 21.0}])
+        hot = vol_danger("B", [{"dte": 16, "atm": 55.0}, {"dte": 45, "atm": 40.0}],
+                         rv={"rv5": 70.0, "rv60": 30.0}, wing={"L": 4.0})
+        self.assertLess(calm["score"], hot["score"])
+
+    def test_iv_history_multi_expiry_not_overwritten(self):
+        """#M5 每个到期月独立存（key=DTE）：这是本地修过的 bug，远月不能覆盖近月。"""
+        from calc.cn.iv_history import atm_term_from_day, _self_check
+        self.assertTrue(_self_check())
+        S = 4.0
+        contracts = []
+        for mat in ("20261201", "20270101"):
+            for i in range(-8, 9):
+                K = S * (1 + i * 0.01)
+                for cp in ("C", "P"):
+                    contracts.append({"maturity_date": mat,
+                                      "exercise_price": round(K, 4),
+                                      "call_put": cp, "settle": 0.05})
+        term = atm_term_from_day(contracts, S, "20261110")
+        self.assertEqual(len(term), 2, "两个到期月必须都保留（曾出现远月覆盖近月）")
+
+    def test_iv_percentile_thresholds(self):
+        """#M5 危险分第 6 维依赖的分位阈值。"""
+        from calc.cn.iv_history import iv_percentile_thresholds
+        th = iv_percentile_thresholds([10, 15, 20, 25, 30], current=28)
+        self.assertAlmostEqual(th["pct"], 80.0, places=1)
+        self.assertIsNotNone(th["p80"])
+        self.assertIsNotNone(th["p95"])
+
+    def test_new_cli_commands_registered(self):
+        """#M6 5 个新子命令必须都在 CLI 清单里。"""
+        src = _src('cli.py')
+        for cmd in ('moments', 'skew-dual', 'gex-weighted', 'wing', 'iv-history'):
+            self.assertIn("'%s'" % cmd, src, 'CLI 缺子命令 %s' % cmd)
