@@ -61,7 +61,13 @@ options_utility/
 │   │   ├── treasury_fetch.py  美债ETF：NASDAQ 期权链 + 新浪日K + Treasury.gov 收益率
 │   │   ├── treasury_analyze.py R1~R6 判定与方向/结构/强度/结论四类标签
 │   │   └── treasury_backfill.py OCC 月度成交量回补（近 12 个月）
-│   └── cn/forecast.py      波动率 5 日预测（log-IV 的 AR(1)/OU + EWMA 参照）
+│   └── cn/                 【A股补充能力 · 本地脚本收编 2026-11-10】
+│       ├── forecast.py       波动率 5 日预测（log-IV 的 AR(1)/OU + EWMA 参照）
+│       ├── moments.py        BKM 风险中性高阶矩 → σ/偏度/超额峰度（尾部厚度）
+│       ├── skew_dual.py      10Δ/25Δ 双口径偏度（delta 空间取档 + 插值）
+│       ├── gex_weighted.py   30/90 恒定期限加权 GEX（VIX 白皮书插值）+ 分位
+│       ├── wing_danger.py    微笑翼形归因（为什么上翘/下翘）+ 0-100 危险分
+│       └── iv_history.py     ATM IV 期限结构逐日回补 + IV 年分位阈值
 ├── alert/                  【报警层】只判 + 推
 │   ├── engine.py           ★ 统一判定引擎（THRESHOLD/PERCENTILE/CHANGE/CROSS + 幂等 + 陈旧保护）
 │   ├── rules.py            ★ 全部阈值单一真源（11 组 50 条，含美股两条线）
@@ -233,6 +239,8 @@ TLT（主）/ TLH / IEF / XLU：NASDAQ 期权链 + BSM 反解 IV，输出 call/p
 |---|---|---|
 | 1.0.0 | 2026-11-10 | 从三处散落代码归位为独立项目；建立统一报警引擎与规则单一真源；`skew10` 完成引擎接入 |
 | 1.1.0 | 2026-11-10 | **合并期**：并入中美汇总链路、美债ETF期权监控、科创50/早期研究脚本的能力；新增 `calc/us/`（美股三轨 + 美债ETF期权）、`calc/cn/forecast.py`、`alert/reports/cn_us.py`、`cli.py` 单一入口、`config/paths.py` 目录真源；清除主机绝对路径；修正 `calc_skew` ATM IV 缺失被腰斩、`iv_skew` 单侧缺失当 0、美债 R5 取错「上一交易日」等 bug；补 `requirements.txt` 与 `tests/` 离线自检 |
+| 1.1.1 | 2026-11-10 | **合并后二次审计**：修 9 个真 bug（`pcr_macd` 的 `option_pcr` 未定义致日报 PCR+MACD 静默缺席、`close.py` 的 `skew_history_db` 未定义致 SKEW 历史库停写、`basis.py` 缺 pandas、`feishu_card_utils` 缺 `build_field`、美债 `judge()`/`build_oi_distribution()` 硬下标容错、data_hub 两个源缺 import、**CLI 8 个子命令因无 `main()` 根本跑不了**）；清 3 处 `/opt/coze` 硬路径；新增 `tests/test_regressions.py` |
+| 1.2.0 | 2026-11-10 | **本地零散期权脚本能力收编**：新增 `calc/cn/` 五个模块 —— `moments.py`(BKM 峰度)、`skew_dual.py`(10Δ/25Δ)、`gex_weighted.py`(恒定期限加权 GEX)、`wing_danger.py`(翼形归因 + 0-100 危险分)、`iv_history.py`(IV 期限结构回补 + 年分位)；新增 5 个 CLI 子命令；测试 23 → **30 项全过** |
 
 ---
 

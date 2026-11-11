@@ -222,3 +222,73 @@ OK                       ← 原 9 项 + 新增 14 项
 
 `python cli.py selftest` 能在任意目录跑；但用到 `data_hub` 的报警任务（39 个文件）要求
 `data_hub` 与 `options_utility` 同级，或把该父目录加进 `PYTHONPATH`。
+
+---
+
+## 九、2026-11-10 第二批：本地零散期权脚本的能力收编（v1.2.0）
+
+> 大佬要求：「本地所有的用期权的，还有用期权报警的那一堆东西，都用这个库。
+> 你如果有特殊的，就合并到这里边。」
+
+### 9.1 本地 23 个期权脚本的处置
+
+排查方法：`crontab` + 全仓 `grep` 引用，判断哪些只是零散研究脚本、哪些有库里没有的能力。
+
+| 本地脚本 | 行数 | crontab/引用 | 处置 |
+|---|---|---|---|
+| `option_daily.py` | 2535 | **3（crontab 22:00 / 22:50 / 23:30）** | **保留运行**（群消息采集 + 推送编排是本地特有的业务，不是期权计算），但把其中的**翼形归因 + 危险分**收编进库 |
+| `opt_kurtosis_kc50.py` / `opt_kurtosis_dual.py` | 259 / 300 | 0 | 能力收编 → `calc/cn/moments.py`（BKM 峰度，库此前完全没有） |
+| `opt_skew_10_25.py` | 286 | 0 | 能力收编 → `calc/cn/skew_dual.py`（10Δ 口径，库此前只有 25Δ） |
+| `gex_core.py` | 474 | 0 | 能力收编 → `calc/cn/gex_weighted.py`（恒定期限加权，库此前只有全月份加总） |
+| `opt_iv_hist.py` | 240 | 0 | 能力收编 → `calc/cn/iv_history.py`（IV 历史回补，危险分第 6 维依赖） |
+| `opt_gex.py` / `opt_gex_flip.py` / `gex_multi.py` / `gex_flip_watch.py` / `gex_flip_alert.py` / `gex_hist_chart.py` / `gex_hist_parse.py` / `gex_history_scrape.py` | 448~705 | 0 | **能力已被覆盖**，不迁。库的 `calc/gex.py`（全月份加总 + Flip）+ `calc/cn/gex_weighted.py`（恒定期限）已含全部口径 |
+| `opt_pcr.py` / `opt_pcr_idx.py` | 429 / 483 | 0（`opt_pcr` 仅被注释引用） | **能力已被覆盖** → 库 `calc/pcr.py`（指数 PCR，四级降级取数） |
+| `opt_skew_by_month.py` / `opt_skew_pcr.py` / `opt_skew_vix.py` / `opt_rr_kc50.py` / `opt_kc50_vix.py` | 178~557 | 0 | **能力已被覆盖** → `calc/option_monitor.py::calc_skew/calc_risk_reversal` + `calc/iv_term.py` + `calc/cn/skew_dual.py` |
+| `fetch_opt_chain.py` / `multia_opt_overlay.py` / `layered_v2_optimized.py` | 90~285 | 0 | **不属于期权计算层**：`fetch_opt_chain` 是取数（库 `calc/fetch.py` 已覆盖）；后两个是**策略回测**（多资产期权 overlay / 分层仓位），属于策略研究，不进本库 |
+
+**结论：本地 23 个期权脚本，5 项独有能力已收编，其余要么被覆盖、要么不属于计算层。**
+
+### 9.2 新增 5 个模块（`calc/cn/`）
+
+| 模块 | 能力 | 库此前为何没有 |
+|---|---|---|
+| `moments.py` | BKM(2003) 风险中性 **σ / 偏度 / 超额峰度** | `risk_layer.bkm_skew_index()` 只反解偏度（3 阶），**没有 4 阶矩**。峰度看尾部厚度，与偏度（方向）是两件事 |
+| `skew_dual.py` | **10Δ / 25Δ 双口径**偏度（delta 空间取档 + 线性插值） | `calc_skew()` 只做 25Δ。10Δ 才反映极端崩盘保护的定价 |
+| `gex_weighted.py` | **30/90 恒定期限**加权 GEX（VIX 白皮书插值法） | `calc/gex.py` 是全月份直接加总，跨月不可比、进不了分位池 |
+| `wing_danger.py` | 微笑**翼形归因**（为什么上翘/下翘，纯规则 0 token）+ **0-100 危险分** | 库里完全没有。这是大佬 2026-11-02 明确要求的能力 |
+| `iv_history.py` | ATM IV 期限结构**逐日回补** + IV 年分位阈值 | `risk_layer` 的 `IV_HISTORY_CSV` 只有当日快照，算不出年分位 |
+
+### 9.3 新增 5 个 CLI 子命令
+
+```bash
+python cli.py moments        # 自检 BKM 矩（σ/偏度/峰度）
+python cli.py skew-dual      # 自检 10Δ/25Δ 双口径
+python cli.py gex-weighted   # 自检 30/90 插值加权
+python cli.py wing           # 自检翼形归因 + 危险分
+python cli.py iv-history     # 自检 IV 期限结构 + 分位阈值
+```
+
+（每个模块都带 `_self_check()`，无参数运行即自检，不联网、不改数据。）
+
+### 9.4 必须知道的口径边界（**别再混用**）
+
+| 场景 | 用哪个 | 不能用哪个 |
+|---|---|---|
+| 当日 25Δ 标准偏度 | `calc/option_monitor.py::calc_skew()`（delta 反解行权价） | `skew_dual.py`（取档近似，序列用） |
+| 序列 / 对照偏度 | `calc/cn/skew_dual.py`（快，不反解） | `calc_skew()`（每次要反解，慢） |
+| 当日 GEX / Flip 判断 | `calc/gex.py`（全月份加总） | `gex_weighted.py`（恒定期限） |
+| GEX 历史分位 / 趋势 | `calc/cn/gex_weighted.py`（跨月可比） | `calc/gex.py`（跨月断层） |
+| 危险分第 6 维 IV 分位 | `calc/cn/iv_history.py::iv_percentile_thresholds()` | `risk_layer` 的当日 CSV（无历史） |
+
+### 9.5 验证
+
+```
+python cli.py selftest                              → ✅ 全部通过
+python -m unittest discover -s tests                → Ran 30 tests ... OK
+python -m pyflakes $(find . -name "*.py")           → undefined name: 0
+5 个模块单独 _self_check()                          → 5/5 ✅
+```
+
+新增测试（`tests/test_regressions.py::TestLocalAbsorbedCapabilities`，7 项）覆盖：
+BKM 矩自洽、双口径字段齐全且左偏为正、30/90 插值算式、翼形归因非空 + 危险分单调、
+多到期月不被覆盖（本地修过的 bug）、分位阈值、5 个 CLI 子命令已注册。
