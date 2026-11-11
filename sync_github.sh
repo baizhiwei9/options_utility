@@ -107,8 +107,14 @@ else
     WHITELIST='fa5fd1943c7b386f172d6893dbfba10b|bd1d9ddb04089700cf9c27f6f7426281'
     # 文档里记录的源码 MD5 指纹，非密钥
     WHITELIST="$WHITELIST|91a6e3d3738c0f44ee888697c3514520|0e9a243601811c247fada93b33cfaae4"
+    #   DANGER_MAIL_TO 本人收件邮箱（业务配置，非密钥）
+    #   git commit 身份用的 GitHub noreply 邮箱
+    WHITELIST="$WHITELIST|410119229@qq\.com|43193528\+baizhiwei9@users\.noreply\.github\.com"
 
-    HITS=$(grep -rnoE \
+    # -a 必须带：extras/local_scripts/option_daily.py 含大量中文与 emoji，
+    # grep 会把它判成 binary file 而只回 "binary file matches"，
+    # 拿不到匹配行 → HITS 为空 → 明文 webhook 就这么漏过去了（2026-11-11 实际踩到）。
+    HITS=$(grep -rnoEa \
         "([a-f0-9]{32,}|gh[pousr]_[A-Za-z0-9]{20,}|sk-[A-Za-z0-9]{20,}|ou_[a-f0-9]{20,}|oc_[a-f0-9]{20,}|https://open\.feishu\.cn/open-apis/bot/v2/hook/[A-Za-z0-9-]+|[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.(com|cn|net|org))" \
         "$SRC_DIR" \
         --include='*.py' --include='*.md' --include='*.json' --include='*.txt' \

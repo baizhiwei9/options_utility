@@ -5,7 +5,7 @@
 关注：多空方向 · 持仓量(OI) · 偏度(SKEW / IV Skew) · GEX · 波动率曲面 · 期货基差 · 机会清单。
 
 数据来源
-  1) 飞书群 oc_5971f823bf987081f722f2942bbc8d71 当日 15:00 后消息(复用 fetch-feishu-group-msgs.py)
+  1) 飞书群 oc_<REDACTED> 当日 15:00 后消息(复用 fetch-feishu-group-msgs.py)
      - 「📊 中线偏好监控」  → 期权 SKEW 表(ATM IV / IV Skew / SKEW / Vol PCR / 方向) + GEX 表
      - 「期权OI日终监测」    → 全市场 OI 变化 + 异动合约明细 + 增仓/减仓 TOP10
      - 「A股周期监控」       → VIX / PCR / SKEW 预警
@@ -90,11 +90,11 @@ def dk(dir_text, strength=1):
 
 FETCH = os.path.join(WS, 'bin/fetch-feishu-group-msgs.py')
 # 群消息来源（新闻观点采集，仍是原群）
-CHAT = 'oc_5971f823bf987081f722f2942bbc8d71'
+CHAT = os.environ.get('OPT_FEISHU_SOURCE_CHAT', '')
 # 2026-10-15 用户要求：期权日报改发**私聊**、单发（不发群）
-#   私聊 chat_id = 与机器人单聊 oc_0e4e3335f97551eba50a32d6ccf8c12c
-CHAT_PUSH = os.environ.get('OPT_FEISHU_CHAT', 'oc_0e4e3335f97551eba50a32d6ccf8c12c')
-WEBHOOK = 'https://open.feishu.cn/open-apis/bot/v2/hook/6d34534a-af18-48ba-be77-a30c524734a8'
+#   私聊 chat_id = 与机器人单聊 oc_<REDACTED>
+CHAT_PUSH = os.environ.get('OPT_FEISHU_CHAT', '')
+WEBHOOK = os.environ.get('OPT_FEISHU_WEBHOOK', '')
 SIGN = '📎 来自 OpenClaw.Deepseek'
 QQ_TARGET = 'qqbot:c2c:D3056302911060130E3DEEC57C618084'  # 与其它日报一致的私聊目标
 
