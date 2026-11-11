@@ -75,6 +75,8 @@ EXCLUDES=(
     --exclude='*_sent_lock.json'
     --exclude='*_lock.json'
     --exclude='*_state.json'
+    # 每日运行态快照（bottom_monitor_YYYY-MM-DD.json 之类），只保留 state/.gitkeep 占位
+    --exclude='state/*/*.json'
     --exclude='codeact/'
     --exclude='.pytest_cache/'
     --exclude='*.log'
@@ -161,6 +163,9 @@ cd "$WORK_DIR"
 git init -q -b "$BRANCH"
 git config user.name  "baizhiwei9"
 git config user.email "43193528+baizhiwei9@users.noreply.github.com"
+# 云盘 FUSE 挂载下所有文件权限都是 777，若不关掉 fileMode，
+# 每次同步都会产生一堆 100644→100755 的空 diff 噪音
+git config core.fileMode false
 git remote add origin "https://github.com/${REPO}.git"
 
 # 拉远端历史，让新提交接在后面而不是另起炉灶
