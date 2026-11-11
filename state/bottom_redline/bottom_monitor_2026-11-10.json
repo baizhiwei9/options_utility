@@ -1,0 +1,368 @@
+{
+  "run_time": "2026-11-10T17:04:31.090506",
+  "trading_date": "2026-11-10",
+  "mode": "intraday",
+  "triggered_count": 2,
+  "total": 12,
+  "position": "空仓/轻仓",
+  "advice": "红线未充分触发，保持耐心，等待更多信号",
+  "prediction": "未达底部区间，维持常规风控；P(振幅>1.5%)需结合VIX判断",
+  "indicators": {
+    "中证1000VIX": {
+      "value": 31.57,
+      "triggered": false,
+      "source": "中证1000(MO自算)",
+      "info": "当前 31.6（中证1000 MO 自算VIX），阈值 35.0"
+    },
+    "融资余额": {
+      "value": null,
+      "value_detail": {
+        "sse_yi": 11781.90259948,
+        "szse_yi": null,
+        "total_yi": null
+      },
+      "triggered": false,
+      "data_ok": false,
+      "info": "⚠️ 深交所融资余额未发布，指标②不可用（沪市 1.18万亿，深市缺失，不估算合计）"
+    },
+    "IM贴水": {
+      "value": 51.14300000000003,
+      "basis": -51.14300000000003,
+      "spot": 6499.743,
+      "futures": 6448.6,
+      "triggered": false,
+      "info": "IM贴水 51点 (期货 6449 - 现货 6500)，阈值 160.0点"
+    },
+    "大阴线": {
+      "value": 0,
+      "triggered": false,
+      "info": "连续阴线 0 天（阈值 3.0）"
+    },
+    "成交量": {
+      "value": 0.8364506369976658,
+      "triggered": false,
+      "had_shrink": false,
+      "latest_expand": false,
+      "info": "量比 0.84，近期缩量✗，放量✗，大跌✓"
+    },
+    "大盘小盘比": {
+      "value": 0.6240412890171196,
+      "percentile": 87.6,
+      "triggered": false,
+      "info": "大/小比 0.6240，处于 88% 分位（未达极端区间，95%/5% 才触发）"
+    },
+    "加息/宏观CPI": {
+      "value": 0.0,
+      "triggered": false,
+      "info": "月率 +0.0% (2026-10)，同比 +0.7%，前值 +0.2%"
+    },
+    "IM点位支撑": {
+      "value": 6499.743,
+      "triggered": true,
+      "info": "中证1000 6500，支撑位 6600.0"
+    },
+    "科创50支撑": {
+      "value": 1256.957,
+      "triggered": false,
+      "info": "科创50 1257，支撑位 1250.0"
+    },
+    "韭圈情绪": {
+      "value": null,
+      "triggered": false,
+      "info": "⚠️ 韭圈情绪指数无公开API，需人工观察"
+    },
+    "PCR_3of4": {
+      "value": 0,
+      "triggered": false,
+      "pcr_data": {
+        "沪深300": {
+          "vol_pcr": 0.4481931766796902,
+          "oi_pcr": 0.6589972924427197,
+          "name": "沪深300(300ETF华泰柏瑞+300ETF嘉实)",
+          "excluded": true,
+          "nc_contracts": 0,
+          "smooth_days": 5,
+          "etfs": [
+            "510300",
+            "159919"
+          ]
+        },
+        "中证500": {
+          "vol_pcr": 0.5847128683520617,
+          "oi_pcr": 0.6553271880891303,
+          "name": "中证500(500ETF南方+500ETF嘉实)",
+          "excluded": true,
+          "nc_contracts": 0,
+          "smooth_days": 5,
+          "etfs": [
+            "510500",
+            "159922"
+          ]
+        },
+        "中证1000": {
+          "vol_pcr": 0.6978,
+          "oi_pcr": 0.5537,
+          "name": "中证1000",
+          "excluded": true,
+          "nc_contracts": 0,
+          "smooth_days": 5,
+          "etfs": []
+        },
+        "科创50": {
+          "vol_pcr": 0.4762883165239865,
+          "oi_pcr": 0.5895034083529456,
+          "name": "科创50(科创50ETF华夏+科创50ETF易方达)",
+          "excluded": true,
+          "nc_contracts": 0,
+          "smooth_days": 5,
+          "etfs": [
+            "588000",
+            "588080"
+          ]
+        },
+        "创业板": {
+          "vol_pcr": 0.5218200939764384,
+          "oi_pcr": 0.5329278881536548,
+          "name": "创业板(创业板ETF易方达)",
+          "excluded": true,
+          "nc_contracts": 0,
+          "smooth_days": 5,
+          "etfs": [
+            "159915"
+          ]
+        }
+      },
+      "high_pcr_items": [],
+      "excluded_current": true,
+      "smooth_5d": true,
+      "low_sample_warning": false,
+      "missing_vol": [],
+      "missing_oi": [],
+      "info": "已剔除当月✓ 5日平滑✓(20261103~20261109) | 0/5个指数PCR偏高(>1.2): 无 | 沪深300(300ETF华泰柏瑞+300ETF嘉实): 量0.45/仓0.66; 中证500(500ETF南方+500ETF嘉实): 量0.58/仓0.66; 中证1000: 量0.70/仓0.55; 科创50(科创50ETF华夏+科创50ETF易方达): 量0.48/仓0.59; 创业板(创业板ETF易方达): 量0.52/仓0.53"
+    },
+    "科技板块": {
+      "value": 0.775,
+      "triggered": true,
+      "pct_5d": 10.398860398860409,
+      "pct_20d": -12.528216704288939,
+      "info": "半导体ETF 0.775，5日 +10.4%，20日 -12.5%"
+    }
+  },
+  "qvix_toplow": {
+    "signals": [],
+    "new_signals": [],
+    "email_sent": false,
+    "top_list": [],
+    "low_list": [],
+    "indices": {
+      "300ETF": {
+        "label": "沪深300",
+        "current": 19.19,
+        "trade_date": "2026-11-10 17:03",
+        "pct_rank": null,
+        "p80": null,
+        "p95": null,
+        "top_warning": false,
+        "low_warning": false,
+        "stale": false,
+        "note": "样本不足(0日)",
+        "data_missing": false,
+        "source": "chain:sina_realtime(sina)"
+      },
+      "500ETF": {
+        "label": "中证500",
+        "current": 30.92,
+        "trade_date": "2026-11-10 17:03",
+        "pct_rank": null,
+        "p80": null,
+        "p95": null,
+        "top_warning": false,
+        "low_warning": false,
+        "stale": false,
+        "note": "样本不足(0日)",
+        "data_missing": false,
+        "source": "chain:sina_realtime(sina)"
+      },
+      "创业板ETF": {
+        "label": "创业板",
+        "current": 39.05,
+        "trade_date": "2026-11-10 17:03",
+        "pct_rank": null,
+        "p80": null,
+        "p95": null,
+        "top_warning": false,
+        "low_warning": false,
+        "stale": false,
+        "note": "样本不足(0日)",
+        "data_missing": false,
+        "source": "chain:sina_realtime(sina)"
+      },
+      "科创50ETF": {
+        "label": "科创50",
+        "current": 49.04,
+        "trade_date": "2026-11-10 17:03",
+        "pct_rank": null,
+        "p80": null,
+        "p95": null,
+        "top_warning": false,
+        "low_warning": false,
+        "stale": false,
+        "note": "样本不足(0日)",
+        "data_missing": false,
+        "source": "chain:sina_realtime(sina)"
+      },
+      "MO": {
+        "label": "中证1000",
+        "current": 31.57,
+        "trade_date": "2026-11-10 17:03",
+        "pct_rank": null,
+        "p80": null,
+        "p95": null,
+        "top_warning": false,
+        "low_warning": false,
+        "stale": false,
+        "note": "样本不足(0日)",
+        "data_missing": false,
+        "source": "chain:sina_realtime(sina)"
+      }
+    },
+    "data_missing": false,
+    "available": true,
+    "error": "",
+    "not_updated": [],
+    "sync_elapsed": null,
+    "sync_budget": null,
+    "sync_degraded": false
+  },
+  "vix_alerts": {
+    "trading_date": "2026-11-10",
+    "vix_map": {
+      "300ETF": {
+        "vix": 19.33,
+        "mode": "intraday_max",
+        "sample_time_at_max": "14:18",
+        "sample_count": 4,
+        "percentile": null,
+        "trade_date": "2026-11-10 17:03",
+        "source": "chain:sina_realtime(sina)",
+        "data_missing": false,
+        "error": null
+      },
+      "500ETF": {
+        "vix": 30.88,
+        "mode": "intraday_max",
+        "sample_time_at_max": "15:00",
+        "sample_count": 4,
+        "percentile": null,
+        "trade_date": "2026-11-10 17:03",
+        "source": "chain:sina_realtime(sina)",
+        "data_missing": false,
+        "error": null
+      },
+      "MO": {
+        "vix": 31.48,
+        "mode": "intraday_max",
+        "sample_time_at_max": "15:00",
+        "sample_count": 4,
+        "percentile": null,
+        "trade_date": "2026-11-10 17:03",
+        "source": "chain:sina_realtime(sina)",
+        "data_missing": false,
+        "error": null
+      },
+      "创业板ETF": {
+        "vix": 39.01,
+        "mode": "intraday_max",
+        "sample_time_at_max": "14:45",
+        "sample_count": 4,
+        "percentile": null,
+        "trade_date": "2026-11-10 17:03",
+        "source": "chain:sina_realtime(sina)",
+        "data_missing": false,
+        "error": null
+      },
+      "科创50ETF": {
+        "vix": 48.97,
+        "mode": "intraday_max",
+        "sample_time_at_max": "15:00",
+        "sample_count": 4,
+        "percentile": null,
+        "trade_date": "2026-11-10 17:03",
+        "source": "chain:sina_realtime(sina)",
+        "data_missing": false,
+        "error": null
+      }
+    },
+    "vix_hits": [
+      {
+        "key": "500ETF",
+        "name": "中证500",
+        "vix": 30.88,
+        "mode": "intraday_max",
+        "sample_time_at_max": "15:00",
+        "percentile": null
+      },
+      {
+        "key": "MO",
+        "name": "中证1000",
+        "vix": 31.48,
+        "mode": "intraday_max",
+        "sample_time_at_max": "15:00",
+        "percentile": null
+      },
+      {
+        "key": "创业板ETF",
+        "name": "创业板指",
+        "vix": 39.01,
+        "mode": "intraday_max",
+        "sample_time_at_max": "14:45",
+        "percentile": null
+      },
+      {
+        "key": "科创50ETF",
+        "name": "科创50",
+        "vix": 48.97,
+        "mode": "intraday_max",
+        "sample_time_at_max": "15:00",
+        "percentile": null
+      }
+    ],
+    "vix_new": [],
+    "ma850_hits": [
+      {
+        "code": "000852.SH",
+        "name": "中证1000",
+        "date": "20261110",
+        "close": 6579.36,
+        "ma850": 6507.08,
+        "prev_close": 6499.74,
+        "prev_ma850": 6507.12,
+        "direction": "上穿"
+      },
+      {
+        "code": "399006.SZ",
+        "name": "创业板指",
+        "date": "20261110",
+        "close": 2494.4,
+        "ma850": 2460.76,
+        "prev_close": 2458.56,
+        "prev_ma850": 2460.47,
+        "direction": "上穿"
+      }
+    ],
+    "ma850_new": [],
+    "ma850_skipped": [],
+    "vwap_snapshots": {},
+    "vwap_hits": [],
+    "vwap_new": [],
+    "vwap_skipped": [],
+    "vwap_baseline_only": false,
+    "vwap_rows_written": 0,
+    "vwap_events_pushed": [],
+    "pushed": [],
+    "errors": [],
+    "data_missing": false,
+    "legacy_migrated": false,
+    "dry_run": true
+  }
+}
