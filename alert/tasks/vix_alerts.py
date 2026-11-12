@@ -501,14 +501,114 @@ def check_ma850_cross(index_data):
 # ============================================================
 # VWAP 标准差带（2026-11-09 新增）
 # ------------------------------------------------------------
-# 全部为纯 Python 计算，无 numpy / pandas 依赖，便于单测。
+# 算法走 techAnly-summary 的 smc/smc_core.vwap_band（唯一实现），
+# 该库需 pandas；pandas 不可用或加载失败时回退内置纯 Python 实现，口径一致。
 # ============================================================
+_TECHANLY_SMC = None
+_TECHANLY_TRIED = False
+
+
+def _load_techanly_smc():
+    """加载 techAnly-summary 的 `smc/smc_core.py`，取其中的 `vwap_band`。
+
+    techAnly-summary 没有 setup.py / pyproject.toml，`smc/` 下也没有 `__init__.py`，
+    只能按文件路径用 importlib 加载。找不到时返回 None，调用方回退内置实现。
+
+    查找顺序：
+      1. 环境变量 `TECHANLY_ROOT`
+      2. 与本项目同级的 `techAnly_合并多尺度交易/techAnly-summary`
+    """
+    global _TECHANLY_SMC, _TECHANLY_TRIED
+    if _TECHANLY_TRIED:
+        return _TECHANLY_SMC
+    _TECHANLY_TRIED = True
+
+    import importlib.util
+
+    here = os.path.dirname(os.path.abspath(__file__))
+    root = here
+    while root != os.path.dirname(root) and not (
+            os.path.isdir(os.path.join(root, 'calc')) and os.path.isdir(os.path.join(root, 'alert'))):
+        root = os.path.dirname(root)
+
+    cands = []
+    env = os.environ.get('TECHANLY_ROOT')
+    if env:
+        cands.append(env)
+    # techAnly-summary 与 dataHub_三级体系 是同级目录，从项目根逐级往上试（最多 5 级）
+    probe = root
+    for _ in range(5):
+        cands.append(os.path.join(probe, 'techAnly_合并多尺度交易', 'techAnly-summary'))
+        cands.append(os.path.join(probe, 'techAnly-summary'))
+        parent = os.path.dirname(probe)
+        if parent == probe:
+            break
+        probe = parent
+
+    for c in cands:
+        f = os.path.join(c, 'smc', 'smc_core.py')
+        if not os.path.isfile(f):
+            continue
+        try:
+            spec = importlib.util.spec_from_file_location('_techanly_smc_core', f)
+            mod = importlib.util.module_from_spec(spec)
+            spec.loader.exec_module(mod)
+            if hasattr(mod, 'vwap_band'):
+                _TECHANLY_SMC = mod
+                return mod
+        except Exception as e:      # noqa: BLE001
+            print('  ⚠️ techAnly smc_core 加载失败(%s): %s' % (c, e))
+    return None
+
+
+def _vwap_sigma(rows, window):
+    """算 VWAP 与**成交量加权** σ，优先走 techAnly-summary 的统一实现。
+
+    Args:
+        rows: [{'high','low','close','volume'}, ...]，已校验过，volume 均 > 0
+
+    Returns:
+        (vwap, sigma)
+
+    数学口径两边完全一致（techAnly `smc/smc_core.vwap_band`）：
+        TP   = (H + L + C) / 3
+        VWAP = Σ(TP × V) / Σ(V)
+        σ    = √( Σ(V × (TP − VWAP)²) / Σ(V) )
+    注意是**量加权**标准差，不是等权标准差。
+    """
+    mod = _load_techanly_smc()
+    if mod is not None:
+        try:
+            import pandas as pd
+            df = pd.DataFrame(rows)[['high', 'low', 'close', 'volume']]
+            v_arr, s_arr = mod.vwap_band(df, win=window)
+            v, s = float(v_arr[-1]), float(s_arr[-1])
+            if v == v and s == s:       # 排除 NaN
+                return v, s
+        except Exception as e:          # noqa: BLE001
+            print('  ⚠️ techAnly vwap_band 调用失败(%s)，回退内置实现' % e)
+
+    # ---- 内置回退：与 techAnly 口径一字不差 ----
+    tps = [(r['high'] + r['low'] + r['close']) / 3.0 for r in rows]
+    vols = [r['volume'] for r in rows]
+    sv = sum(vols)
+    v = sum(tp * vol for tp, vol in zip(tps, vols)) / sv
+    var = sum(vol * (tp - v) ** 2 for tp, vol in zip(tps, vols)) / sv
+    return v, var ** 0.5
+
+
 def compute_vwap_bands(bars, window=VWAP_WINDOW, sigmas=VWAP_SIGMAS):
     """成交量加权 VWAP 与成交量加权标准差（只取最后 window 根）。
 
-    TP  = (high + low + close) / 3
-    VWAP = Σ(TP × V) / Σ(V)
-    σ    = √( Σ(V × (TP − VWAP)²) / Σ(V) )
+    ⚠️ 2026-11-12 接口统一：算法改走 **techAnly-summary 的
+    `smc/smc_core.vwap_band`**（VWAP 六轨的唯一实现），本函数只负责入参校验
+    与取最后一根，不再自己写公式。找不到 techAnly 时回退内置实现（口径一致）。
+
+    与 techAnly 的唯一行为差异：**成交量异常的处理**
+      · techAnly：volume=0 替换成 NaN 不参与加权，全 0 时退化为等权兜底；
+      · 本函数：保留严格校验，成交量缺失/为 0 直接 raise。
+        理由——VWAP 带是风控信号，脏数据出带比不出带更危险
+        （MO 09:30 成交量 0 曾踩过，会让带位整体偏移，误报穿越）。
 
     Args:
         bars: [{'date','high','low','close','volume'}, ...]，时间升序
@@ -525,7 +625,8 @@ def compute_vwap_bands(bars, window=VWAP_WINDOW, sigmas=VWAP_SIGMAS):
     use = list(bars or [])[-window:]
     if len(use) < window:
         raise ValueError('样本不足(%d<%d)' % (len(use), window))
-    tps, vols = [], []
+
+    rows = []
     for b in use:
         c = _f(b.get('close'))
         if c is None:
@@ -539,21 +640,21 @@ def compute_vwap_bands(bars, window=VWAP_WINDOW, sigmas=VWAP_SIGMAS):
         v = _f(b.get('volume'))
         if v is None or v <= 0:
             raise ValueError('成交量非法(%s)' % (b.get('volume'),))
-        tps.append((h + l + c) / 3.0)
-        vols.append(v)
-    sv = sum(vols)
+        rows.append({'high': h, 'low': l, 'close': c, 'volume': v})
+
+    sv = sum(r['volume'] for r in rows)
     if sv <= 0:
         raise ValueError('成交量合计为 0')
-    vwap = sum(tp * v for tp, v in zip(tps, vols)) / sv
-    var = sum(v * (tp - vwap) ** 2 for tp, v in zip(tps, vols)) / sv
-    sigma = var ** 0.5
+
+    vwap, sigma = _vwap_sigma(rows, window)
+
     bands = {}
     for key, side, k in VWAP_BANDS:
         if k not in sigmas:
             continue
         bands[key] = vwap + k * sigma if side == 'upper' else vwap - k * sigma
     return {'vwap': vwap, 'sigma': sigma, 'bands': bands, 'n': len(use),
-            'vol_sum': sv, 'tp_last': tps[-1],
+            'vol_sum': sv, 'tp_last': (rows[-1]['high'] + rows[-1]['low'] + rows[-1]['close']) / 3.0,
             'first_date': use[0].get('date'), 'last_date': use[-1].get('date')}
 
 

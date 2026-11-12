@@ -114,7 +114,8 @@ EMAIL_CONFIG = {
 }
 
 from alert.engine import judge_all  # noqa: E402
-from alert.rules import BOTTOM_REDLINE_RULES  # noqa: E402
+from alert.rules import (BOTTOM_REDLINE_RULES,  # noqa: E402
+                         BOTTOM_REDLINE_FEISHU_MIN, BOTTOM_REDLINE_EMAIL_MIN)
 
 # 规则索引：阈值统一从 alert/rules.py 取，杜绝本文件与 rules.py 双源
 _BOTTOM_RULE = {r.key: r for r in BOTTOM_REDLINE_RULES}
@@ -2461,25 +2462,31 @@ def run_bottom_monitor(trading_date=None, mode='intraday', force=False, skip_pus
     report_md = generate_report(indicators, analysis, actual_trading_date)
     
     # ---- 推送飞书（独立运行时）----
+    # 2026-11-12 分级：只有触发 ≥ BOTTOM_REDLINE_FEISHU_MIN(3) 条才推。
+    # 此前是 `if not skip_push` 无条件每次必推，0 条触发也推，每天刷屏太乱。
     push_ok = False
     if not skip_push:
-        print(f"\n[4/4] 推送飞书...")
-        
-        title_emoji = "🔴" if triggered_count >= 6 else ("🟡" if triggered_count >= 4 else "🟢")
-        mode_tag = "[盘中]" if mode == 'intraday' else "[收盘]"
-        card_title = f"{title_emoji} 杨康平底部判断 {actual_trading_date} [{triggered_count}/12] {mode_tag}"
-        
-        card = markdown_to_card(card_title, report_md)
-        
-        push_ok = push_to_feishu(card)
-        if not push_ok:
-            print("  卡片推送失败，降级为纯文本...")
-            push_text_to_feishu(report_md)
-    
-    # ---- 邮件告警（红线>5）----
+        if triggered_count < BOTTOM_REDLINE_FEISHU_MIN:
+            print(f"\n[4/4] 飞书推送跳过：红线仅 {triggered_count}/12，"
+                  f"未达推送门槛 {BOTTOM_REDLINE_FEISHU_MIN} 条")
+        else:
+            print(f"\n[4/4] 推送飞书（红线 {triggered_count}/12 ≥ {BOTTOM_REDLINE_FEISHU_MIN}）...")
+
+            title_emoji = "🔴" if triggered_count >= 6 else ("🟡" if triggered_count >= 4 else "🟢")
+            mode_tag = "[盘中]" if mode == 'intraday' else "[收盘]"
+            card_title = f"{title_emoji} 杨康平底部判断 {actual_trading_date} [{triggered_count}/12] {mode_tag}"
+
+            card = markdown_to_card(card_title, report_md)
+
+            push_ok = push_to_feishu(card)
+            if not push_ok:
+                print("  卡片推送失败，降级为纯文本...")
+                push_text_to_feishu(report_md)
+
+    # ---- 邮件告警（红线 ≥ BOTTOM_REDLINE_EMAIL_MIN，即 ≥6，维持历史行为）----
     email_ok = False
-    if triggered_count > 5:
-        print(f"\n📧 红线{triggered_count}>5，触发邮件告警...")
+    if triggered_count >= BOTTOM_REDLINE_EMAIL_MIN:
+        print(f"\n📧 红线{triggered_count}≥{BOTTOM_REDLINE_EMAIL_MIN}，触发邮件告警...")
         email_ok = send_bottom_alert_email(
             triggered_count, analysis['total'], indicators, analysis,
             actual_trading_date, mode

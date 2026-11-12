@@ -1,7 +1,7 @@
 {
   "name": "options_utility",
-  "version": "1.2.0",
-  "date": "2026-11-10",
+  "version": "1.3.0",
+  "date": "2026-11-12",
   "merged_from": [
     "GitHub baizhiwei9/options_utility @354e131（A股计算层 + 报警引擎 + 29条规则基线，实为38条）",
     "中美期权风险释放汇总链路（美股三轨 + 偏度/VVIX/GEX报警 + 合并日报）",
@@ -68,5 +68,20 @@
       "wing",
       "iv-history"
     ]
-  }
+  },
+  "changelog": [
+    {
+      "version": "1.3.0",
+      "date": "2026-11-12",
+      "title": "偏度统一 + VWAP 接口统一 + 底部红线推送分级",
+      "items": [
+        "新增 calc/cn/skew_unified.py：25Δ RR 统一口径（dte≥10 优先选月 + put25−call25 + 小数单位），算法真源 data_hub.option_metrics.calc_25d_risk_reversal，只做 dict→OptionContract 适配",
+        "calc/option_monitor.py::calc_skew 改调统一口径，修掉 min(maturity_date) 选最近到期日导致 dte=6 时深虚值 BS 反推 IV 炸到 188% 的老问题（创业板ETF 实测）",
+        "calc/option_monitor.py::calc_risk_reversal 改调统一口径（选月/取腿/IV 同源），符号保留历史口径 call−put 以兼容下游卡片与阈值",
+        "alert/tasks/vix_alerts.py::compute_vwap_bands 改走 techAnly-summary 的 smc/smc_core.vwap_band，保留成交量严格校验，找不到该库时回退内置实现（口径一致）",
+        "alert/rules.py 新增 BOTTOM_REDLINE_FEISHU_MIN=3 / BOTTOM_REDLINE_EMAIL_MIN=6",
+        "alert/tasks/bottom_redline.py 飞书推送改为 ≥3 条红线才推（原为无条件每次必推），邮件维持 ≥6 条不变"
+      ]
+    }
+  ]
 }

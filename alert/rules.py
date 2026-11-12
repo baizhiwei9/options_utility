@@ -65,6 +65,7 @@ __all__ = [
     'OI_INTRADAY_TIER_RULES', 'OI_INTRADAY_EMAIL_RULE',
     'OI_INTRADAY_ALERT_PCT', 'OI_INTRADAY_MIN_CHG',
     'VIX_ALERT_RULES', 'BOTTOM_REDLINE_RULES', 'BOTTOM_REDLINE_TRIGGER_COUNT',
+    'BOTTOM_REDLINE_FEISHU_MIN', 'BOTTOM_REDLINE_EMAIL_MIN',
     'US_INDEX_RULES', 'US_TREASURY_RULES',
     'RULE_GROUPS', 'all_rules',
 ]
@@ -495,8 +496,15 @@ VIX_ALERT_RULES: Tuple[AlertRule, ...] = (
 # 十、底部 12 条红线（原 market_bottom_monitor.py / bottom_redline.py）
 # =============================================================================
 # 12 项阈值全部来自历史底部区域（2022.10 / 2024.02 / 2024.09）回测。
-# 单条红线不构成信号，是**聚合信号**：触发 ≥ 5 条才发邮件。
-BOTTOM_REDLINE_TRIGGER_COUNT = 5     # 12 条中触发 ≥ 5 条 → 底部区域告警
+# 单条红线不构成信号，是**聚合信号**，推送按触发条数分级。
+#
+# 2026-11-12 主人明确（原话）：
+#   「3 个有监控报警，然后你再发消息，3 个没报警你就不要发了，要不太乱了」
+#   「邮件还是原来的，大于等于 6 吧」
+# 即：飞书只在 ≥3 条时才推（此前是 0 条也推，每天刷屏），邮件保持 ≥6 不变。
+BOTTOM_REDLINE_TRIGGER_COUNT = 5     # 12 条中触发 ≥5 条 → 判定进入底部区域（文案分级用）
+BOTTOM_REDLINE_FEISHU_MIN = 3        # 飞书推送门槛：触发 ≥3 条才推，<3 静默
+BOTTOM_REDLINE_EMAIL_MIN = 6         # 邮件门槛：触发 ≥6 条才发（维持历史行为）
 
 BOTTOM_REDLINE_RULES: Tuple[AlertRule, ...] = (
     AlertRule(key='bottom.vix_1000', name='VIX1000红线', indicator='vix_1000',

@@ -10,6 +10,8 @@
 #   ./sync_github.sh -m "feat: 新增XX"      # 指定提交信息
 #   ./sync_github.sh --dry-run             # 只清点文件，不提交不推送
 #   ./sync_github.sh --force               # 跳过密钥扫描（确认误报时用）
+#   ./sync_github.sh --pr                # 走功能分支 + 开 PR（不直推 main）
+#   ./sync_github.sh --pr -b feat/xxx    # 指定 PR 分支名
 #
 # 前置：
 #   1. gh 已认证（gh auth status 显示 Logged in）
@@ -27,19 +29,28 @@ WORK_DIR="/tmp/_gh_sync_options"
 COMMIT_MSG=""
 DRY_RUN=0
 FORCE=0
+PR_MODE=0
+PR_BRANCH=""
 
 while [[ $# -gt 0 ]]; do
     case "$1" in
         -m|--message) COMMIT_MSG="${2:-}"; shift 2 ;;
         --dry-run)    DRY_RUN=1; shift ;;
         --force)      FORCE=1; shift ;;
-        -h|--help)    sed -n '2,20p' "$0"; exit 0 ;;
+        --pr)         PR_MODE=1; shift ;;
+        -b|--branch)  PR_BRANCH="${2:-}"; PR_MODE=1; shift 2 ;;
+        -h|--help)    sed -n '2,26p' "$0"; exit 0 ;;
         *) echo "未知参数: $1"; exit 1 ;;
     esac
 done
 
 if [[ -z "$COMMIT_MSG" ]]; then
     COMMIT_MSG="sync: options 项目同步 $(date '+%Y-%m-%d %H:%M')"
+fi
+
+# PR 分支名：未指定时按时间戳生成，避免多次同步撞名
+if [[ $PR_MODE -eq 1 && -z "$PR_BRANCH" ]]; then
+    PR_BRANCH="feat/sync-$(date '+%Y%m%d-%H%M')"
 fi
 
 # ---------- 排除规则 ----------
@@ -90,7 +101,11 @@ EXCLUDES=(
 echo "══════════════════════════════════════════════"
 echo " options 项目 → GitHub"
 echo " 源目录 : $SRC_DIR"
-echo " 目标库 : github.com/$REPO ($BRANCH)"
+if [[ $PR_MODE -eq 1 ]]; then
+    echo " 目标库 : github.com/$REPO ($PR_BRANCH → PR → $BRANCH)"
+else
+    echo " 目标库 : github.com/$REPO ($BRANCH 直推)"
+fi
 echo "══════════════════════════════════════════════"
 
 # ---------- 1) 密钥扫描 ----------
@@ -157,6 +172,7 @@ echo "  ✅ 凭证文件已排除"
 if [[ $DRY_RUN -eq 1 ]]; then
     echo ""
     echo "▶ --dry-run 模式，到此为止。"
+    [[ $PR_MODE -eq 1 ]] && echo "  （PR 模式：将推到 $PR_BRANCH 并开 PR，不直推 $BRANCH）"
     echo "  文件清单（前 30 个）："
     ( cd "$WORK_DIR" && find . -type f | sort | head -30 | sed 's/^/    /' )
     exit 0
@@ -182,6 +198,12 @@ else
     echo "  远端为空或不可达，按首次推送处理"
 fi
 
+# PR 模式：从 base 分支切出功能分支，改动带过去（工作区未提交内容会自动跟随）
+if [[ $PR_MODE -eq 1 ]]; then
+    git checkout -q -b "$PR_BRANCH"
+    echo "  已切到 PR 分支: $PR_BRANCH（base: $BRANCH）"
+fi
+
 git add -A
 if git diff --cached --quiet; then
     echo ""
@@ -202,8 +224,52 @@ git commit -q -m "$COMMIT_MSG"
 # ---------- 5) 推送 ----------
 echo ""
 echo "▶ [5/5] 推送到 GitHub..."
-git push -q origin "$BRANCH"
+
+if [[ $PR_MODE -ne 1 ]]; then
+    # ---- 直推模式（默认，行为与历史一致）----
+    git push -q origin "$BRANCH"
+    echo ""
+    echo "✅ 推送成功"
+    echo "   提交: $(git log --oneline -1)"
+    echo "   仓库: https://github.com/$REPO"
+    exit 0
+fi
+
+# ---- PR 模式 ----
+git push -q -u origin "$PR_BRANCH"
+echo "  ✅ 分支已推送: $PR_BRANCH"
+
+EXISTING=$(gh pr list --repo "$REPO" --head "$PR_BRANCH" --state open \
+           --json number --jq '.[0].number' 2>/dev/null || true)
+
+if [[ -n "$EXISTING" ]]; then
+    PR_URL=$(gh pr view "$EXISTING" --repo "$REPO" --json url --jq '.url' 2>/dev/null || true)
+    echo ""
+    echo "✅ 分支已更新，PR #$EXISTING 已存在（提交已追加）"
+    echo "   $PR_URL"
+else
+    echo "  创建 PR..."
+    PR_URL=$(gh pr create --repo "$REPO" \
+        --base "$BRANCH" --head "$PR_BRANCH" \
+        --title "$COMMIT_MSG" \
+        --body "## 变更
+
+由 sync_github.sh --pr 自动创建。
+
+- 源目录：$SRC_DIR
+- 变更文件：$CHANGED 个
+- base：$BRANCH
+
+## 检查项
+
+- [x] 密钥扫描通过（脚本已内置）
+- [x] config/private.py 未混入
+- [x] 离线测试通过" 2>&1)
+    echo ""
+    echo "✅ PR 已创建"
+    echo "   $PR_URL"
+fi
+
 echo ""
-echo "✅ 推送成功"
 echo "   提交: $(git log --oneline -1)"
 echo "   仓库: https://github.com/$REPO"

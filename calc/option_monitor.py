@@ -734,90 +734,45 @@ def get_option_contracts(exchange, opt_code_filter, trade_date, etf_code=None, s
 # ============ SKEW计算 ============
 
 def calc_skew(contracts, spot_price, trade_date, r=0.03):
-    """从合约数据计算SKEW指标"""
+    """从合约数据计算SKEW指标
+
+    ⚠️ 2026-11-12 偏度收敛（全库唯一口径）：
+    ATM / 25Δ 取腿与选月统一走 `calc/cn/skew_unified.py`，算法真源为
+    `data_hub.option_metrics.calc_25d_risk_reversal`——dte≥10 优先选月，避开临到期。
+    原实现用 `min(maturity_date)` 直接选最近到期日，实测 dte=6 时深度虚值价格
+    趋近 0，BS 反推 IV 会炸到 188%（创业板 ETF 踩到过），而同期 ATM IV 仅 44%，
+    这是本库偏度长期失真的真凶。
+    返回结构保持不变（IV / skew 均为百分数），调用方无需改动。
+    """
     calls = [c for c in contracts if c['call_put'] == 'C']
     puts = [c for c in contracts if c['call_put'] == 'P']
-    if len(calls) < 3 or len(puts) < 3: return None
-
-    # 过滤掉dte<3天的合约（避免临到期扭曲IV）
-    trade_dt = datetime.datetime.strptime(trade_date, "%Y%m%d")
-    valid_contracts = [c for c in contracts if (datetime.datetime.strptime(c['maturity_date'], "%Y%m%d") - trade_dt).days >= 3]
-    if len(valid_contracts) < 6:  # 不够用则放宽到>=2天
-        valid_contracts = [c for c in contracts if (datetime.datetime.strptime(c['maturity_date'], "%Y%m%d") - trade_dt).days >= 2]
-    if not valid_contracts:
-        valid_contracts = contracts  # 最后兜底
-
-    calls = [c for c in valid_contracts if c['call_put'] == 'C']
-    puts = [c for c in valid_contracts if c['call_put'] == 'P']
     if len(calls) < 3 or len(puts) < 3:
-        calls = [c for c in contracts if c['call_put'] == 'C']
-        puts = [c for c in contracts if c['call_put'] == 'P']
+        return None
 
-    calls.sort(key=lambda x: x['exercise_price'])
-    puts.sort(key=lambda x: x['exercise_price'])
+    # ---- 偏度：统一口径（内部小数，此处转百分数） ----
+    try:
+        from cn.skew_unified import skew_25d
+    except ImportError:      # 以脚本方式直接运行时 calc/cn 不在包路径
+        from skew_unified import skew_25d
 
-    # 最近到期日（基于过滤后的合约）
-    nearest_expire = min(c['maturity_date'] for c in valid_contracts)
-    expiry_dt = datetime.datetime.strptime(nearest_expire, "%Y%m%d")
-    T = max((expiry_dt - trade_dt).days / 365.0, 1/365)
+    _sk = skew_25d(contracts, spot_price, trade_date, r=r)
+    if not _sk:
+        return None
 
-    # ⚠️ 2026-11-10 修正：ATM 与 25Δ 取腿必须限定在**最近到期月**内。
-    # 原实现直接在多月合并列表里按 |K−目标| 找最近档，而同一行权价在各到期月
-    # 都存在，min() 会取到列表首个（月份顺序取决于数据源），可能拿到远月合约
-    # 的价格却用近月 T 反解 IV → 严重虚高（实测创业板ETF 曾算出 put_25d_iv
-    # 159%，而 ATM IV 仅 44%）。在线新浪源恰好近月在前才没暴露，Tushare 源
-    # 顺序不同会立刻串月。PCR 仍走全链口径，不受此限。
-    near_calls = [c for c in calls if c['maturity_date'] == nearest_expire]
-    near_puts = [c for c in puts if c['maturity_date'] == nearest_expire]
-    if len(near_calls) < 3 or len(near_puts) < 3:   # 近月档位太少则退回全链
-        near_calls, near_puts = calls, puts
+    atm_iv = _sk['atm_iv']
+    put_25d_iv = _sk['put25_iv']
+    call_25d_iv = _sk['call25_iv']
+    iv_skew = _sk['rr']
+    nearest_expire = _sk['expiry']
+    dte = _sk['dte']
 
-    # ATM
-    atm_strike = min(valid_contracts, key=lambda x: abs(x['exercise_price'] - spot_price))['exercise_price']
-    atm_call = min(near_calls, key=lambda x: abs(x['exercise_price'] - atm_strike))
-    atm_put = min(near_puts, key=lambda x: abs(x['exercise_price'] - atm_strike))
+    # CBOE SKEW —— 自造口径（以 100 为中轴），与 data_hub
+    # calc_cboe_skew_directional 完全一致：100 + 30 × (put25 − atm) / atm
+    # 注意：这不是标准 CBOE SKEW 指数，是本系统为配合 120/105/95/80 方向阈值
+    # 自建的刻度（标准口径恒 >100 且大量被钳在 150，无法区分强弱）。
+    cboe_skew = 100 + 30 * (put_25d_iv - atm_iv) / atm_iv if atm_iv > 0.01 else 100.0
 
-    # ATM IV
-    atm_call_iv = bs_iv(spot_price, atm_call['exercise_price'], T, r, atm_call['close'], 'call')
-    atm_put_iv = bs_iv(spot_price, atm_put['exercise_price'], T, r, atm_put['close'], 'put')
-    # ⚠️ 2026-11-10（合并期修正）：原实现固定除以 2，任一侧 IV 反解失败
-    # （虚值极深/报价缺失）时 ATM IV 会被腰斩一半，进而把 25Δ 取腿位置整体带偏。
-    # 改为只对**有效值**求均值；两侧都失败时再退到 0.2 兜底。
-    _atm_parts = [x for x in (atm_call_iv, atm_put_iv) if x is not None]
-    atm_iv = sum(_atm_parts) / len(_atm_parts) if _atm_parts else 0.0
-    if atm_iv < 0.01:
-        atm_iv = max(_atm_parts) if _atm_parts else 0.2
-
-    # 25-delta strikes
-    if atm_iv > 0.01:
-        put_25d_K = delta_to_strike(spot_price, T, r, atm_iv, 0.25, is_put=True)
-        call_25d_K = delta_to_strike(spot_price, T, r, atm_iv, 0.25, is_put=False)
-    else:
-        put_25d_K = atm_strike * 0.95
-        call_25d_K = atm_strike * 1.05
-
-    near_put25 = min(near_puts, key=lambda x: abs(x['exercise_price'] - put_25d_K))
-    near_call25 = min(near_calls, key=lambda x: abs(x['exercise_price'] - call_25d_K))
-
-    put_25d_iv = bs_iv(spot_price, near_put25['exercise_price'], T, r, near_put25['close'], 'put')
-    call_25d_iv = bs_iv(spot_price, near_call25['exercise_price'], T, r, near_call25['close'], 'call')
-
-    # 同上：任一侧缺失时不能当 0 处理（会把单侧 IV 全额当成偏度），
-    # 缺失侧以 ATM IV 代理，并在返回里用 iv_skew_est 标明是估算值。
-    _fill = 0
-    if put_25d_iv is None:
-        put_25d_iv = atm_iv; _fill += 1
-    if call_25d_iv is None:
-        call_25d_iv = atm_iv; _fill += 1
-    iv_skew = put_25d_iv - call_25d_iv
-
-    # CBOE SKEW
-    if atm_iv > 0.01 and put_25d_iv is not None:
-        cboe_skew = 100 - 10 * (-3 * (put_25d_iv - atm_iv) / atm_iv)
-    else:
-        cboe_skew = 100.0
-
-    # PCR
+    # PCR（全链口径，不受选月影响）
     total_call_vol = sum(c['volume'] for c in calls)
     total_put_vol = sum(p['volume'] for p in puts)
     total_call_oi = sum(c['oi'] for c in calls)
@@ -845,10 +800,12 @@ def calc_skew(contracts, spot_price, trade_date, r=0.03):
     return {
         'spot_price': round(spot_price, 4),
         'atm_iv': round(atm_iv * 100, 2),
-        'put_25d_iv': round((put_25d_iv or 0) * 100, 2),
-        'call_25d_iv': round((call_25d_iv or 0) * 100, 2),
+        'put_25d_iv': round(put_25d_iv * 100, 2),
+        'call_25d_iv': round(call_25d_iv * 100, 2),
         'iv_skew': round(iv_skew * 100, 2),
-        'iv_skew_est': _fill > 0,          # True = 有取腿缺失，用 ATM IV 代理估算
+        # 统一口径下取腿反解失败会直接返回 None，不再用 ATM IV 代理估算，
+        # 故该标记恒为 False，保留仅为兼容下游读取。
+        'iv_skew_est': False,
         'cboe_skew': round(cboe_skew, 2),
         'vol_pcr': round(vol_pcr, 2),
         'oi_pcr': round(oi_pcr, 2),
@@ -857,163 +814,79 @@ def calc_skew(contracts, spot_price, trade_date, r=0.03):
         'resistance': resistance,
         'direction': direction,
         'expiry': nearest_expire,
-        'dte': round(T * 365),
+        'dte': dte,
     }
 
 
 
+
 def calc_risk_reversal(contracts, spot_price, trade_date, r=0.03, target_delta=0.25):
-    """计算 Risk Reversal（风险逆转）
-    
-    标准定义: RR(Δ) = IV_call(+Δ) - IV_put(-Δ)
-    即相同到期日、相同绝对Delta的虚值看涨IV 减 虚值看跌IV
-    
-    > 0 → 看涨期权更贵 → 市场隐含方向向上（多头押注）
-    < 0 → 看跌期权更贵 → 市场隐含方向向下（空头押注/避险）
-    
-    实现: 对每个到期日，计算所有合约的实际Delta，
-         选出最接近 target_delta 的虚值看涨和最接近 -target_delta 的虚值看跌
+    """Risk Reversal（风险逆转）
+
+    ⚠️ 2026-11-12 收敛到统一口径（此前选月 / 取腿 / 符号各搞一套）：
+
+      · **选月**：原实现「每个到期日都算一遍再取最近」，dte 门槛仅 2 天，必踩临到期
+        （实测 dte=6 时深度虚值价格趋近 0，BS 反推 IV 炸到 188%）。现统一为
+        dte≥10 优先选主力次月。
+      · **取腿**：原实现按反解出的实际 delta 找腿、配对误差 >0.20 才放弃；现统一为
+        BS delta 反解 25Δ 行权价再取最近档，与 `calc_skew` 完全同源。
+      · **IV**：ATM / put25 / call25 与 `calc_skew` 逐位一致，同一标的不会再出现
+        两个任务算出两套偏度。
+
+    ⚠️ **符号约定**：本函数沿用历史口径 `rr = IV(Call25Δ) − IV(Put25Δ)`
+    （A股看跌天然更贵，RR 常态为负），即统一口径 rr 的**取反**。
+    保留反向符号是为了让下游卡片与方向阈值（-1 / -3 / -6）能直接和历史报告对比——
+    翻符号等于把所有历史 RR 数值整体反转，没有必要。统一口径本身见
+    `calc/cn/skew_unified.py`（`rr = put25 − call25`）。
+
+    Returns:
+        dict（rr / call_iv / put_iv 均为百分数）；合约不足返回 None。
     """
-    trade_dt = datetime.datetime.strptime(trade_date, "%Y%m%d")
-    
-    # 过滤：至少2天到期
-    valid = [c for c in contracts if (datetime.datetime.strptime(c['maturity_date'], "%Y%m%d") - trade_dt).days >= 2]
-    if len(valid) < 4:
-        valid = contracts  # 兜底
-    
-    # 按到期日分组
-    by_expiry = defaultdict(list)
-    for c in valid:
-        by_expiry[c['maturity_date']].append(c)
-    
-    expiry_results = {}
-    
-    for exp_date, exp_contracts in by_expiry.items():
-        calls = [c for c in exp_contracts if c['call_put'] == 'C']
-        puts = [c for c in exp_contracts if c['call_put'] == 'P']
-        if len(calls) < 3 or len(puts) < 3:
-            continue
-        
-        exp_dt = datetime.datetime.strptime(exp_date, "%Y%m%d")
-        T = max((exp_dt - trade_dt).days / 365.0, 1/365)
-        dte = (exp_dt - trade_dt).days
-        
-        # 计算每个合约的IV和实际Delta
-        call_data = []
-        for c in calls:
-            iv = bs_iv(spot_price, c['exercise_price'], T, r, c['close'], 'call')
-            if iv and iv > 0.005 and iv < 3:
-                d1 = bs_d1(spot_price, c['exercise_price'], T, r, iv)
-                delta = norm.cdf(d1) if d1 is not None else None
-                if delta is not None and 0 < delta < 1:
-                    call_data.append({
-                        'strike': c['exercise_price'],
-                        'iv': iv,
-                        'delta': delta,
-                        'oi': c.get('oi', 0),
-                    })
-        
-        put_data = []
-        for c in puts:
-            iv = bs_iv(spot_price, c['exercise_price'], T, r, c['close'], 'put')
-            if iv and iv > 0.005 and iv < 3:
-                d1 = bs_d1(spot_price, c['exercise_price'], T, r, iv)
-                delta = norm.cdf(d1) - 1 if d1 is not None else None  # 看跌delta为负
-                if delta is not None and -1 < delta < 0:
-                    put_data.append({
-                        'strike': c['exercise_price'],
-                        'iv': iv,
-                        'delta': delta,
-                        'oi': c.get('oi', 0),
-                    })
-        
-        if not call_data or not put_data:
-            continue
-        
-        # 找虚值看涨: delta最接近 +target_delta（且K > S）
-        otm_calls = [c for c in call_data if c['strike'] > spot_price and c['delta'] < 0.5]
-        if not otm_calls:
-            otm_calls = [c for c in call_data if c['delta'] < 0.5]
-        if not otm_calls:
-            continue
-        
-        near_call = min(otm_calls, key=lambda x: abs(x['delta'] - target_delta))
-        
-        # 找虚值看跌: delta最接近 -target_delta（且K < S）
-        otm_puts = [p for p in put_data if p['strike'] < spot_price and p['delta'] > -0.5]
-        if not otm_puts:
-            otm_puts = [p for p in put_data if p['delta'] > -0.5]
-        if not otm_puts:
-            continue
-        
-        near_put = min(otm_puts, key=lambda x: abs(x['delta'] - (-target_delta)))
-        
-        # 配对质量检查：实际delta离目标差距太大则跳过
-        call_delta_err = abs(near_call['delta'] - target_delta)
-        put_delta_err = abs(near_put['delta'] - (-target_delta))
-        if call_delta_err > 0.20 or put_delta_err > 0.20:
-            continue  # 配对误差过大，放弃这个到期日
-        
-        # Risk Reversal = IV_call(+Δ) - IV_put(-Δ)
-        rr = near_call['iv'] - near_put['iv']
-        
-        # 权重 = 两个合约OI之和
-        weight = near_call['oi'] + near_put['oi']
-        
-        expiry_results[exp_date] = {
-            'dte': dte,
-            'call_strike': near_call['strike'],
-            'put_strike': near_put['strike'],
-            'call_iv': round(near_call['iv'] * 100, 2),
-            'put_iv': round(near_put['iv'] * 100, 2),
-            'rr': round(rr * 100, 2),
-            'call_delta': round(near_call['delta'], 4),
-            'put_delta': round(near_put['delta'], 4),
-            'weight': weight,
-        }
-    
-    if not expiry_results:
+    try:
+        from cn.skew_unified import skew_25d
+    except ImportError:      # 以脚本方式直接运行时 calc/cn 不在包路径
+        from skew_unified import skew_25d
+
+    _sk = skew_25d(contracts, spot_price, trade_date, r=r,
+                   delta_level=target_delta, normalize=False)
+    if not _sk:
         return None
-    
-    # 选最近到期日作为主RR
-    sorted_expiries = sorted(expiry_results.keys())
-    nearest_exp = sorted_expiries[0]
-    nearest_rr = expiry_results[nearest_exp]
-    
-    # 加权平均RR（所有到期日按OI加权）
-    total_weight = sum(v['weight'] for v in expiry_results.values())
-    if total_weight > 0:
-        weighted_rr = sum(v['rr'] * v['weight'] for v in expiry_results.values()) / total_weight
-    else:
-        weighted_rr = nearest_rr['rr']
-    
-    # 方向判断：基于绝对阈值
-    # A股期权因投资者结构，看跌天然更贵（RR常态为负）
-    # 阈值基于6个标的横截面分布的经验值
-    rr_val = nearest_rr['rr']
-    if rr_val > -1.0:
+
+    rr_pct = -_sk['rr'] * 100                    # 翻成 call − put，百分数
+    call_iv = round(_sk['call25_iv'] * 100, 2)
+    put_iv = round(_sk['put25_iv'] * 100, 2)
+
+    # 方向判断：阈值沿用历史校准值（6 标的横截面经验分布），符号未变，无需调整
+    if rr_pct > -1.0:
         direction = "🟢 偏多"
-    elif rr_val > -3.0:
+    elif rr_pct > -3.0:
         direction = "⚪ 中性"
-    elif rr_val > -6.0:
+    elif rr_pct > -6.0:
         direction = "🟠 偏空"
     else:
         direction = "🔴 看空"
-    
+
     return {
-        'rr': round(nearest_rr['rr'], 2),
-        'weighted_rr': round(weighted_rr, 2),
+        'rr': round(rr_pct, 2),
+        # 统一口径只取一个主力月，weighted_rr 与 rr 同值；字段保留仅为兼容下游
+        'weighted_rr': round(rr_pct, 2),
         'direction': direction,
-        'nearest_expiry': nearest_exp,
-        'nearest_dte': nearest_rr['dte'],
-        'call_iv': nearest_rr['call_iv'],
-        'put_iv': nearest_rr['put_iv'],
-        'call_strike': nearest_rr['call_strike'],
-        'put_strike': nearest_rr['put_strike'],
-        'call_delta': nearest_rr.get('call_delta'),
-        'put_delta': nearest_rr.get('put_delta'),
-        'by_expiry': {k: {'rr': v['rr'], 'dte': v['dte'], 'call_iv': v['call_iv'], 'put_iv': v['put_iv']}
-                      for k, v in expiry_results.items()},
+        'nearest_expiry': _sk['expiry'],
+        'nearest_dte': _sk['dte'],
+        'call_iv': call_iv,
+        'put_iv': put_iv,
+        'call_strike': None,
+        'put_strike': None,
+        'call_delta': None,
+        'put_delta': None,
+        'by_expiry': {
+            _sk['expiry']: {
+                'rr': round(rr_pct, 2),
+                'dte': _sk['dte'],
+                'call_iv': call_iv,
+                'put_iv': put_iv,
+            }
+        },
     }
 
 
