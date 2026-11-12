@@ -70,8 +70,13 @@ class TestMath(unittest.TestCase):
         from calc.option_monitor import calc_skew
 
         def mk(mat, K, cp, px):
+            # 2026-11-12：calc_skew 新增「历史日期保护」——历史 trade_date 下若
+            # 合约未标记 _hist=True，会被判定为「实时链配历史价」而拒绝计算。
+            # 本用例测的是选月逻辑，故显式声明为真历史链（模拟 Tushare 按
+            # trade_date 返回的历史合约）。
             return dict(call_put=cp, exercise_price=K, maturity_date=mat, close=px,
-                        volume=100, oi=1000, amount=1000.0)
+                        volume=100, oi=1000, amount=1000.0,
+                        _data_source='tushare', _hist=True)
 
         near, far = '20261125', '20270623'
         cs = []
