@@ -96,7 +96,9 @@
         "calc/option_monitor.py::calc_skew / calc_risk_reversal 新增历史日期保护：历史 trade_date 下若期权链来自实时快照，拒绝计算并返回 None。根因：ak.option_current_day_sse / option_finance_board / 新浪 fetch_option_chain 三个接口全部只返回当前交易日、完全忽略 trade_date，只有 Tushare opt_daily 按日期返回（token 已失效），故历史日期原为「今日的链 + 历史的现价」的假偏度",
         "calc/option_monitor.py 新增 _hub_etf_close / _hub_index_close：桥接 data_hub 的 get_etf_close / get_index_daily，取价能力下沉到公共库",
         "新增 tests 同步：test_calc_skew_uses_near_month 的手工合约补 _data_source/_hist 标记（该用例测选月逻辑，需声明为真历史链）",
-        "验证：同源一致性 calc_skew vs calc_risk_reversal 三标的全部通过（put/call IV 逐位相同、iv_skew 与 rr 符号互反、选月与 dte 一致）；回归 29 passed / 1 skipped"
+        "验证：同源一致性 calc_skew vs calc_risk_reversal 三标的全部通过（put/call IV 逐位相同、iv_skew 与 rr 符号互反、选月与 dte 一致）；回归 29 passed / 1 skipped",
+        "实时价四源备份链下沉 data_hub：新增 data_hub/collectors/realtime_spot.py（get_realtime_spot / get_realtime_spot_price / RealtimeSpotCollector，新浪→腾讯→同花顺→东财单只），options 侧 _spot_realtime 改为薄封装，本地不再持有任何数据源实现，落实「数据获取一律从公共库取，本地只做策略」",
+        "性能备注：data_hub 全量 import 约 7.4s（30+ collector + pandas + tushare），属进程级一次性成本；取价本身 0.05s。options 其它任务本来就要 import data_hub，该成本早已存在，不构成取价退化"
       ]
     }
   ]

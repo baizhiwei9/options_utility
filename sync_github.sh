@@ -200,8 +200,21 @@ fi
 
 # PR 模式：从 base 分支切出功能分支，改动带过去（工作区未提交内容会自动跟随）
 if [[ $PR_MODE -eq 1 ]]; then
-    git checkout -q -b "$PR_BRANCH"
-    echo "  已切到 PR 分支: $PR_BRANCH（base: $BRANCH）"
+    # 远端已有同名 PR 分支时必须接续它的历史，否则新提交另起炉灶，
+    # push 会被拒（non-fast-forward）。原实现无条件 `checkout -b`，
+    # 导致同一个 PR 无法追加第二个提交。
+    if git fetch -q origin "$PR_BRANCH" 2>/dev/null \
+       && git rev-parse --verify -q "origin/$PR_BRANCH" >/dev/null; then
+        # 接续远端 PR 分支：只把 index/HEAD 的基准换成该分支，工作区（rsync 来的
+        # 源目录内容）保持不动。这样后面 git add -A 的 diff 恰好是「本次新增改动」，
+        # 不会把上一个提交的内容重复算一遍，也不会因未提交改动而 checkout 失败。
+        git reset --mixed "origin/$PR_BRANCH" -q
+        git checkout -q -B "$PR_BRANCH"
+        echo "  已切到 PR 分支: $PR_BRANCH（接续远端历史，base: $BRANCH）"
+    else
+        git checkout -q -b "$PR_BRANCH"
+        echo "  已切到 PR 分支: $PR_BRANCH（新建，base: $BRANCH）"
+    fi
 fi
 
 git add -A

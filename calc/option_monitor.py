@@ -189,78 +189,15 @@ def _spot_akshare_etf(code, exchange):
 # ⚠️ 本链**只用于当日/未来**取价。历史日期禁止调用（见 get_spot_price）。
 
 
-def _spot_tencent(symbol_std):
-    """腾讯自选股实时价。
-
-    Args:
-        symbol_std: 'sh510300' / 'sz159915' / 'sh000300'
-
-    返回格式：v_sh510300="1~名称~代码~当前价~昨收~今开~...~"，按 ~ 分割取索引 3。
-    """
-    try:
-        import requests
-        r = requests.get('http://qt.gtimg.cn/q=%s' % symbol_std, timeout=5,
-                         headers={'User-Agent': 'Mozilla/5.0'})
-        r.encoding = 'gbk'
-        txt = r.text.strip()
-        if '="' not in txt:
-            return None
-        parts = txt.split('="', 1)[1].rstrip('";').split('~')
-        if len(parts) < 4:
-            return None
-        price = float(parts[3])
-        return price if price > 0 else None
-    except Exception:
-        return None
-
-
-def _spot_ths(symbol_std):
-    """同花顺实时价（沪市实测可用；深市 items 常为空，返回 None 由下一源接管）。"""
-    try:
-        import json
-        import re
-
-        import requests
-        code = symbol_std[2:]
-        url = 'http://d.10jqka.com.cn/v6/realhead/hs_%s/defer/last.js' % code
-        r = requests.get(url, timeout=5,
-                         headers={'User-Agent': 'Mozilla/5.0',
-                                  'Referer': 'http://stockpage.10jqka.com.cn/'})
-        m = re.search(r'\((\{.*\})\)', r.text, re.S)
-        if not m:
-            return None
-        items = json.loads(m.group(1)).get('items') or {}
-        v = items.get('10')
-        if v in (None, '', '-'):
-            return None
-        price = float(v)
-        return price if price > 0 else None
-    except Exception:
-        return None
-
-
-def _spot_em_single(symbol_std):
-    """东财 push2 单只实时价（secid：1=沪 0=深）。当前网络常不通，保留备用。"""
-    try:
-        import requests
-        exch, code = symbol_std[:2], symbol_std[2:]
-        secid = ('1.' if exch == 'sh' else '0.') + code
-        r = requests.get('https://push2.eastmoney.com/api/qt/stock/get',
-                         params={'secid': secid, 'fields': 'f43,f57,f58,f59'},
-                         timeout=5, headers={'User-Agent': 'Mozilla/5.0'})
-        d = r.json().get('data') or {}
-        f43 = d.get('f43')
-        if not isinstance(f43, (int, float)) or f43 <= 0:
-            return None
-        dec = d.get('f59')
-        dec = dec if isinstance(dec, int) and 0 <= dec <= 4 else 3
-        return f43 / (10 ** dec)
-    except Exception:
-        return None
-
-
 def _spot_realtime(symbol_std, label=''):
-    """实时价多源备份链：新浪 → 腾讯 → 同花顺 → 东财单只。
+    """实时价多源备份链（薄封装）。
+
+    真源：data_hub.collectors.realtime_spot.get_realtime_spot
+    链序：新浪 → 腾讯 → 同花顺 → 东财单只，单源失败自动切下一个。
+
+    2026-11-12 按「数据获取一律从公共库取，本地只做策略」原则下沉：
+    四源实现（_spot_sina/_spot_tencent/_spot_ths/_spot_em_single）已整体
+    迁到 data_hub，本函数只做参数适配，本地不再持有任何数据源逻辑。
 
     Args:
         symbol_std: 'sh510300' / 'sz159915' / 'sh000300' / 'sh000852'
@@ -269,50 +206,16 @@ def _spot_realtime(symbol_std, label=''):
     Returns:
         (price, source_name)；全部失败返回 (None, None)
     """
-    trace = []
-
-    # 1. 新浪（项目内已有封装，保持首选以兼容历史行为）
-    #    注意：fetch_eastmoney.py 位于 calc/ 目录，须把 calc/ 加进 sys.path，
-    #    加项目根目录是找不到的（历史 _sina_fallback 就是这么静默失败的）。
     try:
-        import os
-        import sys as _s
-        _calc_dir = os.path.dirname(os.path.abspath(__file__))
-        if _calc_dir not in _s.path:
-            _s.path.insert(0, _calc_dir)
-        from fetch_eastmoney import get_spot_price as _sina
-        # fetch_eastmoney.TARGET_CONFIG 的 key 是纯代码（510300），不是带前缀的
-        # sh510300；传错 key 会静默返回 0.0（历史 _sina_fallback 的隐性 bug）。
-        price = _sina(symbol_std[2:])
-        if price and price > 0:
-            return float(price), 'sina'
-        trace.append('sina:空')
+        from data_hub import get_realtime_spot
     except Exception as e:
-        trace.append('sina:%s' % str(e)[:30])
-
-    # 2. 腾讯
-    price = _spot_tencent(symbol_std)
-    if price is not None:
-        print(f"  ℹ️ {label} 新浪失败 → 腾讯备用取到 {price:.4f}")
-        return price, 'tencent'
-    trace.append('tencent:空')
-
-    # 3. 同花顺
-    price = _spot_ths(symbol_std)
-    if price is not None:
-        print(f"  ℹ️ {label} 新浪+腾讯失败 → 同花顺备用取到 {price:.4f}")
-        return price, 'ths'
-    trace.append('ths:空')
-
-    # 4. 东财单只
-    price = _spot_em_single(symbol_std)
-    if price is not None:
-        print(f"  ℹ️ {label} 前三源失败 → 东财单只备用取到 {price:.4f}")
-        return price, 'eastmoney'
-    trace.append('eastmoney:空')
-
-    print(f"  ⚠️ {label} 实时备份链全部失败：{' | '.join(trace)}")
-    return None, None
+        print(f"  ⚠️ data_hub.get_realtime_spot 不可用: {e}")
+        return None, None
+    try:
+        return get_realtime_spot(symbol_std, label=label, verbose=True)
+    except Exception as e:
+        print(f"  ⚠️ get_realtime_spot({symbol_std}) 异常: {e}")
+        return None, None
 
 
 def _mark_contracts(contracts, source, is_hist):
