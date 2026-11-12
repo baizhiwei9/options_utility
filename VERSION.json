@@ -1,7 +1,7 @@
 {
   "name": "options_utility",
-  "version": "1.2.0",
-  "date": "2026-11-10",
+  "version": "1.4.0",
+  "date": "2026-11-12",
   "merged_from": [
     "GitHub baizhiwei9/options_utility @354e131（A股计算层 + 报警引擎 + 29条规则基线，实为38条）",
     "中美期权风险释放汇总链路（美股三轨 + 偏度/VVIX/GEX报警 + 合并日报）",
@@ -26,7 +26,7 @@
   "verification": {
     "compileall": "0 error / 0 SyntaxWarning",
     "cli_selftest": "pass",
-    "offline_tests": "30/30 pass",
+    "offline_tests": "29 passed / 1 skipped (pytest tests/test_offline.py tests/test_regressions.py)",
     "pyflakes_undefined": "0 (options_utility + data_hub)",
     "dry_runs": [
       "us-index",
@@ -68,5 +68,36 @@
       "wing",
       "iv-history"
     ]
-  }
+  },
+  "changelog": [
+    {
+      "version": "1.3.0",
+      "date": "2026-11-12",
+      "title": "偏度统一 + VWAP 接口统一 + 底部红线推送分级",
+      "items": [
+        "新增 calc/cn/skew_unified.py：25Δ RR 统一口径（dte≥10 优先选月 + put25−call25 + 小数单位），算法真源 data_hub.option_metrics.calc_25d_risk_reversal，只做 dict→OptionContract 适配",
+        "calc/option_monitor.py::calc_skew 改调统一口径，修掉 min(maturity_date) 选最近到期日导致 dte=6 时深虚值 BS 反推 IV 炸到 188% 的老问题（创业板ETF 实测）",
+        "calc/option_monitor.py::calc_risk_reversal 改调统一口径（选月/取腿/IV 同源），符号保留历史口径 call−put 以兼容下游卡片与阈值",
+        "alert/tasks/vix_alerts.py::compute_vwap_bands 改走 techAnly-summary 的 smc/smc_core.vwap_band，保留成交量严格校验，找不到该库时回退内置实现（口径一致）",
+        "alert/rules.py 新增 BOTTOM_REDLINE_FEISHU_MIN=3 / BOTTOM_REDLINE_EMAIL_MIN=6",
+        "alert/tasks/bottom_redline.py 飞书推送改为 ≥3 条红线才推（原为无条件每次必推），邮件维持 ≥6 条不变"
+      ]
+    },
+    {
+      "version": "1.4.0",
+      "date": "2026-11-12",
+      "title": "现货取价历史安全 + 实时价四源备份链 + 期权链历史保护",
+      "breaking_behavior": "历史 trade_date 下 calc_skew / calc_risk_reversal 在拿不到真历史期权链时返回 None（原为静默返回假数据）",
+      "items": [
+        "calc/option_monitor.py::get_spot_price 重写：历史日期只走带日期的历史接口（Tushare fund_daily / index_daily → data_hub.get_etf_close / get_index_daily），彻底禁止降级到实时快照。原 bug：降级链完全不传 trade_date，20261105~20261112 五个历史日期对 510300 全部返回同一个实时价 4.114，历史偏度与回测全部失真且不可复现。修复后实测 4.1950/4.1300/4.1350/4.1500，其中 20261111=4.1500 与 akshare 校准真实收盘完全一致",
+        "calc/option_monitor.py 新增实时价四源备份链 _spot_realtime：新浪 hq.sinajs.cn → 腾讯 qt.gtimg.cn → 同花顺 d.10jqka.com.cn → 东财 push2 单只，任一源失败自动切换并打印切换日志。实测腾讯 5/5 全通、新浪 ETF 3 只通（指数失败由腾讯接管），当日取价 0.05~0.22s",
+        "calc/option_monitor.py 当日取价顺序调整为「四源备份链优先 → akshare 批量 → 今日精确历史日线 → 最近交易日近似」。原顺序先调 fund_etf_spot_em 批量快照，实测常 30s 超时且返回空，拖垮整条链路（510300 单次取价 30.30s → 0.05s）",
+        "calc/option_monitor.py 新增 _mark_contracts：给每个期权合约打 _data_source（tushare/akshare/sina）与 _hist（真历史/实时快照）标记，get_option_contracts 全部 7 个 return 分支已打标",
+        "calc/option_monitor.py::calc_skew / calc_risk_reversal 新增历史日期保护：历史 trade_date 下若期权链来自实时快照，拒绝计算并返回 None。根因：ak.option_current_day_sse / option_finance_board / 新浪 fetch_option_chain 三个接口全部只返回当前交易日、完全忽略 trade_date，只有 Tushare opt_daily 按日期返回（token 已失效），故历史日期原为「今日的链 + 历史的现价」的假偏度",
+        "calc/option_monitor.py 新增 _hub_etf_close / _hub_index_close：桥接 data_hub 的 get_etf_close / get_index_daily，取价能力下沉到公共库",
+        "新增 tests 同步：test_calc_skew_uses_near_month 的手工合约补 _data_source/_hist 标记（该用例测选月逻辑，需声明为真历史链）",
+        "验证：同源一致性 calc_skew vs calc_risk_reversal 三标的全部通过（put/call IV 逐位相同、iv_skew 与 rr 符号互反、选月与 dte 一致）；回归 29 passed / 1 skipped"
+      ]
+    }
+  ]
 }
