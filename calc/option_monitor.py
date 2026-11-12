@@ -667,6 +667,10 @@ def _get_akshare_szse_contracts(etf_code, trade_date):
             'volume': 0,
             'oi': oi,
             'amount': 0,
+            # 2026-11-12：option_current_day_szse 是深交所「当日合约」表，
+            # 只有前结算价、没有当日成交价。close 是前结算价不是收盘价，
+            # 配今日 spot 算 IV 会严重失真（创业板ETF 实测偏度 +2.90 → -16.99）。
+            '_price_basis': 'prev_settle',
         })
     
     has_price = sum(1 for c in contracts if c['close'] > 0)
@@ -675,31 +679,54 @@ def _get_akshare_szse_contracts(etf_code, trade_date):
     return contracts
 
 
-def _get_akshare_cffex_mo_contracts(trade_date):
-    """akshare备用：中金所中证1000股指期权（MO）"""
+# 中金所股指期权品种 → akshare 新浪接口映射
+# 2026-11-12 新增：原实现只有 MO（中证1000），IO（沪深300）请求也会返回 MO 的链，
+# 拿 000300 的 spot 去配 6500 的行权价，25Δ 根本找不到，偏度直接失败。
+_CFFEX_AK_PRODUCTS = {
+    'MO': {'key': '中证1000指数',
+           'list_api': 'option_cffex_zz1000_list_sina',
+           'spot_api': 'option_cffex_zz1000_spot_sina',
+           'label': 'MO(中证1000)'},
+    'IO': {'key': '沪深300指数',
+           'list_api': 'option_cffex_hs300_list_sina',
+           'spot_api': 'option_cffex_hs300_spot_sina',
+           'label': 'IO(沪深300)'},
+}
+
+
+def _get_akshare_cffex_contracts(trade_date, product='MO'):
+    """akshare备用：中金所股指期权（IO 沪深300 / MO 中证1000）"""
     import akshare as ak
-    
+
+    cfg = _CFFEX_AK_PRODUCTS.get(str(product).upper())
+    if not cfg:
+        print(f"  [Akshare] 不支持的 CFFEX 品种: {product}")
+        return []
+    label = cfg['label']
+
     try:
         # 获取合约月份列表
         time.sleep(0.3)
-        result = ak.option_cffex_zz1000_list_sina()
-        if not result or '中证1000指数' not in result:
-            print(f"  [Akshare] MO合约月份列表为空")
+        list_fn = getattr(ak, cfg['list_api'])
+        result = list_fn()
+        if not result or cfg['key'] not in result:
+            print(f"  [Akshare] {label} 合约月份列表为空")
             return []
-        months = result['中证1000指数']
+        months = result[cfg['key']]
         if not months:
             return []
         # 取最近两个月
         months = sorted(months)[:2]
     except Exception as e:
-        print(f"  [Akshare] MO合约列表失败: {e}")
+        print(f"  [Akshare] {label} 合约列表失败: {e}")
         return []
     
     all_contracts = []
     for month_symbol in months:
         try:
             time.sleep(0.3)
-            df = ak.option_cffex_zz1000_spot_sina(symbol=month_symbol)
+            spot_fn = getattr(ak, cfg['spot_api'])
+            df = spot_fn(symbol=month_symbol)
             if df is None or df.empty:
                 continue
             
@@ -742,7 +769,7 @@ def _get_akshare_cffex_mo_contracts(trade_date):
                         'amount': 0,
                     })
         except Exception as e:
-            print(f"  [Akshare] MO {month_symbol} 行情失败: {e}")
+            print(f"  [Akshare] {label} {month_symbol} 行情失败: {e}")
     
     # 补充到期日（每月第三个周五）
     from calendar import monthrange
@@ -756,8 +783,13 @@ def _get_akshare_cffex_mo_contracts(trade_date):
         expiry = f"{y}{m:02d}{third_fri:02d}"
         c['maturity_date'] = expiry
     
-    print(f"  [Akshare] MO合约: {len(all_contracts)}个")
+    print(f"  [Akshare] {label} 合约: {len(all_contracts)}个")
     return all_contracts
+
+
+def _get_akshare_cffex_mo_contracts(trade_date):
+    """向后兼容别名（历史调用点）。"""
+    return _get_akshare_cffex_contracts(trade_date, product='MO')
 
 
 def get_option_contracts_akshare(etf_code, exchange, trade_date):
@@ -769,7 +801,13 @@ def get_option_contracts_akshare(etf_code, exchange, trade_date):
     elif exchange == 'SZSE':
         contracts = _get_akshare_szse_contracts(etf_code, trade_date)
     elif exchange == 'CFFEX':
-        contracts = _get_akshare_cffex_mo_contracts(trade_date)
+        # 2026-11-12 修复：原实现无条件返回 MO 合约，请求 IO 时也拿到中证1000 的链。
+        # 现按 etf_code（'IO'/'MO'）分发到对应品种。
+        _prod = str(etf_code or '').upper()
+        if _prod not in _CFFEX_AK_PRODUCTS:
+            print(f"  [Akshare] CFFEX 未知品种 '{etf_code}'，放弃该源")
+            return []
+        contracts = _get_akshare_cffex_contracts(trade_date, product=_prod)
     else:
         print(f"  [Akshare] 不支持的交易所: {exchange}")
         return []
@@ -891,6 +929,14 @@ def get_option_contracts(exchange, opt_code_filter, trade_date, etf_code=None, s
         puts = [c for c in contracts if c['call_put'] == 'P']
         if len(calls) >= 3 and len(puts) >= 3:
             return _mark_contracts(contracts, 'tushare', True)
+        # 深市特例（2026-11-12）：同上，akshare 深市只有前结算价，优先新浪
+        if exchange == 'SZSE':
+            print(f"  [降级] 深市优先新浪（akshare 深市仅有前结算价，无当日价）...")
+            _sz = get_option_contracts_sina(etf_code, exchange)
+            if _sz:
+                return _mark_contracts(_sz, 'sina', False)
+            print(f"  [WARN] 新浪失败，退到 akshare（前结算价，偏度将不可用）...")
+
         print(f"  [WARN] Tushare合约不足(购{len(calls)}/沽{len(puts)})，尝试akshare备用...")
         fallback = get_option_contracts_akshare(etf_code, exchange, trade_date)
         if fallback:
@@ -915,6 +961,16 @@ def get_option_contracts(exchange, opt_code_filter, trade_date, etf_code=None, s
 
     if len(calls) >= 3 and len(puts) >= 3:
         return _mark_contracts(contracts, 'tushare', True)
+
+    # 深市特例（2026-11-12）：akshare 的 option_current_day_szse 只有前结算价，
+    # 用前结算价配今日 spot 会把偏度算反（创业板ETF 实测 sina +2.90 vs akshare -16.99）。
+    # 故深市优先新浪（有当日收盘价），akshare 仅作最后兜底。
+    if exchange == 'SZSE':
+        print(f"  [降级] 深市优先新浪（akshare 深市仅有前结算价，无当日价）...")
+        _sz = get_option_contracts_sina(etf_code, exchange)
+        if _sz:
+            return _mark_contracts(_sz, 'sina', False)
+        print(f"  [WARN] 新浪失败，退到 akshare（前结算价，偏度将不可用）...")
 
     # 合约不足，降级到akshare
     print(f"  [WARN] Tushare合约不足(购{len(calls)}/沽{len(puts)})，尝试akshare备用...")
@@ -963,6 +1019,15 @@ def calc_skew(contracts, spot_price, trade_date, r=0.03):
             print(f"  \u26a0\ufe0f [历史日期保护] {trade_date} 期权链来自实时快照"
                   f"（{','.join(srcs)}），非真历史，拒绝计算偏度")
             return None
+
+    # ---- 价格基准保护（2026-11-12）----
+    # akshare 深市（option_current_day_szse）只有前结算价，没有当日成交价。
+    # 前结算价配今日 spot 算 IV 会严重失真，创业板ETF 实测偏度 +2.90 → -16.99。
+    # 宁可拒绝，也不产出方向相反的信号。
+    if any(c.get('_price_basis') == 'prev_settle' for c in contracts):
+        print(f"  \u26a0\ufe0f [价格基准保护] {trade_date} 期权链价格为前结算价（非当日成交价），"
+              f"与当日现价不匹配，拒绝计算偏度")
+        return None
 
     # ---- 偏度：统一口径（内部小数，此处转百分数） ----
     try:
@@ -1066,6 +1131,12 @@ def calc_risk_reversal(contracts, spot_price, trade_date, r=0.03, target_delta=0
             print(f"  \u26a0\ufe0f [历史日期保护] {trade_date} 期权链来自实时快照"
                   f"（{','.join(srcs)}），非真历史，拒绝计算 RR")
             return None
+
+    # ---- 价格基准保护（2026-11-12）：同 calc_skew ----
+    if any(c.get('_price_basis') == 'prev_settle' for c in contracts):
+        print(f"  \u26a0\ufe0f [价格基准保护] {trade_date} 期权链价格为前结算价（非当日成交价），"
+              f"与当日现价不匹配，拒绝计算 RR")
+        return None
 
     try:
         from cn.skew_unified import skew_25d
