@@ -69,10 +69,11 @@ from alert.trigger import trigger  # noqa: E402
 # 常量
 # ================================================================
 # 5 大指数 → PCR 历史表 target_name → AKShare 指数代码
+# 五轨口径（2026-10-23 定案）：上证50 出、中证1000 进
 INDEX_CONFIG = {
-    '上证50':   {'target_name': '上证50',   'ak_symbol': 'sh000016', 'code': '000016.SH'},
     '沪深300':  {'target_name': '沪深300',  'ak_symbol': 'sh000300', 'code': '000300.SH'},
     '中证500':  {'target_name': '中证500',  'ak_symbol': 'sh000905', 'code': '000905.SH'},
+    '中证1000': {'target_name': '中证1000', 'ak_symbol': 'sh000852', 'code': '000852.SH'},
     '科创50':   {'target_name': '科创50',   'ak_symbol': 'sh000688', 'code': '000688.SH'},
     '创业板':   {'target_name': '创业板',   'ak_symbol': 'sz399006', 'code': '399006.SZ'},
 }

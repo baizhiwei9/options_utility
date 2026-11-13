@@ -22,7 +22,7 @@
   python3 bin/option_daily.py [YYYY-MM-DD] [--no-send] [--no-fetch] [--no-chain]
          [--no-feishu] [--qq] [--qq-only] [--qq-target X] [--qq-account bot2]
 """
-import os, sys, re, json, math, socket, argparse, datetime, subprocess, urllib.request
+import os, sys, re, json, math, time, socket, argparse, datetime, subprocess, urllib.request
 
 # 容器 IPv6 不通 → 强制 IPv4（必须在任何网络请求前生效）
 _orig = socket.getaddrinfo
@@ -79,6 +79,92 @@ except Exception:
         return ''
 
 
+# ---------------------------------------------------------------- 统一库接入
+# 2026-11-13：日报只认五轨（config/targets.py::MONITOR_TARGETS）。
+# GEX / 曲面 / 期限结构缺标的时，统一回落到 options_utility 库，
+# 库不可用才退回本脚本旧实现，保证 cron 不断。
+_LIB_CACHE = {}
+
+
+def _optlib_root():
+    """定位统一期权库根目录（本地 optstack 优先，其次项目自身）。"""
+    roots = [
+        _OPTLIB,
+        os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))),
+    ]
+    for r in roots:
+        if r and os.path.isdir(os.path.join(r, 'calc')):
+            return r
+    return None
+
+
+def _optlib_gex():
+    """加载 calc/gex.py（GEX/Flip 计算 + 五级降级取链）。"""
+    if 'gex' in _LIB_CACHE:
+        return _LIB_CACHE['gex']
+    mod = None
+    root = _optlib_root()
+    if root:
+        if root not in sys.path:
+            sys.path.insert(0, root)
+        try:
+            from calc import gex as mod  # noqa: F401
+        except Exception as ex:
+            print('optlib calc.gex 载入失败: %s' % str(ex)[:120], file=sys.stderr)
+            mod = None
+    _LIB_CACHE['gex'] = mod
+    return mod
+
+
+def _canon_track(name):
+    """群消息/库里的标的别名 → 五轨标准名。"""
+    k = str(name or '').strip()
+    alias = {
+        '沪深300ETF': '300ETF', '中证500ETF': '500ETF',
+        '科创50': '科创50ETF', '创业板': '创业板ETF',
+        '中证1000ETF': '中证1000', '1000': '中证1000',
+        '上证50': '50ETF', '50': '50ETF',
+    }
+    return alias.get(k, k)
+
+
+def _five_tracks_only(mapping):
+    """把 {标的: 数据} 收敛到五轨，并统一别名。"""
+    if not mapping:
+        return {}
+    out = {}
+    for k, v in mapping.items():
+        ck = _canon_track(k)
+        if ck in FIVE_TRACKS and ck not in out:
+            out[ck] = v
+    return out
+
+
+def _skew_enrich(skew_map, term):
+    """偏度统一到五轨；群表没覆盖到的（如中证1000）用期限结构 p25−c25 补。
+
+    群表里 50ETF/上证50/沪深300 一律剔除；补出来的行标注自算来源。
+    """
+    out = dict(_five_tracks_only(skew_map))
+    term = term or {}
+    for nm in FIVE_TRACKS:
+        if nm in out:
+            continue
+        rows = ((term.get(nm) or {}).get('rows') or [])
+        if not rows:
+            continue
+        r0 = rows[0]
+        p25, c25, atm = r0.get('p25'), r0.get('c25'), r0.get('atm')
+        iv_skew = (p25 - c25) if (p25 is not None and c25 is not None) else None
+        shape = '—'
+        if iv_skew is not None:
+            shape = '左偏(防跌)' if iv_skew > 3 else ('右偏(看涨)' if iv_skew < -3 else '近对称')
+        out[nm] = {'atm_iv': (round(atm, 2) if atm is not None else '—'),
+                   'iv_skew': (round(iv_skew, 2) if iv_skew is not None else None),
+                   'skew': None, 'pcr': None, 'dir': shape, 'src': 'term'}
+    return out
+
+
 def dk(dir_text, strength=1):
     """群消息里的方向文本 → 多空标识（偏空=⭐ 偏多=🌙 中性=不打标）"""
     s = str(dir_text or '')
@@ -101,9 +187,12 @@ QQ_TARGET = 'qqbot:c2c:D3056302911060130E3DEEC57C618084'  # 与其它日报一�
 RISK_FREE = 0.015
 # 距 Gamma Flip 阈值（%，2026-10-26 用户要求：≤1.5% 预警）
 DIST_ALERT_SHOW = 1.5
+# 五轨（2026-10-23 定案，与 config/targets.py::MONITOR_TARGETS 一致）：
+#   300ETF / 500ETF / 创业板ETF / 科创50ETF / 中证1000(MO)
+# 上证50(50ETF/HO) 已剔除，日报所有段落只认这五个。
+FIVE_TRACKS = ['300ETF', '500ETF', '创业板ETF', '科创50ETF', '中证1000']
 # ETF 期权标的：名称 / akshare 板块 / 现货代码(新浪) / 现货前缀
 ETFS = [
-    ('50ETF',   '华夏上证50ETF期权',      '510050', 'sh'),
     ('300ETF',  '华泰柏瑞沪深300ETF期权', '510300', 'sh'),
     ('500ETF',  '南方中证500ETF期权',     '510500', 'sh'),
     ('科创50ETF', '华夏科创50ETF期权',     '588000', 'sh'),
@@ -629,7 +718,7 @@ def build_surface(date):
             break
     res = {}
     for name, board, code, _p in ETFS:
-        S = spots.get(name)
+        S = spots.get(name) or _spot_lib(name)
         if not S:
             continue
         chains = {}
@@ -658,6 +747,9 @@ def build_surface(date):
                     pts.append({'K': K, 'cp': info['cp'], 'iv': iv, 'px': px})
             if pts:
                 chains[em] = {'exp': exp, 'dte': (exp - today).days, 'T': T, 'pts': pts}
+        if not chains:
+            # akshare 不支持深交所（159915），回落统一库取链
+            chains = _surface_chains_lib(name, date, S)
         if not chains:
             continue
         ems = sorted(chains.keys(), key=lambda e: chains[e]['dte'])
@@ -897,7 +989,6 @@ TERM_CACHE = os.path.join(WS, '.cache', 'opt_term')
 def _rv_series(name, date, n=90):
     """标的实际波动率（近5/20/60日年化），tushare fund_daily / index_daily"""
     try:
-        import tushare_init as T
         code = None
         for nm, _b, c, pre in ETFS:
             if nm == name:
@@ -907,10 +998,11 @@ def _rv_series(name, date, n=90):
         if code is None:
             code = IDX_OPT.get(name, (None, None, None))[2]
             api = 'index_daily'
+            code = str(code).replace('OP', '') if code else None  # OP000852.SH → 000852.SH
         if not code:
             return None
         start = (datetime.date.fromisoformat(date) - datetime.timedelta(days=n * 2)).strftime('%Y%m%d')
-        df = T.ts_call(api, ts_code=code, start_date=start, end_date=d8(date))
+        df = _ts_call_retry(api, tries=2, ts_code=code, start_date=start, end_date=d8(date))
         if df is None or len(df) < 25:
             return None
         df = df.sort_values('trade_date')
@@ -931,34 +1023,74 @@ def _rv_series(name, date, n=90):
 
 
 # 股指期权（中金所）：name → (board, spot, tushare opt_code)
+# 五轨只保留中证1000(MO)；沪深300(IO) / 上证50(HO) 已从日报剔除。
 IDX_OPT = {
-    '沪深300股指': ('沪深300股指期权', None, 'OP000300.SH'),
-    '上证50股指': ('上证50股指期权', None, 'OP000016.SH'),
-    '中证1000股指': ('中证1000股指期权', None, 'OP000852.SH'),
+    '中证1000': ('中证1000股指期权', None, 'OP000852.SH'),
 }
 
+_TS_DF_CACHE = {}
 
-def _opt_chain_ts(exch, code, S, date):
-    """用 tushare opt_basic + opt_daily(结算价) 拉全月日历链 → ATM/翼部 IV（比 akshare 当前价更稳）"""
+
+def _ts_call_retry(api, tries=3, **kw):
+    """Tushare 调用带重试（opt_daily 大表偶发超时是日报丢标的的主因）。"""
     try:
         import tushare_init as T
-        b = T.ts_call('opt_basic', exchange=exch)
-        d = T.ts_call('opt_daily', trade_date=d8(date), exchange=exch)
-        if b is None or d is None or not len(d):
-            return []
-        m = b.merge(d, on='ts_code')
-        sub = m[m['opt_code'] == code]
-        if not len(sub):
-            return []
     except Exception as ex:
-        print('opt_chain_ts fail %s: %s' % (code, str(ex)[:80]), file=sys.stderr)
-        return []
-    today = datetime.date.fromisoformat(date)
-    rows = []
-    for mat, g in sub.groupby('maturity_date'):
-        mat = str(mat)
+        print('tushare_init 不可用: %s' % str(ex)[:100], file=sys.stderr)
+        return None
+    last = ''
+    for i in range(max(1, tries)):
         try:
-            exp = datetime.date(int(mat[:4]), int(mat[4:6]), int(mat[6:]))
+            df = T.ts_call(api, **kw)
+            if df is not None and len(df):
+                return df
+            last = 'empty'
+        except Exception as ex:
+            last = str(ex)[:120]
+        if i < tries - 1:
+            time.sleep(1.5 * (i + 1))
+    print('ts_call 最终失败 %s(%s): %s' % (api, kw.get('exchange') or kw.get('ts_code') or '',
+                                          last), file=sys.stderr)
+    return None
+
+
+def _ts_frames(exch, date):
+    """opt_basic + opt_daily 按交易所缓存（原来每个标的都重拉一次大表）。"""
+    key = (exch, d8(date))
+    if key in _TS_DF_CACHE:
+        return _TS_DF_CACHE[key]
+    b = _ts_call_retry('opt_basic', exchange=exch)
+    d = _ts_call_retry('opt_daily', trade_date=d8(date), exchange=exch)
+    out = (b, d) if (b is not None and d is not None and len(d)) else (None, None)
+    _TS_DF_CACHE[key] = out
+    return out
+
+
+def _rows_from_legs(legs, S, date):
+    """把合约腿（任意数据源）整理成期限结构行。
+
+    legs: [{'maturity_date','exercise_price','call_put','price'}, ...]
+    返回 [{dte, atm, p25, c25, F, q}]，口径与 Tushare 结算价路径一致。
+    """
+    today = datetime.date.fromisoformat(date)
+    by = {}
+    for leg in legs:
+        try:
+            mat = str(leg['maturity_date'])[:8]
+            K = float(leg['exercise_price'])
+            px = float(leg['price'])
+        except Exception:
+            continue
+        cp = str(leg['call_put']).upper()[:1]
+        if cp not in ('C', 'P') or px <= 0 or K <= 0:
+            continue
+        if K < S * 0.85 or K > S * 1.15:
+            continue
+        by.setdefault((mat, cp), {})[K] = px
+    rows = []
+    for mat in sorted({m for m, _cp in by}):
+        try:
+            exp = datetime.date(int(mat[:4]), int(mat[4:6]), int(mat[6:8]))
         except Exception:
             continue
         dte = (exp - today).days
@@ -966,19 +1098,9 @@ def _opt_chain_ts(exch, code, S, date):
             continue
         Tv = dte / 365.0
         cps = {}
-        for _, r in g.iterrows():
-            try:
-                K = float(r['exercise_price'])
-            except Exception:
-                continue
-            px = r['settle'] if r['settle'] == r['settle'] and r['settle'] else (r['close'] or 0)
-            try:
-                px = float(px)
-            except Exception:
-                continue
-            if px <= 0 or K < S * 0.85 or K > S * 1.15:
-                continue
-            cps.setdefault(K, {})[str(r['call_put'])] = px
+        for cp in ('C', 'P'):
+            for K, px in by.get((mat, cp), {}).items():
+                cps.setdefault(K, {})[cp] = px
         Ks = sorted(k for k, v in cps.items() if 'C' in v and 'P' in v)
         if not Ks:
             continue
@@ -991,13 +1113,22 @@ def _opt_chain_ts(exch, code, S, date):
         atm = sum(vals) / len(vals) * 100
 
         def wing(cp, ratio):
-            sel = []
-            for k in Ks:
-                if cp in cps[k] and abs(k / S - ratio) <= 0.0125:
-                    v = bs_iv_fwd(cps[k][cp], F, k, Tv, cp == 'C')
-                    if v:
-                        sel.append(v * 100)
-            return sum(sel) / len(sel) if sel else None
+            # 先取标准 ±1.25% 翼部；行权价稀疏（如科创50）时放宽到 ±3%，再退到最近一档
+            for band in (0.0125, 0.03):
+                sel = []
+                for k in Ks:
+                    if cp in cps[k] and abs(k / S - ratio) <= band:
+                        v = bs_iv_fwd(cps[k][cp], F, k, Tv, cp == 'C')
+                        if v:
+                            sel.append(v * 100)
+                if sel:
+                    return sum(sel) / len(sel)
+            cand = sorted([k for k in Ks if cp in cps[k]], key=lambda k: abs(k / S - ratio))[:1]
+            for k in cand:
+                v = bs_iv_fwd(cps[k][cp], F, k, Tv, cp == 'C')
+                if v:
+                    return v * 100
+            return None
         p25, c25 = wing('P', 0.95), wing('C', 1.05)
         rows.append({'dte': dte, 'atm': atm, 'p25': p25, 'c25': c25,
                      'F': F, 'q': -math.log(F / S) / Tv * 100})
@@ -1005,36 +1136,286 @@ def _opt_chain_ts(exch, code, S, date):
     return rows
 
 
+def _opt_chain_ts(exch, code, S, date):
+    """用 tushare opt_basic + opt_daily(结算价) 拉全月日历链 → ATM/翼部 IV（比 akshare 当前价更稳）"""
+    b, d = _ts_frames(exch, date)
+    if b is None or d is None:
+        return []
+    try:
+        m = b.merge(d, on='ts_code')
+        sub = m[m['opt_code'] == code]
+        if not len(sub):
+            return []
+    except Exception as ex:
+        print('opt_chain_ts fail %s: %s' % (code, str(ex)[:80]), file=sys.stderr)
+        return []
+    legs = []
+    for _, r in sub.iterrows():
+        px = r['settle'] if r['settle'] == r['settle'] and r['settle'] else (r['close'] or 0)
+        legs.append({'maturity_date': r['maturity_date'],
+                     'exercise_price': r['exercise_price'],
+                     'call_put': r['call_put'], 'price': px})
+    return _rows_from_legs(legs, S, date)
+
+
+def _opt_chain_lib(name, date, S):
+    """Tushare 失败时回落到统一库五级取链（新浪/东财，覆盖 159915 与 MO）。"""
+    G = _optlib_gex()
+    if G is None:
+        return []
+    try:
+        contracts, _src, _err = G.data_fetcher.get_option_chain(
+            name, trade_date=d8(date), levels=[1, 3, 4, 2])
+    except Exception as ex:
+        print('opt_chain_lib fail %s: %s' % (name, str(ex)[:100]), file=sys.stderr)
+        return []
+    if not contracts:
+        return []
+    legs = [{'maturity_date': c.get('maturity_date'),
+             'exercise_price': c.get('strike'),
+             'call_put': c.get('option_type'),
+             'price': c.get('close')} for c in contracts]
+    return _rows_from_legs(legs, S, date)
+
+
+def _surface_chains_lib(name, date, S):
+    """akshare 覆盖不到（深交所 159915 等）时，用统一库取链生成微笑点。
+
+    返回 {em: {'exp','dte','T','pts':[{'K','cp','iv','px'}]}}，口径与 akshare 路径一致。
+    """
+    G = _optlib_gex()
+    if G is None or not S:
+        return {}
+    try:
+        contracts, _src, _err = G.data_fetcher.get_option_chain(
+            name, trade_date=d8(date), levels=[1, 3, 4, 2])
+    except Exception as ex:
+        print('surface_chains_lib fail %s: %s' % (name, str(ex)[:100]), file=sys.stderr)
+        return {}
+    today = datetime.date.fromisoformat(date)
+    out = {}
+    for c in (contracts or []):
+        try:
+            mat = str(c.get('maturity_date'))[:8]
+            exp = datetime.date(int(mat[:4]), int(mat[4:6]), int(mat[6:8]))
+            K = float(c.get('strike'))
+            px = float(c.get('close') or 0)
+        except Exception:
+            continue
+        cp = str(c.get('option_type')).upper()[:1]
+        if cp not in ('C', 'P') or px <= 0.0005 or K <= 0:
+            continue
+        dte = (exp - today).days
+        if dte < 1 or dte > 400:
+            continue
+        if K < S * 0.8 or K > S * 1.2:
+            continue
+        T = dte / 365.0
+        iv = bs_iv(px, S, K, T, cp == 'C')
+        if not iv or not (0.01 < iv < 3):
+            continue
+        em = '%02d%02d' % (exp.year % 100, exp.month)
+        ch = out.setdefault(em, {'exp': exp, 'dte': dte, 'T': T, 'pts': []})
+        ch['pts'].append({'K': K, 'cp': cp, 'iv': iv, 'px': px})
+    return dict((k, v) for k, v in out.items() if v['pts'])
+
+
+def _index_spot(code, date):
+    """指数现货：Tushare 重试 → 新浪直连兜底（000852.SH 等）。"""
+    code6 = str(code).replace('OP', '').split('.')[0]
+    df = _ts_call_retry('index_daily', tries=2, ts_code=code6 + '.SH',
+                        start_date=d8(date), end_date=d8(date))
+    if df is not None and len(df):
+        try:
+            return float(df['close'].iloc[0])
+        except Exception:
+            pass
+    try:
+        req = urllib.request.Request('https://hq.sinajs.cn/list=sh' + code6,
+                                     headers={'Referer': 'https://finance.sina.com.cn',
+                                              'User-Agent': 'Mozilla/5.0'})
+        txt = urllib.request.urlopen(req, timeout=15).read().decode('gbk', 'ignore')
+        m = re.search(r'="([^"]*)"', txt)
+        if m and m.group(1):
+            parts = m.group(1).split(',')
+            if len(parts) > 3:
+                return float(parts[3])
+    except Exception as ex:
+        print('index_spot sina fail %s: %s' % (code6, str(ex)[:80]), file=sys.stderr)
+    return None
+
+
+def _spot_lib(name):
+    """统一库兜底取现货价。"""
+    G = _optlib_gex()
+    if G is None:
+        return None
+    try:
+        v = G.get_spot_price(G.SPOT_CODE_MAP.get(name, ''))
+        return v if v and v > 0 else None
+    except Exception:
+        return None
+
+
+_GEX_FULL = {
+    '300ETF': '300ETF(510300)ETF期权',
+    '500ETF': '500ETF(510500)ETF期权',
+    '创业板ETF': '创业板ETF(159915)ETF期权',
+    '科创50ETF': '科创50ETF(588000)ETF期权',
+    '中证1000': '中证1000股指期权(MO)',
+}
+_GEX_HIST_FILE = os.path.join(GROUP_IMG_DIR, 'gex_lib_hist.json')
+
+
+def _gex_item_lib(name, date, gex_min_dte=3):
+    """用统一库自算 GEX，补齐 GFW 缺失的标的（主要是中证1000 / 创业板）。
+
+    口径与 GFW 主口径一致：剔当月（DTE>=gex_min_dte）、Call+/Put−。
+    返回结构与 GFW items 对齐：{key, full, net_gex(亿), flip, dist(%), d_gex, alert}。
+    """
+    G = _optlib_gex()
+    if G is None or name not in getattr(G, 'MULTIPLIER_MAP', {}):
+        return None
+    try:
+        contracts, src, err = G.data_fetcher.get_option_chain(
+            name, trade_date=d8(date), levels=[1, 3, 4, 2])
+    except Exception as ex:
+        print('gex_item_lib chain fail %s: %s' % (name, str(ex)[:100]), file=sys.stderr)
+        return None
+    if not contracts:
+        return None
+    chain = G.contracts_to_chain(contracts)
+    today = datetime.datetime.strptime(d8(date), '%Y%m%d')
+    filt = {}
+    for exp_str, exp_data in (chain or {}).items():
+        try:
+            exp = datetime.datetime.strptime(str(exp_str)[:8], '%Y%m%d')
+        except Exception:
+            continue
+        if (exp - today).days >= max(1, int(gex_min_dte)):
+            filt[exp_str] = exp_data
+    if not filt:
+        return None
+    spot = _spot_lib(name)
+    if not spot:
+        try:
+            spot = G.get_spot_price(G.SPOT_CODE_MAP.get(name, ''))
+        except Exception:
+            spot = None
+    if not spot or spot <= 0:
+        return None
+    try:
+        r = G.calc_gex_full(filt, spot, G.MULTIPLIER_MAP[name], name,
+                            getattr(G, 'RISK_FREE_RATE', 0.025), trade_date=d8(date))
+    except TypeError:
+        r = G.calc_gex_full(filt, spot, G.MULTIPLIER_MAP[name], name,
+                            getattr(G, 'RISK_FREE_RATE', 0.025))
+    except Exception as ex:
+        print('gex_item_lib calc fail %s: %s' % (name, str(ex)[:100]), file=sys.stderr)
+        return None
+    if not r.get('strike_count'):
+        return None
+    flip = r.get('flip_price')
+    dist = ((spot - flip) / spot * 100) if flip else None
+    return {'key': name, 'full': _GEX_FULL.get(name, name),
+            'net_gex': r.get('total_gex_yi'), 'flip': flip, 'dist': dist,
+            'd_gex': None,
+            'alert': (dist is not None and abs(dist) <= DIST_ALERT_SHOW),
+            'source': src or 'optlib', 'spot': spot}
+
+
+def _gex_hist_apply(items, date):
+    """给库补算的标的填 d_gex（与上一有记录交易日相减）。"""
+    hist = {}
+    try:
+        with open(_GEX_HIST_FILE, 'r', encoding='utf-8') as f:
+            hist = json.load(f) or {}
+    except Exception:
+        hist = {}
+    key = d10(date)
+    prev_dates = sorted(k for k in hist if k < key and isinstance(hist[k], dict))
+    prev = hist[prev_dates[-1]] if prev_dates else {}
+    for it in items:
+        if it.get('d_gex') is None and it.get('key') in prev:
+            try:
+                it['d_gex'] = float(it['net_gex']) - float(prev[it['key']])
+            except Exception:
+                pass
+    hist[key] = dict((it['key'], it['net_gex']) for it in items
+                     if it.get('key') and it.get('net_gex') is not None)
+    try:
+        d = os.path.dirname(_GEX_HIST_FILE)
+        if d and not os.path.isdir(d):
+            os.makedirs(d)
+        with open(_GEX_HIST_FILE, 'w', encoding='utf-8') as f:
+            json.dump(hist, f, ensure_ascii=False)
+    except Exception as ex:
+        print('gex hist write fail: %s' % str(ex)[:80], file=sys.stderr)
+
+
+def _gex_five_tracks(gexw, date, gex_min_dte=3, supplement=True):
+    """GEX 统一到五轨：只留五轨、补缺失（中证1000 等），并刷新预警列表。"""
+    if not isinstance(gexw, dict):
+        gexw = {}
+    keep, seen = [], set()
+    for r in (gexw.get('items') or []):
+        k = _canon_track(r.get('key'))
+        if k not in FIVE_TRACKS or k in seen:
+            continue
+        r['key'] = k
+        seen.add(k)
+        keep.append(r)
+    if supplement:
+        added = []
+        for nm in FIVE_TRACKS:
+            if nm in seen:
+                continue
+            it = _gex_item_lib(nm, date, gex_min_dte)
+            if it:
+                keep.append(it)
+                added.append(nm)
+        if added:
+            print('GEX库补算: %s' % '、'.join(added))
+        _gex_hist_apply(keep, date)
+    order = dict((n, i) for i, n in enumerate(FIVE_TRACKS))
+    keep.sort(key=lambda r: order.get(_canon_track(r.get('key')), 99))
+    gexw['items'] = keep
+    return gexw
+
+
 def term_struct(date):
-    """7-8 个品种的完整期限结构（结算价口径）→ 落盘缓存"""
+    """五个品种的完整期限结构（结算价口径）→ 落盘缓存
+
+    2026-11-13：Tushare 偶发超时不再直接丢标的 —— 每个交易所只拉一次大表并重试，
+    仍失败则回落统一库（新浪/东财）取链，保证五轨齐全。
+    """
     cache_fp = os.path.join(TERM_CACHE, '%s.json' % date)
     cached = _load_json(cache_fp, None)
     if cached:
         return cached
     spots = get_spots()
-    idx_spot = {}
-    try:
-        import tushare_init as T
-        for code in ('000300.SH', '000016.SH', '000852.SH'):
-            df = T.ts_call('index_daily', ts_code=code, start_date=d8(date), end_date=d8(date))
-            if df is not None and len(df):
-                idx_spot[code] = float(df['close'].iloc[0])
-    except Exception:
-        pass
     out = {}
     for name, _board, code, pre in ETFS:
-        S = spots.get(name)
+        S = spots.get(name) or _spot_lib(name)
         if not S:
+            print('term_struct 无现货 %s' % name, file=sys.stderr)
             continue
         rows = _opt_chain_ts('SSE' if pre == 'sh' else 'SZSE',
                              'OP%s.S%s' % (code, 'H' if pre == 'sh' else 'Z'), S, date)
+        if not rows:
+            print('term_struct %s Tushare 无数据，回落统一库' % name, file=sys.stderr)
+            rows = _opt_chain_lib(name, date, S)
         if rows:
             out[name] = {'spot': S, 'rows': rows}
-    for nm, (board, _s, code) in IDX_OPT.items():
-        S = idx_spot.get(code.replace('OP', '').replace('.SH', '.SH'))
+    for nm, (_board, _s, code) in IDX_OPT.items():
+        S = _index_spot(code, date) or _spot_lib(nm)
         if not S:
+            print('term_struct 无指数现货 %s' % nm, file=sys.stderr)
             continue
         rows = _opt_chain_ts('CFFEX', code, S, date)
+        if not rows:
+            print('term_struct %s Tushare 无数据，回落统一库' % nm, file=sys.stderr)
+            rows = _opt_chain_lib(nm, date, S)
         if rows:
             out[nm] = {'spot': S, 'rows': rows}
     if out:
@@ -1053,11 +1434,11 @@ def term_struct(date):
 
 IV_HIST_FP = os.path.join(WS, '.cache', 'opt_iv_hist.json')
 
-# 品种名 → tushare opt_code（历史库 key）
+# 品种名 → tushare opt_code（历史库 key）｜五轨
 NAME2CODE = {
-    '50ETF': 'OP510050.SH', '300ETF': 'OP510300.SH', '500ETF': 'OP510500.SH',
+    '300ETF': 'OP510300.SH', '500ETF': 'OP510500.SH',
     '科创50ETF': 'OP588000.SH', '创业板ETF': 'OP159915.SZ',
-    '沪深300股指': 'OP000300.SH', '上证50股指': 'OP000016.SH', '中证1000股指': 'OP000852.SH',
+    '中证1000': 'OP000852.SH',
 }
 
 # 阈值档位（近 250 交易日 ATM IV 分位）
@@ -1761,7 +2142,10 @@ def build_summary(blocks, surface, oi, skex):
     skew = skex['skew']
     # 方向统计
     bull = bear = neut = 0
-    for k, v in skew.items():
+    for k in FIVE_TRACKS:
+        v = skew.get(k)
+        if not v:
+            continue
         s = v.get('dir', '')
         if '偏空' in s or '空' in s:
             bear += 1
@@ -1794,7 +2178,10 @@ def build_card(date, ctx):
     #   → 所以小标一律贴在 **SKEW 数值后面**：`SKEW 106.75⭐`
     if skew:
         tags = []
-        for k, v in skew.items():
+        for k in FIVE_TRACKS:
+            v = skew.get(k)
+            if not v:
+                continue
             d = v.get('dir', '')
             mk = dk(d)
             tags.append(f"{k} {d}{mk}" if mk else f"{k} {d}")
@@ -1813,11 +2200,15 @@ def build_card(date, ctx):
     # 三、偏度 SKEW（2026-11-04：⭐/🌙 贴在 SKEW 值后面＝标明多空判定项）
     if skew:
         L = ['**🔥 偏度 SKEW（IV Skew = 看跌IV − 看涨IV）**']
-        order = sorted(skew.items(), key=lambda kv: -(kv[1].get('skew') or 0))
-        for k, v in order:
+        for k in FIVE_TRACKS:
+            v = skew.get(k)
+            if not v:
+                continue
             mk = dk(v.get('dir'))
+            note = '（自算补）' if v.get('src') == 'term' else ''
             L.append(f"• {k}：ATM IV {v.get('atm_iv','—')}%｜IV Skew {fmt_pct(v.get('iv_skew'))}"
-                     f"｜SKEW {v.get('skew','—')}{mk}｜PCR {v.get('pcr','—')} → {v.get('dir','')}")
+                     f"｜SKEW {v.get('skew','—') if v.get('skew') is not None else '—'}{mk}"
+                     f"｜PCR {v.get('pcr') if v.get('pcr') is not None else '—'} → {v.get('dir','')}{note}")
         els.append({'tag': 'markdown', 'content': '\n'.join(L)})
 
     # 三点五、IV / VIX 较上一交易日（2026-11-04 大佬要求）
@@ -1827,7 +2218,7 @@ def build_card(date, ctx):
     if ivc or wg.get('rows'):
         P = ['**🔁 波动率 vs 上一交易日（IV / VIX 环比）**']
         order_w = ['300ETF', '500ETF', '科创50', '创业板', '1000']
-        for nm in [e[0] for e in ETFS if e[0] in ivc]:
+        for nm in [n for n in FIVE_TRACKS if n in ivc]:
             c_ = ivc[nm]
             d = c_.get('d_pt')
             if d is None:
@@ -1876,10 +2267,7 @@ def build_card(date, ctx):
         L = ['**💰 GEX 做市商净Gamma ｜ 距 Flip 距离**']
         gw = {r['key']: r for r in (ctx.get('gexw') or {}).get('items', [])}
         gr = {r['key']: r for r in (ctx.get('gexw_ref') or {}).get('items', [])}
-        alias = {'50ETF': '50ETF', '300ETF': '300ETF', '500ETF': '500ETF',
-                 '科创50ETF': '科创50ETF', '创业板ETF': '创业板ETF',
-                 '沪深300': '300ETF', '中证1000': '中证1000'}
-        order = ['50ETF', '300ETF', '500ETF', '科创50ETF', '创业板ETF', '沪深300', '中证1000', '上证50']
+        order = FIVE_TRACKS
         shown = set()
         for key in order:
             r = gw.get(key)
@@ -1897,10 +2285,9 @@ def build_card(date, ctx):
                 flag = ' ⚠️贴近翻转点'
             side = '上方/正Gamma压波动' if dist > 0 else '下方/负Gamma放大波动'
             L.append(f"• {r['full']}：净GEX {r['net_gex']:+.2f}亿{dgs}｜Flip {r['flip']:.4f}｜**距 {dist:+.2f}%**（{side}）{flag}")
-        # 群表里多出来的标的（如未自算到的）兜底展示
-        for k, v in gex.items():
-            ak = alias.get(k, k)
-            if ak in shown:
+        # 群表里有、自算没有的五轨标的兜底展示（50ETF/上证50/沪深300 不进日报）
+        for k, v in _five_tracks_only(gex).items():
+            if k in shown:
                 continue
             L.append(f"• {k}：净GEX {v['gex']}亿（群表）→ {v.get('risk','')}")
         # 脚注：口径 + 全月参照值
@@ -1961,7 +2348,7 @@ def build_card(date, ctx):
             TH = ctx.get('thr') or {}
             if TH:
                 L2 = ['**🎚 IV 安全阈值（近 250 交易日 ATM IV 分位，程序自算）**']
-                for nm in [x for x in (ctx.get('term') or {}) if x in TH]:
+                for nm in [n for n in FIVE_TRACKS if n in TH]:
                     t_ = TH[nm]
                     cur = t_['cur']
                     if cur >= t_['p95']:
@@ -1994,10 +2381,9 @@ def build_card(date, ctx):
     extra = []
     if ivma:
         for r in ivma:
+            if _canon_track(r.get('name')) not in FIVE_TRACKS:
+                continue
             extra.append(f"• {r['name']} IV {r['iv']}%｜MA40 {r['ma40']}%｜MA80 {r['ma80']}% → {r['sig']}")
-    if cyc.get('hs300'):
-        h = cyc['hs300']
-        extra.append(f"• 沪深300 期权：VIX {h['vix']}｜PCR {h['pcr']}｜SKEW {h['skew']}")
     if extra:
         els.append({'tag': 'markdown', 'content': '**📈 IV 均线 / 周期指标**\n' + '\n'.join(extra)})
     if cyc.get('warns'):
@@ -2066,7 +2452,10 @@ def build_qq(date, ctx):
         pass
     if skew:
         L.append('【多空方向】')
-        for k, v in skew.items():
+        for k in FIVE_TRACKS:
+            v = skew.get(k)
+            if not v:
+                continue
             mk = dk(v.get('dir'))
             L.append(f"  {k} {v.get('dir','')}{mk}｜IV Skew {fmt_pct(v.get('iv_skew'))}｜SKEW {v.get('skew','—')}{mk}")
     if oi.get('market'):
@@ -2076,7 +2465,7 @@ def build_qq(date, ctx):
     if gex or ctx.get('gexw'):
         L = ['【GEX ｜ 距Flip】（剔当月 DTE≥%d）' % ctx.get('gex_min_dte', 3)]
         gw = {r['key']: r for r in (ctx.get('gexw') or {}).get('items', [])}
-        for key in ['50ETF', '300ETF', '500ETF', '科创50ETF', '创业板ETF', '沪深300', '中证1000', '上证50']:
+        for key in FIVE_TRACKS:
             r = gw.get(key)
             if not r:
                 continue
@@ -2089,13 +2478,11 @@ def build_qq(date, ctx):
             flag = '  ⚠️' if abs(dist) <= DIST_ALERT_SHOW else ''
             L.append(f"  {r['full']} GEX{r['net_gex']:+.2f}亿{dgs} Flip{r['flip']:.4f} 距{dist:+.2f}%{flag}")
         if not gw:
-            for k, v in gex.items():
+            for k, v in _five_tracks_only(gex).items():
                 L.append(f"  {k} {v['gex']}亿 {v.get('risk','')}")
         gr = {r['key']: r for r in (ctx.get('gexw_ref') or {}).get('items', [])}
         if gr:
-            ref = ['%s%+.2f' % (k, gr[k]['net_gex']) for k in
-                   ['50ETF', '300ETF', '500ETF', '科创50ETF', '创业板ETF', '沪深300', '中证1000', '上证50']
-                   if k in gr]
+            ref = ['%s%+.2f' % (k, gr[k]['net_gex']) for k in FIVE_TRACKS if k in gr]
             if ref:
                 L.append('  (参数·含当月全月口径: %s 亿)' % ' '.join(ref))
     if surf:
@@ -2165,7 +2552,7 @@ def build_qq(date, ctx):
             TH = ctx.get('thr') or {}
             if TH:
                 L.append('【IV 安全阈值(近250日分位)】')
-                for nm in [x for x in (ctx.get('term') or {}) if x in TH]:
+                for nm in [n for n in FIVE_TRACKS if n in TH]:
                     t_ = TH[nm]
                     cur = t_['cur']
                     tag = ('🔴破极危' if cur >= t_['p95'] else '🟠破警戒' if cur >= t_['p80']
@@ -2394,7 +2781,7 @@ def main():
     if wg.get('rows'):
         _n = wugu_append(date, wg)
         print('五轨核心指标(%s): %d 标的已落库' % (wg.get('gen', ''), _n))
-    print('SKEW标的:', list(skex['skew'].keys()), 'OI标的:', [m['name'] for m in oi.get('market', [])])
+    print('群表SKEW标的:', list(skex['skew'].keys()), 'OI标的:', [m['name'] for m in oi.get('market', [])])
 
     surface = {} if a.no_chain else build_surface(date)
     if surface:
@@ -2413,38 +2800,43 @@ def main():
     gexw = {}
     gexw_ref = {}
     gex_min_dte = getattr(a, 'gex_min_dte', 3)
-    if GFW is not None and not getattr(a, 'no_gexw', False):
-        try:
-            gexw = GFW.build(d8(date), gex_min_dte, 9999)
-            gexw, prev = GFW.enrich_delta(gexw, d8(date))
-            gexw['prev_date'] = prev
-            hits = [r['key'] for r in gexw.get('items', []) if r.get('alert')]
-            print('Flip距离: %d 标的｜口径 DTE>=%d｜贴近(<=%.1f%%): %s'
-                  % (len(gexw.get('items', [])), gex_min_dte, DIST_ALERT_SHOW, hits or '无'))
-            ctx_alert = hits
-            # 全月参照口径（仅脚注展示，不作判风险依据）
-            if getattr(a, 'gex_ref', True) and gex_min_dte > 1:
-                try:
-                    gexw_ref = GFW.build(d8(date), 1, 9999)
-                    print('Flip距离(全月参照): %d 标的' % len(gexw_ref.get('items', [])))
-                except Exception as ex2:
-                    print('gex ref fail:', str(ex2)[:100], file=sys.stderr)
-        except Exception as ex:
-            print('gex_flip_watch fail:', str(ex)[:150], file=sys.stderr)
-            ctx_alert = []
-    else:
-        ctx_alert = []
+    ctx_alert = []
+    if not getattr(a, 'no_gexw', False):
+        if GFW is not None:
+            try:
+                gexw = GFW.build(d8(date), gex_min_dte, 9999)
+                gexw, prev = GFW.enrich_delta(gexw, d8(date))
+                gexw['prev_date'] = prev
+                # 全月参照口径（仅脚注展示，不作判风险依据）
+                if getattr(a, 'gex_ref', True) and gex_min_dte > 1:
+                    try:
+                        gexw_ref = GFW.build(d8(date), 1, 9999)
+                        print('Flip距离(全月参照): %d 标的' % len(gexw_ref.get('items', [])))
+                    except Exception as ex2:
+                        print('gex ref fail:', str(ex2)[:100], file=sys.stderr)
+            except Exception as ex:
+                print('gex_flip_watch fail:', str(ex)[:150], file=sys.stderr)
+                gexw = {}
+        # 统一五轨：剔除 50ETF/上证50/沪深300(IO)，库补中证1000 等缺失标的
+        gexw = _gex_five_tracks(gexw, date, gex_min_dte)
+        if gexw_ref.get('items'):
+            gexw_ref = _gex_five_tracks(gexw_ref, date, 1, supplement=False)
+        hits = [r['key'] for r in gexw.get('items', []) if r.get('alert')]
+        print('Flip距离: %d 标的｜口径 DTE>=%d｜贴近(<=%.1f%%): %s'
+              % (len(gexw.get('items', [])), gex_min_dte, DIST_ALERT_SHOW, hits or '无'))
+        ctx_alert = hits
 
     mom = etf_mom(date) if surface else {}
     if mom:
         print('ETF动量:', {k: (round(v.get('d5'), 2) if v.get('d5') is not None else None) for k, v in mom.items()})
     term, rv = {}, {}
-    if surface:
-        try:
-            term = term_struct(date)
-            print('期限结构标的:', list(term.keys()))
-        except Exception as ex:
-            print('term_struct fail:', str(ex)[:120], file=sys.stderr)
+    # 期限结构独立于 akshare 曲面（TuShare/统一库链路），五轨都要有
+    try:
+        term = term_struct(date)
+        print('期限结构标的:', list(term.keys()))
+    except Exception as ex:
+        print('term_struct fail:', str(ex)[:120], file=sys.stderr)
+    if term:
         try:
             _n = iv_hist_append(date, term)
             if _n:
@@ -2455,6 +2847,11 @@ def main():
             rv[nm] = _rv_series(nm, date)
         if rv:
             print('实际波动:', {k: (round(v['rv5'], 1) if v and v.get('rv5') else None) for k, v in rv.items()})
+    # 偏度/GEX 群表数据统一到五轨（中证1000 缺则用期限结构补）
+    skex['skew'] = _skew_enrich(skex.get('skew'), term)
+    skex['gex'] = _five_tracks_only(skex.get('gex'))
+    if skex.get('skew'):
+        print('SKEW五轨:', list(skex['skew'].keys()))
     thr = {}
     for nm in (term or {}):
         try:

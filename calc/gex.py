@@ -492,6 +492,9 @@ def calc_gex_full(chain_data: dict, spot_price: float, multiplier: int,
     # ---- 第九步：强度指标 ----
     intensity = abs(local_gex) / total_oi_notional * 10000 if total_oi_notional > 0 else 0
 
+    # 全曲线净 GEX（口径：Call+/Put−，供日报等外部调用方直接取用）
+    total_gex = sum(item['single_gex'] for item in gex_per_strike)
+
     result = {
         "symbol": symbol,
         "spot": round(F, 4),
@@ -500,6 +503,8 @@ def calc_gex_full(chain_data: dict, spot_price: float, multiplier: int,
         "regime": regime,
         "local_gex": round(local_gex, 2),
         "local_gex_yi": round(local_gex / 1e8, 4),
+        "total_gex": round(total_gex, 2),
+        "total_gex_yi": round(total_gex / 1e8, 4),
         "local_sign": local_sign,
         "consistency": consistency,
         "gamma_wall": {"strike": gamma_wall["strike"], "gex_value": round(gamma_wall["gex_value"], 2)},
@@ -523,6 +528,8 @@ def _empty_result(symbol: str, spot: float, reason: str) -> dict:
         "regime": "无数据",
         "local_gex": 0,
         "local_gex_yi": 0,
+        "total_gex": 0,
+        "total_gex_yi": 0,
         "local_sign": "零",
         "consistency": "无数据",
         "gamma_wall": {"strike": 0, "gex_value": 0},

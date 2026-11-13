@@ -121,7 +121,7 @@ RESONANCE_INDEX_MAP = {
     '中证1000': {
         'skew': '中证1000', 'risk_reversal': '中证1000', 'ev': '中证1000',
         'resonance': '中证1000', 'rnd': '中证1000', 'vts': '中证1000指数',
-        'pcr': None,  # PCR模块无中证1000
+        'pcr': '中证1000',  # 2026-10-23 起 PCR 模块已支持 MO 主力系列
     },
     '科创50': {
         'skew': '科创50ETF', 'risk_reversal': '科创50ETF', 'ev': '科创50ETF',
