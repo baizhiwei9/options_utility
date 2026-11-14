@@ -20,7 +20,7 @@
 - SKEW = BKM(2003)风险中性偏度按 CBOE 式 100-10·RNSkew 换算的【近似指数】（A股无官方SKEW）。
 - GEX阻尼器基于公开持仓OI近似（真实做市商持仓不可得），只报分位与Flip距离，不报绝对值。
 
-数据源（data_hub 四级降级：AKShare → Tushare代理 → 专业接口 → 网页兜底）：
+数据源（data_hub 三级降级：AKShare → Tushare代理 → 网页兜底）：
 - 期权链/IV/Greeks：东财期权链(ETF含官方IV/Greeks；MO由完整BS反解IV/Greeks) —— 当前沙箱AKShare直连不通时的网页兜底层
 - 现货日K(HV20)：新浪财经日K（AKShare不通时兜底）
 - IM各月基差：新浪期货实时 + 本地basis_history
