@@ -13,6 +13,12 @@
 #   ./sync_github.sh --pr                # 走功能分支 + 开 PR（不直推 main）
 #   ./sync_github.sh --pr -b feat/xxx    # 指定 PR 分支名
 #   ./sync_github.sh --allow-delete      # 放行「删除远端文件」的推送（默认拦截）
+#   ./sync_github.sh --no-pull           # 跳过「先拉」阶段（不推荐）
+#   ./sync_github.sh --prefer-remote     # 冲突时一律用远端覆盖本地
+#   ./sync_github.sh --prefer-local      # 冲突时一律保留本地
+#
+# 「先拉再推」：推送前自动把远端最新安全回填到源目录（三方比对，
+#   见同目录 sync_pull.py）。本地没动过的文件才用远端覆盖，本地改动一律保留。
 #
 # 前置：
 #   1. gh 已认证（gh auth status 显示 Logged in）
@@ -33,6 +39,8 @@ FORCE=0
 PR_MODE=0
 PR_BRANCH=""
 ALLOW_DELETE=0
+PULL_MODE=1
+PULL_CONFLICT="auto"
 
 while [[ $# -gt 0 ]]; do
     case "$1" in
@@ -42,7 +50,10 @@ while [[ $# -gt 0 ]]; do
         --pr)         PR_MODE=1; shift ;;
         -b|--branch)  PR_BRANCH="${2:-}"; PR_MODE=1; shift 2 ;;
         --allow-delete) ALLOW_DELETE=1; shift ;;
-        -h|--help)    sed -n '2,27p' "$0"; exit 0 ;;
+        --no-pull)      PULL_MODE=0; shift ;;
+        --prefer-remote) PULL_CONFLICT="remote"; shift ;;
+        --prefer-local)  PULL_CONFLICT="local"; shift ;;
+        -h|--help)    sed -n '2,35p' "$0"; exit 0 ;;
         *) echo "未知参数: $1"; exit 1 ;;
     esac
 done
@@ -99,6 +110,7 @@ EXCLUDES=(
     --exclude='*.bak.*'
     --exclude='*_bak_*'
     --exclude='.DS_Store'
+    --exclude='.github_sync_state.json'
 )
 
 echo "══════════════════════════════════════════════"
@@ -156,6 +168,41 @@ else
     echo "  ✅ 未发现明文密钥"
 fi
 
+# ---------- 1.5) 先拉：把远端最新安全回填到源目录 ----------
+# 顺序很重要：必须「先拉再推」。sync_github.sh 用「当前目录重建仓库」的方式同步，
+# 脚本自己不知道远端有没有别人的新提交；本地副本比远端旧时，缺的文件会被
+# git add -A 当成删除、旧内容当成更新，一次推送就抹掉别人刚推的东西。
+if [[ $PULL_MODE -eq 1 ]]; then
+    echo ""
+    echo "▶ [1.5/5] 先拉：对齐远端最新..."
+    PULL_PY="$SRC_DIR/sync_pull.py"
+    if [[ ! -f "$PULL_PY" ]]; then
+        echo "  ⚠️ 未找到 sync_pull.py，跳过先拉阶段"
+    else
+        PULL_ARGS=(--src "$SRC_DIR" --work "/tmp/_gh_pull_$(basename "$SRC_DIR")"
+                   --repo "$REPO" --branch "$BRANCH" --mode "$PULL_CONFLICT")
+        [[ $DRY_RUN -eq 1 ]] && PULL_ARGS+=(--dry-run)
+        PULL_RC=0
+        python3 "$PULL_PY" "${PULL_ARGS[@]}" || PULL_RC=$?
+        if [[ $PULL_RC -eq 2 ]]; then
+            echo ""
+            echo "❌ 拉不到远端 github.com/$REPO，为防误覆盖已中止推送。"
+            echo "   排查： gh api repos/$REPO/commits/$BRANCH / gh auth status"
+            exit 1
+        elif [[ $PULL_RC -eq 3 ]]; then
+            echo ""
+            echo "❌ 存在内容冲突（上面列出的文件两边都改过），已中止推送。"
+            echo "   处理：人工合并后重跑；或显式选边："
+            echo "     ./sync_github.sh --prefer-remote -m \"...\"   # 用远端覆盖本地"
+            echo "     ./sync_github.sh --prefer-local  -m \"...\"   # 用本地覆盖远端"
+            exit 1
+        elif [[ $PULL_RC -ne 0 ]]; then
+            echo "❌ 先拉阶段异常退出（rc=$PULL_RC），已中止推送。"
+            exit 1
+        fi
+    fi
+fi
+
 # ---------- 2) 准备 /tmp 工作副本 ----------
 echo ""
 echo "▶ [2/5] 准备临时工作副本..."
@@ -174,7 +221,7 @@ else
                '*.sqlite' '*.sqlite3' 'outputs' 'logs' 'data' '*.csv' \
                '*.png' '*.jpg' '*.jpeg' '*.pdf' \
                '*_sent_lock.json' '*_lock.json' '*_state.json' \
-               'codeact' '.pytest_cache' '*.log' '*.tmp' '*.bak' '*.bak.*' '*_bak_*' '.DS_Store'; do
+               'codeact' '.pytest_cache' '*.log' '*.tmp' '*.bak' '*.bak.*' '*_bak_*' '.DS_Store' '.github_sync_state.json'; do
         TAR_EXCLUDES+=(--exclude="$pat")
     done
     ( cd "$SRC_DIR" && tar -cf - "${TAR_EXCLUDES[@]}" . ) | ( cd "$WORK_DIR" && tar -xf - )
@@ -282,6 +329,10 @@ if git diff --cached --quiet; then
     echo ""
     echo "✅ 代码与 GitHub 完全一致，无需推送。"
     echo "   最新提交: $(git log --oneline -1 2>/dev/null || echo '(无)')"
+    if [[ -f "$SRC_DIR/sync_pull.py" ]]; then
+        python3 "$SRC_DIR/sync_pull.py" --record "$(git rev-parse HEAD)" \
+            --src "$SRC_DIR" --branch "$BRANCH" >/dev/null 2>&1 || true
+    fi
     exit 0
 fi
 
@@ -305,6 +356,12 @@ if [[ $PR_MODE -ne 1 ]]; then
     echo "✅ 推送成功"
     echo "   提交: $(git log --oneline -1)"
     echo "   仓库: https://github.com/$REPO"
+    if [[ -f "$SRC_DIR/sync_pull.py" ]]; then
+        python3 "$SRC_DIR/sync_pull.py" --record "$(git rev-parse HEAD)" \
+            --src "$SRC_DIR" --branch "$BRANCH" >/dev/null 2>&1 \
+            && echo "   基线: $(git rev-parse --short HEAD) → .github_sync_state.json" \
+            || echo "   ⚠️ 基线记录失败（不影响本次推送，下次先拉会按无基线处理）"
+    fi
     exit 0
 fi
 
