@@ -82,6 +82,32 @@ def _qvix(fn):
     return ser
 
 
+QVIX_FILES = {
+    "300ETF": "qvix_300etf.json",
+    "500ETF": "qvix_500etf.json",
+    "创业板": "qvix_cyb.json",
+    "科创50": "qvix_kcb.json",
+    "中证1000": "qvix_1000index.json",
+}
+
+
+def qvix_series(name: str):
+    """公开入口：读取已落盘的 QVIX 序列（name 见 QVIX_FILES）。
+
+    供外部日报/预警任务复用期权库口径，不再各自去第三方站点抓现成 QVIX 值。
+
+    Args:
+        name: '300ETF' / '500ETF' / '创业板' / '科创50' / '中证1000'
+
+    Returns:
+        list[tuple[str, float]] — [(YYYY-MM-DD, qvix)]，按文件原始顺序；缺文件返回 []
+    """
+    fn = QVIX_FILES.get(name)
+    if fn is None:
+        return []
+    return _qvix(fn)
+
+
 def _chain_iv(key):
     p = os.path.join(D, "ashare_chain_metrics.json")
     if not os.path.exists(p):
