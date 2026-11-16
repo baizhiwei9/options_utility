@@ -10,7 +10,7 @@ options 迁移时整目录漏搬，导致 basis_ma20 / basis_intraday 静默跑�
 
 用法
 ----
-    python3 calc/basis_backfill.py            # 回填 IF/IH/IC/IM 全部
+    python3 calc/basis_backfill.py            # 回填 IF/IC/IM 全部
     python3 calc/basis_backfill.py IF         # 只回填 IF
     python3 calc/basis_backfill.py all 300    # 回填最近 300 自然日
 """
@@ -34,8 +34,8 @@ import sys
 import opt_store as _store  # noqa: E402
 from basis import BASIS_TARGETS, get_basis_daily, update_basis_history  # noqa: E402
 
-# 股指四个品种：IF/IH 沪深300、上证50，IC/IM 中证500、中证1000
-DEFAULT_TARGETS = ['IF', 'IH', 'IC', 'IM']
+# 股指三个品种：IF 沪深300、IC 中证500、IM 中证1000（上证50 已剔除）
+DEFAULT_TARGETS = ['IF', 'IC', 'IM']
 
 
 def backfill_one(symbol, days=400):

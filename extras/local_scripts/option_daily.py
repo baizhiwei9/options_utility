@@ -13,7 +13,7 @@
      - 「波动率曲面」        → 曲面信号(若当日有)
   2) akshare option_finance_board(近月/次季) → 用 BS 反推 IV，自算 波动率微笑/偏度/期限结构（真·曲面）
   3) 新浪行情 → ETF 现货价
-  4) futures_basis.py → 股指期货基差(IF/IH/IC/IM 主力) + 商品期货基差(现货−期货) + 基差信号
+  4) futures_basis.py → 股指期货基差(IF/IC/IM 主力) + 商品期货基差(现货−期货) + 基差信号
 
 输出
   - 飞书 interactive 卡片(默认发群) + QQ 文字版 + QQ 微笑曲线图(PNG)

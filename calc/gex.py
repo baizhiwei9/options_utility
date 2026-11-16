@@ -11,7 +11,7 @@ GEX (Gamma Exposure) 监控脚本
   Level 3: 新浪网页
   Level 4: 东方财富 push2
   Level 5: 同花顺 iFinD（预留）
-覆盖标的：300ETF / 500ETF / 创业板ETF / 科创50ETF / 沪深300(IO) / 中证1000(MO)
+覆盖标的：300ETF / 500ETF / 创业板ETF / 科创50ETF / 中证1000(MO)
 
 用法:
   python gex_monitor.py            # 实时运行

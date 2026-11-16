@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """
 期权预期收益 EV 分析 - 全标的覆盖
-- 标的: 300ETF/500ETF/创业板ETF/科创50ETF/沪深300(IO)/中证1000(MO)
+- 标的: 300ETF/500ETF/创业板ETF/科创50ETF/中证1000(MO)
 - 方法: Breeden-Litzenberger 完整实现（非简化版）
   1. 提取Call+Put的IV（虚值期权优先，流动性好价格准）
   2. log-moneyness 空间二次函数拟合波动率微笑
@@ -65,7 +65,6 @@ TARGETS = [
     {"name": "500ETF",    "code": "510500", "exchange": "SSE",   "opt_code": "OP510500.SH", "mult": 10000, "type": "ETF"},
     {"name": "创业板ETF",  "code": "159915", "exchange": "SZSE",  "opt_code": "OP159915.SZ", "mult": 10000, "type": "ETF"},
     {"name": "科创50ETF",  "code": "588000", "exchange": "SSE",   "opt_code": "OP588000.SH", "mult": 10000, "type": "ETF"},
-    {"name": "沪深300(IO)", "code": "IO",    "exchange": "CFFEX", "opt_code": "IO",          "mult": 100,   "type": "IDX", "idx": "000300.SH", "prefix": "IO"},
     {"name": "中证1000(MO)", "code": "MO",   "exchange": "CFFEX", "opt_code": "MO",          "mult": 100,   "type": "IDX", "idx": "000852.SH", "prefix": "MO"},
 ]
 

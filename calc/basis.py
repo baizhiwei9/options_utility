@@ -41,13 +41,6 @@ BASIS_TARGETS = {
         'spot_name': '沪深300指数',
         'category': '股指',
     },
-    'IH': {
-        'name': '上证50',
-        'futures_symbol': 'IH',
-        'spot_symbol': 'sh000016',
-        'spot_name': '上证50指数',
-        'category': '股指',
-    },
     'IC': {
         'name': '中证500',
         'futures_symbol': 'IC',
@@ -342,8 +335,7 @@ def _fetch_level2_tushare(symbol, cfg, start_date=None, end_date=None):
         if cfg['category'] == '股指':
             time.sleep(API_SLEEP)
             idx_code = {
-                'IF': '000300.SH', 'IH': '000016.SH', 
-                'IC': '000905.SH', 'IM': '000852.SH'
+                'IF': '000300.SH', 'IC': '000905.SH', 'IM': '000852.SH'
             }.get(symbol, '000300.SH')
             df_idx = pro.index_daily(ts_code=idx_code, start_date=start_date, end_date=end_date)
             if df_idx is not None and len(df_idx) > 0:
@@ -611,7 +603,7 @@ def check_basis_extreme(symbol, current_basis):
 if __name__ == '__main__':
     # 测试
     print('=== 基差数据模块测试 ===')
-    for sym in ['IF', 'IH', 'IC', 'IM']:
+    for sym in ['IF', 'IC', 'IM']:
         cfg = BASIS_TARGETS[sym]
         print(f'\n测试 {sym} ({cfg["name"]}):')
         fut, spot, basis, source, error = get_basis_daily(sym)

@@ -8,7 +8,7 @@
 1. 成交量PCR（5日滚动平均）：最近5个交易日，每天按"剔除当月到期合约"分别汇总，
    同一指数下多个ETF期权的调整后量合并求和，然后 总Put / 总Call 作为vol_pcr_5d
 2. 持仓量PCR（单日值）：当日刨除当月到期合约，每个指数独立统计持仓量比
-3. 基差：各指数对应股指期货(IH/IF/IC/IM)当季合约年化基差率，252日分位和Z值
+3. 基差：各指数对应股指期货(IF/IC/IM)当季合约年化基差率，252日分位和Z值
 4. Skew：取该指数下成交量最大的ETF的CBOE Skew值+方向判断
 
 信号判断（分指数独立）：
@@ -248,7 +248,6 @@ TARGET_FUTURES_MAP = {t['name']: t.get('futures') for t in OPTION_TARGETS}
 
 # 基差品种（含IH）
 BASIS_PRODUCTS = {
-    'IH': {'idx': '000016.SH', 'name': '上证50'},
     'IF': {'idx': '000300.SH', 'name': '沪深300'},
     'IC': {'idx': '000905.SH', 'name': '中证500'},
     'IM': {'idx': '000852.SH', 'name': '中证1000'},
@@ -2228,7 +2227,7 @@ def main_sync(trade_date, dry_run=False):
         if skew:
             print(f"  {name}: CBOE_Skew={skew.get('cboe_skew', 'N/A')} {skew.get('direction', '')}")
     
-    # Step 6: 获取基差数据（IH/IF/IC/IM）
+    # Step 6: 获取基差数据（IF/IC/IM）
     print("\n[Step 6] 获取基差数据...")
     basis_rows, missing_basis = get_basis_data(trade_date)
     

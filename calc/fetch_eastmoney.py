@@ -708,7 +708,7 @@ def _fetch_index_option_chain(symbol: str, cfg: dict) -> tuple:
 # ===== 批量获取 =====
 def fetch_all_options() -> dict:
     """
-    获取全部6个标的的期权链数据
+    按调用方传入的标的获取期权链数据
     :return: {symbol: (chain_data, error_msg), ...}
     """
     all_symbols = list(TARGET_CONFIG.keys())

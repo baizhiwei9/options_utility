@@ -2247,7 +2247,7 @@ def build_risk_forecast_card(date_str, indices, conclusion, top_risks=None, top_
     ds = wanquan.get('dim_scores', {})
 
     # ---------- 衍生品维度：分项概况（不使用万得全A聚合值）----------
-    deriv_option_indices = ['上证50', '沪深300', '中证500', '中证1000', '创业板指', '科创50']
+    deriv_option_indices = ['沪深300', '中证500', '中证1000', '创业板指', '科创50']
     deriv_count = 0
     extreme_alerts = []
     for idx_name in deriv_option_indices:
@@ -2381,7 +2381,7 @@ def build_risk_forecast_card(date_str, indices, conclusion, top_risks=None, top_
     # ===== 第四块：各指数风险对比 =====
     elements.append(build_section_header("📈 各指数风险对比"))
     
-    core_indices = ['上证50', '沪深300', '中证500', '中证1000', '创业板指', '科创50', '万得全A']
+    core_indices = ['沪深300', '中证500', '中证1000', '创业板指', '科创50', '万得全A']
     idx_rows = []
     for idx_name in core_indices:
         idx = indices.get(idx_name, {})
@@ -4174,7 +4174,7 @@ def _risk_forecast_sections(date_str, indices, conclusion, top_risks=None, top_o
             return f"{value_part}{sep}<font color='orange'>{label_part}</font>"
         return s
 
-    core_indices = ['上证50', '沪深300', '中证500', '中证1000', '创业板指', '科创50', '万得全A']
+    core_indices = ['沪深300', '中证500', '中证1000', '创业板指', '科创50', '万得全A']
 
     # ===== warnings =====
     if data_warnings:

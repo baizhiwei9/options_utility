@@ -41,7 +41,7 @@ OUTPUT_DIR = os.path.join(PROJECT_DIR, 'outputs')
 os.makedirs(OUTPUT_DIR, exist_ok=True)
 
 # 监控的品种（股指期货优先）
-MONITOR_SYMBOLS = ['IF', 'IH', 'IC', 'IM']
+MONITOR_SYMBOLS = ['IF', 'IC', 'IM']
 
 
 def run():

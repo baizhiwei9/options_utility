@@ -66,7 +66,7 @@ ALERTED_FILE = os.path.join(OUTPUT_DIR, 'basis_alerted.json')
 os.makedirs(OUTPUT_DIR, exist_ok=True)
 
 # 监控品种
-MONITOR_SYMBOLS = ['IF', 'IH', 'IC', 'IM']
+MONITOR_SYMBOLS = ['IF', 'IC', 'IM']
 
 # 邮件配置（163 SMTP）
 EMAIL_CONFIG = {

@@ -24,7 +24,7 @@
 
 | 原脚本（②中美链路） | 现在用谁 | 说明 |
 |---|---|---|
-| `fetch_rt.py`（盘中快照取数） | `calc/fetch.py` + `alert/tasks/oi_intraday.py`、`vix.py` | ① 已有多级降级取数；② 的「14:30 盘中快照」思路由 `oi_intraday` / `vix` 采样任务承担 |
+| `fetch_rt.py`（盘中快照取数） | `calc/fetch.py` + `alert/tasks/oi_intraday.py`、`vix.py` | ① 已有四级降级取数；② 的「14:30 盘中快照」思路由 `oi_intraday` / `vix` 采样任务承担 |
 | `fetch_qvix.py`（QVIX 序列） | `calc/fetch.py` / `alert/tasks/vix.py` | 券商 QVIX 与自算 VIX 两条来源，① 合并前已并行存在 |
 | `compute_ashare.py`、`analyze_ashare.py` | `calc/option_monitor.py`（`calc_skew` / `calc_gex`）+ `calc/risk_layer.py` | ② 自带的 BS/偏度/GEX 与①重复，**删掉一套** |
 | `gex_core.py`（GEX 曲线/Flip/分位） | `calc/gex.py`（Black-76 累计 GEX + Flip） | ② 是「分档局部净 GEX 零交叉」算法，① 是累计算法；A 股统一用①，差异见 `KNOWN_ISSUES` #14 |
@@ -242,7 +242,7 @@ OK                       ← 原 9 项 + 新增 14 项
 | `gex_core.py` | 474 | 0 | 能力收编 → `calc/cn/gex_weighted.py`（恒定期限加权，库此前只有全月份加总） |
 | `opt_iv_hist.py` | 240 | 0 | 能力收编 → `calc/cn/iv_history.py`（IV 历史回补，危险分第 6 维依赖） |
 | `opt_gex.py` / `opt_gex_flip.py` / `gex_multi.py` / `gex_flip_watch.py` / `gex_flip_alert.py` / `gex_hist_chart.py` / `gex_hist_parse.py` / `gex_history_scrape.py` | 448~705 | 0 | **能力已被覆盖**，不迁。库的 `calc/gex.py`（全月份加总 + Flip）+ `calc/cn/gex_weighted.py`（恒定期限）已含全部口径 |
-| `opt_pcr.py` / `opt_pcr_idx.py` | 429 / 483 | 0（`opt_pcr` 仅被注释引用） | **能力已被覆盖** → 库 `calc/pcr.py`（指数 PCR，多级降级取数） |
+| `opt_pcr.py` / `opt_pcr_idx.py` | 429 / 483 | 0（`opt_pcr` 仅被注释引用） | **能力已被覆盖** → 库 `calc/pcr.py`（指数 PCR，四级降级取数） |
 | `opt_skew_by_month.py` / `opt_skew_pcr.py` / `opt_skew_vix.py` / `opt_rr_kc50.py` / `opt_kc50_vix.py` | 178~557 | 0 | **能力已被覆盖** → `calc/option_monitor.py::calc_skew/calc_risk_reversal` + `calc/iv_term.py` + `calc/cn/skew_dual.py` |
 | `fetch_opt_chain.py` / `multia_opt_overlay.py` / `layered_v2_optimized.py` | 90~285 | 0 | **不属于期权计算层**：`fetch_opt_chain` 是取数（库 `calc/fetch.py` 已覆盖）；后两个是**策略回测**（多资产期权 overlay / 分层仓位），属于策略研究，不进本库 |
 

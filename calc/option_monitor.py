@@ -67,7 +67,6 @@ OPTION_TARGETS = [
     {"name": "500ETF",   "code": "510500", "exchange": "SSE",   "opt_code": "OP510500.SH", "multiplier": 10000},
     {"name": "创业板ETF","code": "159915", "exchange": "SZSE",  "opt_code": "OP159915.SZ", "multiplier": 10000},
     {"name": "科创50ETF","code": "588000", "exchange": "SSE",   "opt_code": "OP588000.SH", "multiplier": 10000},
-    {"name": "沪深300",  "code": "IO",     "exchange": "CFFEX", "opt_code": "OP000300.SH", "underlying_code": "000300", "multiplier": 100},
     {"name": "中证1000", "code": "MO",     "exchange": "CFFEX", "opt_code": "OP000852.SH", "underlying_code": "000852", "multiplier": 100},
 ]
 

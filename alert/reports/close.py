@@ -902,7 +902,7 @@ def build_close_card(date_str, skew_data, ev_data, resonance_data,
         # 期限结构汇总
         if vts_summary:
             summary_lines = [
-                f"**大盘(50/300)：** {vts_summary.get('big_view', '?')}　"
+                f"**大盘(沪深300)：** {vts_summary.get('big_view', '?')}　"
                 f"**小票(500/1000)：** {vts_summary.get('small_view', '?')}　"
                 f"**成长(科创/创业)：** {vts_summary.get('growth_view', '?')}",
                 f"**波动率阶段：** {vts_summary.get('stage', '?')} — {vts_summary.get('stage_reason', '')}",
@@ -1153,14 +1153,14 @@ def main():
     if skew_missing > 2:
         missing_names = [n for n, v in result['skew'].items() if v is None]
         data_warnings.append(
-            f"⚠️ SKEW数据缺失：{', '.join(missing_names)} 无数据（共{skew_missing}/6个标的）"
+            f"⚠️ SKEW数据缺失：{', '.join(missing_names)} 无数据（共{skew_missing}/{len(OPTION_TARGETS)}个标的）"
         )
 
     ev_missing = sum(1 for v in result['ev'].values() if v is None)
     if ev_missing > 3:
         missing_names = [n for n, v in result['ev'].items() if v is None]
         data_warnings.append(
-            f"⚠️ EV数据缺失：{', '.join(missing_names)} 无数据（共{ev_missing}/6个标的）"
+            f"⚠️ EV数据缺失：{', '.join(missing_names)} 无数据（共{ev_missing}/{len(OPTION_TARGETS)}个标的）"
         )
 
     result['data_warnings'] = data_warnings

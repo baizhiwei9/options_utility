@@ -1,7 +1,7 @@
 {
   "name": "options_utility",
-  "version": "1.4.2",
-  "date": "2026-11-13",
+  "version": "1.4.3",
+  "date": "2026-11-16",
   "merged_from": [
     "GitHub baizhiwei9/options_utility @354e131（A股计算层 + 报警引擎 + 29条规则基线，实为38条）",
     "中美期权风险释放汇总链路（美股三轨 + 偏度/VVIX/GEX报警 + 合并日报）",
@@ -135,6 +135,22 @@
         "option_daily.py 取数兜底：build_surface() 在 akshare 取链失败时回落统一库 get_option_chain(levels=[1,3,4,2])，修复 akshare 不支持深交所 159915 导致创业板ETF无链",
         "option_daily.py term_struct 不再依赖 surface 是否成功，Tushare 超时不再整段丢失标的",
         "验证：build_surface 四只 ETF 全有链（创业板 Sina 兜底 4 到期月/30 点）；term_struct 五轨齐全；_gex_five_tracks 合成输入含 50ETF/上证50/沪深300 时输出恰为五轨；全链路 dry run 各段五轨一致；py_compile 4/4 通过"
+      ]
+    },
+    {
+      "version": "1.4.3",
+      "date": "2026-11-16",
+      "title": "午盘/收盘期权日报运行路径统一五宽基：剔除上证50与重复的沪深300(IO)，PCR表补入中证1000",
+      "items": [
+        "中期风险偏好/codeact/scripts/pcr_macd_signal.py::INDEX_CONFIG 由 6 项（含上证50、无中证1000）改为五宽基（沪深300/中证500/中证1000/创业板/科创50），午盘与收盘卡片的 PCR-MACD 表随 `_PCR_INDEX_CFG` 渲染即生效；实测 2026-11-16 返回 keys=['沪深300','中证500','中证1000','创业板','科创50']，上证50 无数据行消失，中证1000 PCR=0.814 正常显示",
+        "期权风险监控/scripts/close_option_monitor.py::RESONANCE_INDEX_MAP 中证1000 的 pcr 由 None 改为 '中证1000'，收盘五轨共振的 PCR 分项接回 MO 主力系列 PCR",
+        "期权风险监控/scripts/option_monitor.py 与 dataHub options/calc/option_monitor.py::OPTION_TARGETS 去掉重复的 沪深300(IO)，由 6 轨收敛为 5 轨：300ETF/500ETF/创业板ETF/科创50ETF/中证1000(MO)；午盘、收盘的 SKEW/EV/RR/共振/RND/VTS 统一五轨渲染",
+        "期权风险监控/scripts/ev_analysis.py 与 dataHub options/calc/ev.py::TARGETS 同步去掉 沪深300(IO)，避免 EV 段 6 行",
+        "午盘/收盘缺失告警分母由硬编码 6 改为 len(OPTION_TARGETS)，下次运行显示 /5",
+        "期限结构摘要标签 大盘(50/300) → 大盘(沪深300)（实际分组只有沪深300ETF，原标签为历史残留）",
+        "基差监控统一 3 个股指品种：calc/basis.py::BASIS_TARGETS 删除 IH(上证50)，basis_daily/basis_intraday/basis_backfill 的 MONITOR_SYMBOLS/DEFAULT_TARGETS 同步为 IF/IC/IM；oi_daily 基差表不再出现上证50",
+        "derivative_sentiment.py::BASIS_PRODUCTS 删除 IH；feishu_card_utils.py 风险预测的 deriv_option_indices / core_indices 删除上证50（dataHub options 与 蓁宝主对话两份同步）",
+        "验证：pcr_macd_signal.INDEX_CONFIG=5 且包含中证1000；legacy/dataHub 的 midday/close OPTION_TARGETS 均为 5 轨；close 的 中证1000 pcr 映射恢复；BASIS_TARGETS=['IF','IC','IM','T','TF','TS','TL']；全部改动文件 py_compile 通过"
       ]
     }
   ]
