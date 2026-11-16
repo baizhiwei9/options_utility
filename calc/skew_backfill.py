@@ -62,9 +62,20 @@ import risk_layer as M
 import risk_history as hdb
 
 # style_drift.db 原始库（FUSE 上 sqlite 易 bus error，先拷本地）
+#
+# ⚠️ 2026-11-14：扣子云盘（/Coze/Drive、/opt/coze/.fuse_drive）已下线，
+#   上面两个旧路径在本机都不存在。改为「环境变量 → 期权自己的目录」优先，
+#   与 data_hub/collectors/misc/option_intraday.py 的 style_drift 解析保持一致。
 SRC_DB_CANDIDATES = [
-    '/opt/coze/.fuse_drive/蓁宝/所有对话/主对话/市场情绪监控/data/options_cache/style_drift.db',
-    '/Coze/Drive/蓁宝/所有对话/主对话/市场情绪监控/data/options_cache/style_drift.db',
+    p for p in (
+        os.environ.get('OPTIONS_STYLE_DRIFT_DB'),
+        os.path.join(_OPT_ROOT, 'data', 'style_drift.db'),
+        os.path.join(_OPT_ROOT, 'outputs', 'style_drift.db'),
+        '/app/data/期权风险监控/data/options_cache/style_drift.db',
+        # 旧机房云盘（仅作历史兜底，本机不存在）
+        '/opt/coze/.fuse_drive/蓁宝/所有对话/主对话/市场情绪监控/data/options_cache/style_drift.db',
+        '/Coze/Drive/蓁宝/所有对话/主对话/市场情绪监控/data/options_cache/style_drift.db',
+    ) if p
 ]
 # target_key → style_drift underlying
 ETF_MAP = [

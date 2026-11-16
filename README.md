@@ -148,7 +148,7 @@ trigger('VIX 突破 90 分位', content='当前 32.1，252 日分位 93.4%', sou
 
 | 用途 | 模块 | 数据落点 |
 |---|---|---|
-| A 股期权链 / 现货 / 指数 | `calc/fetch.py`（AKShare → Tushare 代理 → 新浪 → 东财 四级降级） | 内存 + 历史库 |
+| A 股期权链 / 现货 / 指数 | `calc/fetch.py`（AKShare → Tushare 代理 → 新浪 → 东财 多级降级；data_hub 侧为 AKShare → Tushare → Web 三级） | 内存 + 历史库 |
 | A 股历史指标 | `calc/db/risk_history.py`、`skew_history.py`（SQLite，单一真源） | `outputs/*.db` 或 `OPTIONS_DATA_DIR` |
 | 美股指数/链/ETF | `calc/us/index_fetch.py`（CBOE CDN、NASDAQ 历史） | `outputs/us/` |
 | 美债 ETF 期权 | `calc/us/treasury_fetch.py`（NASDAQ 链 + Treasury.gov） | `outputs/us/` |
