@@ -32,6 +32,20 @@ import json
 import re
 import time
 
+# ==================== lark-cli 配置目录兜底（2026-11-18） ====================
+# lark-cli 靠环境变量定位应用配置；cron / systemd 等非交互环境不加载
+# /etc/profile.d，变量缺失就报 type=config subtype=not_configured。
+# 这里做代码级兜底：变量没设（或为空）就用默认目录，不依赖任何外部 env 文件，
+# 即使 crontab 被旧备份覆盖、或直接从别处手动跑脚本，也能正常推送。
+_LARK_CFG_DIR = '/app/data/所有对话/主对话/.feishu_cli'
+for _k in ('LARKSUITE_CLI_CONFIG_DIR', 'LARKSUITE_CLI_DATA_DIR'):
+    if not os.environ.get(_k):
+        os.environ[_k] = _LARK_CFG_DIR
+if not os.environ.get('LARKSUITE_CLI_LOG_DIR'):
+    os.environ['LARKSUITE_CLI_LOG_DIR'] = '/tmp'
+del _k
+# =========================================================================
+
 CHAT_ID = FEISHU_CHAT_ID
 MAX_LEN = 4000  # 飞书单条消息字符上限
 CARD_MD_MAX = 2800  # 飞书卡片单个Markdown元素字符上限（留buffer）
@@ -224,7 +238,10 @@ def _explain_push_failure(returncode, stdout, stderr):
             if ehint:
                 reason += f" hint={ehint}"
             if esub == 'not_configured' or 'not configured' in str(emsg):
-                reason += " ｜ 处理：在终端执行 lark-cli config init --new 重新绑定飞书应用，再执行 lark-cli auth status 确认 bot 为 ready"
+                reason += (" ｜ 处理：这是「进程环境找不到 lark-cli 配置」而不是应用绑定失效。"
+                           "先检查 LARKSUITE_CLI_CONFIG_DIR / LARKSUITE_CLI_DATA_DIR 是否指向 "
+                           "/app/data/所有对话/主对话/.feishu_cli —— cron 不会继承交互 shell 的变量，"
+                           "必须在 crontab 顶部显式 export；然后执行 lark-cli auth status 确认 bot 为 ready")
     except Exception:
         pass
     return f"{reason} ｜ 原始输出: {raw.strip()[:1200]}"

@@ -1,7 +1,7 @@
 {
   "name": "options_utility",
-  "version": "1.4.3",
-  "date": "2026-11-16",
+  "version": "1.4.4",
+  "date": "2026-11-18",
   "merged_from": [
     "GitHub baizhiwei9/options_utility @354e131（A股计算层 + 报警引擎 + 29条规则基线，实为38条）",
     "中美期权风险释放汇总链路（美股三轨 + 偏度/VVIX/GEX报警 + 合并日报）",
@@ -151,6 +151,20 @@
         "基差监控统一 3 个股指品种：calc/basis.py::BASIS_TARGETS 删除 IH(上证50)，basis_daily/basis_intraday/basis_backfill 的 MONITOR_SYMBOLS/DEFAULT_TARGETS 同步为 IF/IC/IM；oi_daily 基差表不再出现上证50",
         "derivative_sentiment.py::BASIS_PRODUCTS 删除 IH；feishu_card_utils.py 风险预测的 deriv_option_indices / core_indices 删除上证50（dataHub options 与 蓁宝主对话两份同步）",
         "验证：pcr_macd_signal.INDEX_CONFIG=5 且包含中证1000；legacy/dataHub 的 midday/close OPTION_TARGETS 均为 5 轨；close 的 中证1000 pcr 映射恢复；BASIS_TARGETS=['IF','IC','IM','T','TF','TS','TL']；全部改动文件 py_compile 通过"
+      ]
+    },
+    {
+      "version": "1.4.4",
+      "date": "2026-11-18",
+      "title": "飞书推送 cron 环境修复 + 推送失败看门狗（失败自动发邮件）",
+      "items": [
+        "根因：lark-cli 依赖环境变量 LARKSUITE_CLI_CONFIG_DIR / LARKSUITE_CLI_DATA_DIR 定位应用配置，cron 不继承交互 shell 的变量，导致 2026-11-17 全部 cron 推送（午盘/收盘期权卡、风险预测日报 0/3、风险释放等）报 type=config subtype=not_configured；同一环境下 lark-cli auth status 显示 bot ready，证明配置本身有效",
+        "修复：在 /var/spool/cron/crontabs/root 顶部注入 LARKSUITE_CLI_CONFIG_DIR=/app/data/所有对话/主对话/.feishu_cli、LARKSUITE_CLI_DATA_DIR 同值、LARKSUITE_CLI_LOG_DIR=/tmp；用隔离环境（env -i + 仅 cron 变量）实测 lark-cli auth status → bot ready，经 feishu_push.push_card_to_feishu 实发私聊卡片成功",
+        "新增 alert/tasks/push_watchdog.py + run/push_watchdog.sh：扫描 /var/log/feishu_push_error.log，只把「上次检查之后」的新增失败汇总成邮件（含时间、原因截断、完整日志路径），首次运行仅建立基线不轰炸历史；--dry-run / --all 便于排查",
+        "crontab 新增 7,27,47 9-22 * * 1-5 运行看门狗；实测注入 2026-11-17 21:10 三条失败后，邮件成功发至 410119229@qq.com 并推进 state/push_watchdog_state.json",
+        "alert/notifier/feishu_push.py::_explain_push_failure 修正误导提示：not_configured 不再让人执行 lark-cli config init --new 重新绑定应用，改为提示检查 LARKSUITE_CLI_CONFIG_DIR 是否注入（蓁宝主对话 feishu_push.py 同步修正）",
+        "alert/notifier/feishu_push.py 新增代码级兜底：模块导入时若 LARKSUITE_CLI_CONFIG_DIR / DATA_DIR / LOG_DIR 缺失或为空，自动填入 /app/data/所有对话/主对话/.feishu_cli 与 /tmp。不依赖任何外部 env 文件，crontab 被旧备份覆盖、容器重启后从别处手动跑脚本都不会再报 not_configured；蓁宝主对话 feishu_push.py 同步",
+        "系统层同步落盘：/etc/environment 增加 LARKSUITE_CLI_*（备份 /etc/environment.bak_20261118）；crontab 全量备份写入 /Coze/Drive/dataHub_三级体系/ops_backup/crontab_root_20261118.txt，容器重建后可据此恢复。注：cron 不读 /etc/environment，真正保证 cron 推送的是 feishu_push.py 的代码兜底"
       ]
     }
   ]

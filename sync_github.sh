@@ -97,6 +97,7 @@ EXCLUDES=(
     --exclude='*.jpeg'
     --exclude='*.pdf'
     # 运行态
+    --exclude='.github_sync_state.json'   # 本地同步记账（含 commit SHA，会触发密钥扫描误报）
     --exclude='*_sent_lock.json'
     --exclude='*_lock.json'
     --exclude='*_state.json'
@@ -150,7 +151,8 @@ else
         --include='*.py' --include='*.md' --include='*.json' --include='*.txt' \
         --include='*.yaml' --include='*.yml' --include='*.sh' \
         --exclude-dir='.git' --exclude-dir='__pycache__' --exclude-dir='outputs' \
-        --exclude-dir='logs' --exclude='private.py' --exclude='.github_sync_state.json' \
+        --exclude-dir='logs' --exclude='private.py' \
+        --exclude='.github_sync_state.json' \
         2>/dev/null | grep -vE "$WHITELIST" || true)
 
     # 文档里的示例邮箱放行（example.com 之类）
