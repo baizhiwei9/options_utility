@@ -62,7 +62,8 @@ BACKFILL_TARGETS = {
 def get_trade_days(end_date, n_days=20):
     """获取最近n个交易日（包含end_date）"""
     try:
-        df = pro.trade_cal(exchange='SSE', end_date=end_date, is_open='1')
+        from hub_option_api import fetch_trade_cal
+        df = fetch_trade_cal(exchange='SSE', end_date=end_date, is_open='1')
         if df is None or df.empty:
             return []
         dates = sorted(df['cal_date'].tolist(), reverse=True)[:n_days]
@@ -78,7 +79,8 @@ def get_active_contracts(exchange, opt_code, trade_date):
     返回: list of dict (ts_code, call_put, exercise_price, maturity_date)
     """
     try:
-        opt_list = pro.opt_basic(exchange=exchange)
+        from hub_option_api import fetch_exchange_contracts
+        opt_list = fetch_exchange_contracts(exchange)
         if opt_list is None or opt_list.empty:
             return []
     except Exception as e:
@@ -175,11 +177,8 @@ def backfill_target(target_name, n_days=20):
     for retry in range(3):
         time.sleep(API_SLEEP)
         try:
-            daily_data = pro.opt_daily(
-                exchange=exchange,
-                start_date=start_date,
-                end_date=end_date,
-            )
+            from hub_option_api import fetch_exchange_daily_range
+            daily_data = fetch_exchange_daily_range(exchange, start_date, end_date)
             if daily_data is not None and not daily_data.empty:
                 break
             print(f"    重试 {retry+1}/3...")

@@ -1,0 +1,976 @@
+#!/usr/bin/env python3
+# -*- coding: utf-8 -*-
+# [LEGACY 2026-11-10] 已被 options/alert/tasks/oi_pcr.py 取代。
+# 保留原因：midline_preference_monitor.py（crontab 19:30）仍 import 本模块。
+# crontab 已不再直接调度本文件；如需改动 PCR 逻辑，请改 options 版。
+
+"""
+期权PCR统一计算模块 v1.0
+========================
+为底部监测、中线日报等脚本提供统一的PCR（Put/Call Ratio）数据接口。
+
+三级降级体系:
+  L1 data_hub 期权日线（主）: 逐合约数据，可剔除当月、可5日平滑
+  L2 AKShare option_daily_stats（降级）: 按标的汇总，准确但只能给全量PCR（含当月）
+  L3 新浪 option_sse_daily_sina（兜底）: 数据不可靠，标注警告
+
+核心函数:
+  get_index_pcr(index_name, trading_date, ...)  → dict
+
+指数→ETF映射（同指数多只ETF期权合并计算）:
+  沪深300: [510300, 510310, 159919]          (SSE+SSE+SZSE)
+  中证500: [510500, 159922]                  (SSE+SZSE)
+  科创50:  [588000, 588080, 159976]          (SSE+SSE+SZSE)
+  创业板:  [159915]                          (SZSE)
+
+2026-10-23 新增：中证1000 无 ETF 期权，改走中金所 MO 中证1000 股指期权
+  「主力系列」口径（成交+持仓量最大的到期月），作为第 6 个候选指数注入结果；
+  红线候选集随之收敛为 沪深300/中证500/中证1000/科创50/创业板（上证50 出）。
+  详见 get_zz1000_main_pcr()。
+"""
+
+import os
+import sys
+import json
+import time
+import hashlib
+from datetime import datetime, timedelta
+from pathlib import Path
+
+import pandas as pd
+import numpy as np
+
+# ============================================================
+# PCR 计算内核（2026-11-17 统一口径）
+#   data_hub/core/option_metrics.py::calc_pcr_from_df 是官方声明的
+#   "全系统PCR计算统一使用此函数，确保口径一致"。
+#   本文件只保留业务侧逻辑：ETF/主力系列筛选、剔除当月、5日平滑。
+# ============================================================
+try:
+    _DH_ROOT = '/Coze/Drive/dataHub_三级体系'
+    if not os.path.isdir(_DH_ROOT):
+        # 兜底：沙箱/容器内只挂到云盘完整视图时（生产命中第一分支，行为不变）
+        _alt = '/opt/coze/.fuse_drive/dataHub_三级体系'
+        if os.path.isdir(_alt):
+            _DH_ROOT = _alt
+    if _DH_ROOT not in sys.path:
+        sys.path.insert(0, _DH_ROOT)
+    from data_hub.core.option_metrics import calc_pcr_from_df as _calc_pcr_from_df
+except Exception as _e:  # noqa
+    _calc_pcr_from_df = None
+    print(f"  [WARN] 导入 data_hub.calc_pcr_from_df 失败，PCR 比值回退本地相除: {_e}")
+
+# ============ 路径配置 ============
+SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
+# 2026-11-18 收敛：本文件已由 options_refactor/ 合入生产库 options/ 根目录。
+# 合约/日线缓存（约 88MB，opt_contracts_*.json、opt_daily_*.pkl）仍在
+# 「主对话/codeact/output/data_cache」，路径显式钉住，避免合并后 CACHE_DIR
+# 漂到 dataHub_三级体系/codeact/output 导致缓存全量重抓。
+# 可用 OPTION_PCR_CACHE_ROOT 覆盖。
+PROJECT_DIR = os.environ.get('OPTION_PCR_CACHE_ROOT',
+                             '/Coze/Drive/蓁宝/所有对话/主对话/codeact/output')
+if not os.path.isdir(PROJECT_DIR):
+    _alt = '/opt/coze/.fuse_drive/蓁宝/所有对话/主对话/codeact/output'
+    if os.path.isdir(_alt):
+        PROJECT_DIR = _alt
+OUTPUT_DIR = PROJECT_DIR
+CACHE_DIR = os.path.join(OUTPUT_DIR, 'data_cache')
+os.makedirs(CACHE_DIR, exist_ok=True)
+
+# ============ Tushare 配置 ============
+# 2026-11-17 安全改造：原硬编码 token 已移除（全文件无任何引用，属死代码）。
+# 取数统一走 hub_option_api → data_hub，token 由 data_hub.tushare_config 托管；
+# 若日后需在本模块直接用 token，从 config/credentials.py 取（private.py 不入库）。
+
+# ============ 指数→ETF映射 ============
+INDEX_ETF_MAP = {
+    '沪深300': ['510300', '510310', '159919'],
+    '中证500': ['510500', '159922'],
+    '科创50':  ['588000', '588080', '159976'],
+    '创业板':  ['159915'],
+}
+
+# 2026-10-23：中证1000 走 MO 股指期权「主力系列」口径（无 ETF 期权）
+ZZ1000_INDEX_NAME = '中证1000'
+ZZ1000_UNDERLYING = '000852'
+# 红线候选指数全集（上证50 出、中证1000 进，共 5 个）
+PCR_CANDIDATE_INDICES = ['沪深300', '中证500', '中证1000', '科创50', '创业板']
+
+# 按交易所分组
+SSE_ETF_CODES = {'510300', '510310', '510500', '588000', '588080'}
+SZSE_ETF_CODES = {'159919', '159915', '159922', '159976'}
+
+# Tushare 标的代码映射
+# SSE: OP510300.SH etc
+# SZSE: 需要查询，但通常以 159xxx 为标的
+SSE_TS_CODES = {code: f'OP{code}.SH' for code in SSE_ETF_CODES}
+SZSE_TS_CODES = {code: f'{code}.SZ' for code in SZSE_ETF_CODES}
+
+# 缓存TTL（秒）：合约基础信息缓存1天
+CONTRACT_CACHE_TTL = 86400
+# 日线数据缓存TTL：当天数据缓存4小时（盘中可能更新）
+DAILY_CACHE_TTL = 14400
+
+
+# ================================================================
+# Tushare API 限速管理
+# ================================================================
+_ts_api_last_call = 0
+TS_MIN_INTERVAL = 0.35  # 秒，每次API调用间隔
+
+def _ts_safe_sleep():
+    """Tushare API限速"""
+    global _ts_api_last_call
+    now = time.time()
+    elapsed = now - _ts_api_last_call
+    if elapsed < TS_MIN_INTERVAL:
+        time.sleep(TS_MIN_INTERVAL - elapsed)
+    _ts_api_last_call = time.time()
+
+
+def _get_ts_pro():
+    """获取Tushare pro API对象
+
+    2026-11-17 改造：统一走 data_hub 托管连接（代理/限频/熔断/IP轮动）。
+    """
+    from hub_option_api import get_pro
+    return get_pro()
+
+
+# ================================================================
+# 文件缓存管理
+# ================================================================
+def _cache_path(category, key):
+    """生成缓存文件路径"""
+    safe_key = hashlib.md5(key.encode()).hexdigest()[:12]
+    return os.path.join(CACHE_DIR, f'opt_{category}_{safe_key}.json')
+
+
+def _read_cache(category, key, ttl):
+    """读取缓存，过期返回None"""
+    path = _cache_path(category, key)
+    if not os.path.exists(path):
+        return None
+    try:
+        with open(path, 'r') as f:
+            data = json.load(f)
+        cached_time = data.get('_cached_at', 0)
+        if time.time() - cached_time > ttl:
+            return None
+        return data.get('payload')
+    except Exception:
+        return None
+
+
+def _write_cache(category, key, payload):
+    """写入缓存"""
+    path = _cache_path(category, key)
+    try:
+        with open(path, 'w') as f:
+            json.dump({'_cached_at': time.time(), 'payload': payload}, f, ensure_ascii=False)
+    except Exception as e:
+        print(f"  ⚠️ 缓存写入失败: {e}")
+
+
+# ================================================================
+# L1: Tushare 数据获取
+# ================================================================
+def _fetch_contracts_tushare(exchange):
+    """从Tushare获取期权合约基础信息（带缓存）
+    
+    返回: DataFrame with columns: ts_code, name, exercise_price, maturity_date, call_put, opt_code
+    """
+    cache_key = f"contracts_{exchange}_{datetime.now().strftime('%Y%m%d')}"
+    cached = _read_cache('contracts', cache_key, CONTRACT_CACHE_TTL)
+    if cached is not None:
+        return pd.DataFrame(cached)
+    
+    _ts_safe_sleep()
+    try:
+        # 2026-11-17 改造：合约基础信息统一走 data_hub（hub_option_api）
+        from hub_option_api import fetch_exchange_contracts
+        df = fetch_exchange_contracts(exchange)
+        if df is not None and not df.empty:
+            _write_cache('contracts', cache_key, df.to_dict(orient='records'))
+            print(f"    ✅ Tushare {exchange} 合约列表: {len(df)}个")
+            return df
+    except Exception as e:
+        print(f"    ❌ Tushare {exchange} 合约列表获取失败: {e}")
+    return None
+
+
+def _fetch_daily_range_tushare(exchange, start_date, end_date):
+    """从Tushare获取某交易所日期范围内的全市场期权日线数据（带缓存）
+    
+    注意：Tushare opt_daily 支持 start_date/end_date 批量获取
+    """
+    cache_key = f"daily_range_{exchange}_{start_date}_{end_date}"
+    cached = _read_cache('daily', cache_key, DAILY_CACHE_TTL)
+    if cached is not None:
+        return pd.DataFrame(cached)
+    
+    _ts_safe_sleep()
+    try:
+        # 2026-11-17 改造：期权日线统一走 data_hub（hub_option_api）
+        from hub_option_api import fetch_exchange_daily_range
+        df = fetch_exchange_daily_range(exchange, start_date, end_date)
+        if df is not None and not df.empty:
+            _write_cache('daily', cache_key, df.to_dict(orient='records'))
+            print(f"    ✅ Tushare {exchange} {start_date}~{end_date} 日线: {len(df)}条")
+            return df
+    except Exception as e:
+        print(f"    ❌ Tushare {exchange} {start_date}~{end_date} 日线获取失败: {e}")
+    return None
+
+
+# ================================================================
+# L2: AKShare 汇总数据
+# ================================================================
+def _fetch_daily_stats_akshare(date_compact):
+    """从AKShare获取SSE+SZSE期权日统计汇总数据
+    
+    注意：SSE当日数据可能未发布（盘中调用时），此时返回空DataFrame
+    对于过去交易日的数据，SSE和SZSE均正常可用
+    
+    返回: (sse_df, szse_df) 各交易所汇总DataFrame
+    """
+    import akshare as ak
+    
+    sse_df = None
+    szse_df = None
+    
+    try:
+        sse_df = ak.option_daily_stats_sse(date=date_compact)
+        if sse_df is not None and not sse_df.empty:
+            print(f"    ✅ AKShare SSE汇总: {len(sse_df)}条")
+    except Exception as e:
+        # AKShare在结果为空时会抛KeyError（列名过滤失败），这是正常的
+        print(f"    ⚠️ AKShare SSE汇总获取失败(可能当日数据未发布): {e}")
+    
+    try:
+        szse_df = ak.option_daily_stats_szse(date=date_compact)
+        if szse_df is not None and not szse_df.empty:
+            print(f"    ✅ AKShare SZSE汇总: {len(szse_df)}条")
+    except Exception as e:
+        print(f"    ⚠️ AKShare SZSE汇总获取失败: {e}")
+    
+    return sse_df, szse_df
+
+
+# ================================================================
+# PCR 核心计算
+# ================================================================
+def _compute_pcr_from_tushare(trading_date_compact, smooth_days=5, min_days=3, exclude_current_month=True):
+    """从Tushare计算5日平滑PCR（核心函数）
+    
+    流程:
+    1. 获取SSE和SZSE的合约基础信息（maturity_date → 判断当月）
+    2. 获取最近smooth_days天的全市场日线数据
+    3. 按指数合并多ETF: 认沽成交量加总 / 认购成交量加总
+    4. 可选剔除当月到期合约
+    
+    返回: dict {指数名: {vol_pcr, oi_pcr, source, ...}} 或 None（失败时）
+    """
+    # 确定日期范围（向前找足够多的自然日以覆盖smooth_days个交易日）
+    end_date = trading_date_compact
+    # 向前推 10 个自然日确保覆盖5个交易日（考虑周末）
+    end_dt = datetime.strptime(end_date, '%Y%m%d')
+    start_dt = end_dt - timedelta(days=12)
+    start_date = start_dt.strftime('%Y%m%d')
+    
+    # 获取合约基础信息（含到期日）
+    print("    → 获取Tushare合约基础信息...")
+    contracts_sse = _fetch_contracts_tushare('SSE')
+    contracts_szse = _fetch_contracts_tushare('SZSE')
+    
+    if contracts_sse is None and contracts_szse is None:
+        print("    ❌ Tushare合约信息全部获取失败")
+        return None
+    
+    # 获取日期范围内的日线数据
+    print(f"    → 获取Tushare日线数据 {start_date}~{end_date}...")
+    daily_sse = _fetch_daily_range_tushare('SSE', start_date, end_date)
+    daily_szse = _fetch_daily_range_tushare('SZSE', start_date, end_date)
+    
+    if daily_sse is None and daily_szse is None:
+        print("    ❌ Tushare日线数据全部获取失败")
+        return None
+    
+    # 合并合约信息
+    all_contracts = []
+    if contracts_sse is not None and not contracts_sse.empty:
+        all_contracts.append(contracts_sse)
+    if contracts_szse is not None and not contracts_szse.empty:
+        all_contracts.append(contracts_szse)
+    
+    if not all_contracts:
+        return None
+    
+    contract_df = pd.concat(all_contracts, ignore_index=True)
+    
+    # 构建 ts_code → 合约信息 映射
+    contract_info = {}
+    for _, row in contract_df.iterrows():
+        ts_code = row.get('ts_code', '')
+        maturity = str(row.get('maturity_date', ''))
+        call_put = str(row.get('call_put', '')).upper()
+        contract_info[ts_code] = {
+            'maturity_date': maturity,
+            'maturity_month': maturity[:6] if len(maturity) >= 6 else '',  # YYYYMM
+            'call_put': call_put,
+        }
+    
+    # 合并日线数据
+    all_daily = []
+    if daily_sse is not None and not daily_sse.empty:
+        all_daily.append(daily_sse)
+    if daily_szse is not None and not daily_szse.empty:
+        all_daily.append(daily_szse)
+    
+    if not all_daily:
+        return None
+    
+    daily_df = pd.concat(all_daily, ignore_index=True)
+    
+    # 确保 vol 是数值
+    daily_df['vol'] = pd.to_numeric(daily_df['vol'], errors='coerce').fillna(0)
+    daily_df['oi'] = pd.to_numeric(daily_df['oi'], errors='coerce').fillna(0)
+    
+    # 确定实际交易日列表（取最近的 smooth_days 个交易日）
+    actual_trade_dates = sorted(daily_df['trade_date'].unique())
+    if len(actual_trade_dates) > smooth_days:
+        actual_trade_dates = actual_trade_dates[-smooth_days:]
+    
+    if len(actual_trade_dates) < min_days:
+        print(f"    ⚠️ Tushare有效交易日仅{len(actual_trade_dates)}天(需>={min_days})")
+    
+    # 过滤到目标日期范围
+    daily_df = daily_df[daily_df['trade_date'].isin(actual_trade_dates)]
+    
+    # 当前月份（用于剔除当月到期合约）
+    current_month = trading_date_compact[:6]  # YYYYMM
+    
+    # 构建 ts_code → ETF代码 映射（通过 opt_code 字段）
+    # opt_code 格式: OP510300.SH (SSE), OP159919.SZ (SZSE)
+    # 提取 ETF 代码: OP510300.SH → 510300, OP159919.SZ → 159919
+    def _extract_etf_from_opt_code(opt_code):
+        """从 opt_code 中提取 ETF 代码"""
+        if not opt_code or not isinstance(opt_code, str):
+            return None
+        # OP510300.SH → 510300
+        # OP159919.SZ → 159919
+        import re
+        m = re.match(r'OP(\d{6})\.', opt_code)
+        if m:
+            return m.group(1)
+        return None
+    
+    # 构建 ts_code → etf_code 映射
+    ts_code_to_etf = {}
+    for _, row in contract_df.iterrows():
+        ts_code = row.get('ts_code', '')
+        opt_code = str(row.get('opt_code', ''))
+        etf = _extract_etf_from_opt_code(opt_code)
+        if etf:
+            ts_code_to_etf[ts_code] = etf
+    
+    # ETF代码 → 指数名
+    ETF_TO_INDEX = {}
+    for idx_name, etfs in INDEX_ETF_MAP.items():
+        for etf in etfs:
+            ETF_TO_INDEX[etf] = idx_name
+    
+    # 逐指数计算
+    result = {}
+    actual_dates_str = f"{actual_trade_dates[0]}~{actual_trade_dates[-1]}" if actual_trade_dates else ''
+    
+    for index_name, etf_codes in INDEX_ETF_MAP.items():
+        call_vol_total = 0
+        put_vol_total = 0
+        call_oi_total = 0
+        put_oi_total = 0
+        call_vol_nc = 0  # non-current-month
+        put_vol_nc = 0
+        found_etfs = []
+        rows_all = []
+        
+        for etf_code in etf_codes:
+            # 找到该ETF对应的所有合约ts_code
+            matching_ts_codes = [ts for ts, etf in ts_code_to_etf.items() if etf == etf_code]
+            if not matching_ts_codes:
+                continue
+            
+            if etf_code not in found_etfs:
+                found_etfs.append(etf_code)
+            
+            # 过滤日线数据
+            etf_daily = daily_df[daily_df['ts_code'].isin(matching_ts_codes)]
+            if etf_daily.empty:
+                continue
+            
+            for _, drow in etf_daily.iterrows():
+                ts_code = drow['ts_code']
+                info = contract_info.get(ts_code, {})
+                rows_all.append({
+                    'call_put': info.get('call_put', ''),
+                    'maturity_month': info.get('maturity_month', ''),
+                    'vol': float(drow['vol']),
+                    'oi': float(drow['oi']),
+                })
+
+        # 计算PCR —— 比值统一走 data_hub 官方口径 calc_pcr_from_df
+        #   vol_pcr：剔除当月（业务口径，当月合约临近到期会失真）
+        #   oi_pcr ：全合约（保持原实现口径，零漂移）
+        _all_df = pd.DataFrame(rows_all) if rows_all else pd.DataFrame(
+            columns=['call_put', 'maturity_month', 'vol', 'oi'])
+        _vol_df = _all_df[_all_df['maturity_month'] != current_month] if exclude_current_month else _all_df
+        vol_pcr = None
+        oi_pcr = None
+        if _calc_pcr_from_df is not None:
+            try:
+                if not _vol_df.empty:
+                    _r = _calc_pcr_from_df(_vol_df, nearest_month_only=False)
+                    if _r:
+                        vol_pcr = _r.get('vol_pcr')
+                if not _all_df.empty:
+                    _r2 = _calc_pcr_from_df(_all_df, nearest_month_only=False)
+                    if _r2:
+                        oi_pcr = _r2.get('oi_pcr')
+            except Exception as _e:  # noqa
+                print(f"    [WARN] calc_pcr_from_df 失败，回退本地相除: {_e}")
+        if vol_pcr is None and not _vol_df.empty:
+            _c = _vol_df.loc[_vol_df['call_put'] == 'C', 'vol'].sum()
+            _p = _vol_df.loc[_vol_df['call_put'] == 'P', 'vol'].sum()
+            vol_pcr = _p / _c if _c > 0 else None
+        if oi_pcr is None and not _all_df.empty:
+            _c = _all_df.loc[_all_df['call_put'] == 'C', 'oi'].sum()
+            _p = _all_df.loc[_all_df['call_put'] == 'P', 'oi'].sum()
+            oi_pcr = _p / _c if _c > 0 else None
+        
+        etf_label = '+'.join(found_etfs) if len(found_etfs) > 1 else (found_etfs[0] if found_etfs else '')
+        
+        result[index_name] = {
+            'vol_pcr': vol_pcr,
+            'oi_pcr': oi_pcr,
+            'source': 'tushare',
+            'excluded': exclude_current_month,
+            'etfs': found_etfs,
+            'etf_label': etf_label,
+            'date_range': actual_dates_str,
+            'smooth_days': len(actual_trade_dates),
+            'warning': None,
+        }
+    
+    return result
+
+
+def _compute_pcr_from_akshare_summary(date_compact):
+    """从AKShare汇总数据计算PCR（降级方案）
+
+    注意：汇总数据无法剔除当月到期合约，也无法做5日平滑
+    只能给出当日的单日PCR（含当月）
+
+    【为何不走 calc_pcr_from_df（2026-11-17 口径统一说明）】
+    AKShare 日统计接口只返回"全市场 put/call 汇总总量"，
+    没有分合约的 [call_put, vol, oi] 明细行，无法喂给统一内核。
+    口径规则：Tushare opt_daily（分合约）必须走 calc_pcr_from_df；
+    只有本汇总降级路径允许直接对总量相除。
+
+    返回: dict 或 None
+    """
+    sse_df, szse_df = _fetch_daily_stats_akshare(date_compact)
+    
+    if (sse_df is None or sse_df.empty) and (szse_df is None or szse_df.empty):
+        return None
+    
+    ETF_TO_INDEX = {}
+    for idx_name, etfs in INDEX_ETF_MAP.items():
+        for etf in etfs:
+            ETF_TO_INDEX[etf] = idx_name
+    
+    # 汇总各指数的成交量
+    index_volumes = {}
+    
+    all_stats = []
+    if sse_df is not None and not sse_df.empty:
+        all_stats.append(sse_df)
+    if szse_df is not None and not szse_df.empty:
+        all_stats.append(szse_df)
+    
+    for stats_df in all_stats:
+        for _, row in stats_df.iterrows():
+            code = str(row.get('合约标的代码', ''))
+            
+            # 匹配ETF代码
+            matched_etf = None
+            for etf_code in ETF_TO_INDEX:
+                if etf_code in code:
+                    matched_etf = etf_code
+                    break
+            
+            if matched_etf is None:
+                continue
+            
+            idx_name = ETF_TO_INDEX[matched_etf]
+            put_vol = float(row.get('认沽成交量', 0) or 0)
+            call_vol = float(row.get('认购成交量', 0) or 0)
+            put_oi = float(row.get('未平仓认沽合约数', 0) or 0)
+            call_oi = float(row.get('未平仓认购合约数', 0) or 0)
+            
+            if idx_name not in index_volumes:
+                index_volumes[idx_name] = {
+                    'put_vol': 0, 'call_vol': 0,
+                    'put_oi': 0, 'call_oi': 0,
+                    'found_etfs': [],
+                }
+            
+            index_volumes[idx_name]['put_vol'] += put_vol
+            index_volumes[idx_name]['call_vol'] += call_vol
+            index_volumes[idx_name]['put_oi'] += put_oi
+            index_volumes[idx_name]['call_oi'] += call_oi
+            if matched_etf not in index_volumes[idx_name]['found_etfs']:
+                index_volumes[idx_name]['found_etfs'].append(matched_etf)
+    
+    result = {}
+    for index_name in INDEX_ETF_MAP:
+        if index_name in index_volumes:
+            v = index_volumes[index_name]
+            vol_pcr = v['put_vol'] / v['call_vol'] if v['call_vol'] > 0 else None
+            oi_pcr = v['put_oi'] / v['call_oi'] if v['call_oi'] > 0 else None
+            etf_label = '+'.join(v['found_etfs']) if len(v['found_etfs']) > 1 else (v['found_etfs'][0] if v['found_etfs'] else '')
+            
+            result[index_name] = {
+                'vol_pcr': vol_pcr,
+                'oi_pcr': oi_pcr,
+                'source': 'akshare_summary',
+                'excluded': False,  # 无法剔除当月
+                'etfs': v['found_etfs'],
+                'etf_label': etf_label,
+                'date_range': date_compact,
+                'smooth_days': 1,
+                'warning': '⚠️含当月到期合约(无5日平滑)',
+            }
+    
+    return result if result else None
+
+
+# ================================================================
+# 公开接口
+# ================================================================
+def get_index_pcr(index_name, trading_date, smooth_days=5, min_days=3, exclude_current_month=True):
+    """获取指定指数的PCR（成交量PCR）
+    
+    三级降级:
+    1. data_hub 期权日线 — 可剔除当月、可5日平滑
+    2. AKShare option_daily_stats — 单日汇总，含当月
+    3. 返回空结果
+    
+    参数:
+        index_name: str - 指数名称 ('上证50', '沪深300', '中证500', '科创50', '创业板')
+        trading_date: str - 日期 'YYYYMMDD' 或 'YYYY-MM-DD'
+        smooth_days: int - 平滑天数 (默认5)
+        min_days: int - 最少有效天数 (默认3)
+        exclude_current_month: bool - 是否剔除当月到期合约 (默认True)
+    
+    返回:
+        dict: {
+            'vol_pcr': float or None,
+            'oi_pcr': float or None,
+            'date_range': str,
+            'smooth_days': int,
+            'source': str,     # 'tushare' / 'akshare_summary' / 'none'
+            'excluded': bool,
+            'etfs': list,
+            'etf_label': str,
+            'warning': str or None,
+        }
+    """
+    # 统一日期格式
+    trading_date_compact = trading_date.replace('-', '')
+    
+    # 2026-10-23：中证1000 走 MO 股指期权「主力系列」
+    if index_name == ZZ1000_INDEX_NAME:
+        print(f"  [PCR] {index_name} → MO 主力系列...")
+        zz = get_zz1000_main_pcr(trading_date_compact, smooth_days=smooth_days, min_days=min_days)
+        if zz:
+            return zz
+        return {
+            'vol_pcr': None, 'oi_pcr': None, 'date_range': '', 'smooth_days': 0,
+            'source': 'none', 'excluded': False, 'etfs': [], 'etf_label': 'MO主力系列',
+            'warning': '❌中证1000(MO主力)取数失败',
+        }
+    
+    # L1: Tushare
+    print(f"  [PCR] {index_name} → L1 Tushare...")
+    try:
+        result = _compute_pcr_from_tushare(
+            trading_date_compact, smooth_days=smooth_days,
+            min_days=min_days, exclude_current_month=exclude_current_month
+        )
+        if result and index_name in result:
+            d = result[index_name]
+            if d.get('vol_pcr') is not None:
+                print(f"    ✅ {index_name} PCR={d['vol_pcr']:.3f} (Tushare, {d['smooth_days']}日平滑)")
+                return d
+    except Exception as e:
+        print(f"    ❌ Tushare异常: {e}")
+    
+    # L2: AKShare汇总（降级）
+    print(f"  [PCR] {index_name} → L2 AKShare汇总...")
+    try:
+        result = _compute_pcr_from_akshare_summary(trading_date_compact)
+        if result and index_name in result:
+            d = result[index_name]
+            if d.get('vol_pcr') is not None:
+                print(f"    ⚠️ {index_name} PCR={d['vol_pcr']:.3f} (AKShare汇总, 含当月)")
+                return d
+    except Exception as e:
+        print(f"    ❌ AKShare汇总异常: {e}")
+    
+    # 全部失败
+    print(f"  ❌ {index_name} PCR全部数据源失败")
+    return {
+        'vol_pcr': None,
+        'oi_pcr': None,
+        'date_range': '',
+        'smooth_days': 0,
+        'source': 'none',
+        'excluded': False,
+        'etfs': INDEX_ETF_MAP.get(index_name, []),
+        'etf_label': '',
+        'warning': '❌数据源全部失败',
+    }
+
+
+def _get_all_index_pcr_etf(trading_date, smooth_days=5, min_days=3, exclude_current_month=True):
+    """获取所有5个指数的PCR数据（批量优化，减少API调用）
+    
+    参数同 get_index_pcr
+    
+    返回:
+        dict: {
+            '上证50': {...},
+            '沪深300': {...},
+            ...
+            '_meta': {
+                'source': str,        # 主要数据源
+                'date_range': str,
+                'trading_date': str,
+                'fallback': bool,     # 是否使用了降级数据
+            }
+        }
+    """
+    trading_date_compact = trading_date.replace('-', '')
+    
+    result = {'_meta': {'source': 'none', 'date_range': '', 'trading_date': trading_date_compact, 'fallback': True}}
+    
+    # L1: 尝试Tushare（一次获取全市场数据，效率最高）
+    print(f"  [PCR] L1 Tushare 批量获取...")
+    try:
+        ts_result = _compute_pcr_from_tushare(
+            trading_date_compact, smooth_days=smooth_days,
+            min_days=min_days, exclude_current_month=exclude_current_month
+        )
+        if ts_result:
+            # 检查是否至少有部分指数成功
+            valid_count = sum(1 for idx in INDEX_ETF_MAP if idx in ts_result and ts_result[idx].get('vol_pcr') is not None)
+            if valid_count > 0:
+                for index_name in INDEX_ETF_MAP:
+                    if index_name in ts_result:
+                        result[index_name] = ts_result[index_name]
+                    else:
+                        result[index_name] = _empty_pcr(index_name)
+                
+                # 取第一个有效指数的信息作为meta
+                first_valid = next((ts_result[idx] for idx in INDEX_ETF_MAP if idx in ts_result and ts_result[idx].get('vol_pcr') is not None), None)
+                result['_meta'] = {
+                    'source': 'tushare',
+                    'date_range': first_valid['date_range'] if first_valid else '',
+                    'trading_date': trading_date_compact,
+                    'fallback': False,
+                }
+                print(f"  ✅ Tushare PCR完成: {valid_count}/5个指数有效")
+                return result
+    except Exception as e:
+        print(f"  ❌ Tushare批量异常: {e}")
+    
+    # L2: AKShare汇总降级
+    print(f"  [PCR] L2 AKShare汇总降级...")
+    try:
+        ak_result = _compute_pcr_from_akshare_summary(trading_date_compact)
+        if ak_result:
+            for index_name in INDEX_ETF_MAP:
+                if index_name in ak_result:
+                    result[index_name] = ak_result[index_name]
+                else:
+                    result[index_name] = _empty_pcr(index_name)
+            
+            result['_meta'] = {
+                'source': 'akshare_summary',
+                'date_range': trading_date_compact,
+                'trading_date': trading_date_compact,
+                'fallback': True,
+            }
+            print(f"  ⚠️ AKShare汇总降级完成")
+            return result
+    except Exception as e:
+        print(f"  ❌ AKShare汇总降级异常: {e}")
+    
+    # 全部失败
+    for index_name in INDEX_ETF_MAP:
+        result[index_name] = _empty_pcr(index_name)
+    result['_meta']['fallback'] = True
+    print(f"  ❌ PCR全部数据源失败")
+    return result
+
+
+def _empty_pcr(index_name):
+    """返回空的PCR数据"""
+    return {
+        'vol_pcr': None,
+        'oi_pcr': None,
+        'date_range': '',
+        'smooth_days': 0,
+        'source': 'none',
+        'excluded': False,
+        'etfs': INDEX_ETF_MAP.get(index_name, []),
+        'etf_label': '',
+        'warning': '❌数据源全部失败',
+    }
+
+
+# ================================================================
+# 中证1000（MO 股指期权）主力系列 PCR —— 2026-10-23 新增
+# ================================================================
+def _datahub_scripts_dir():
+    """定位 data_hub 所在 scripts 目录（本机双挂载兼容）。"""
+    for p in ('/Coze/Drive/蓁宝/所有对话/主对话/codeact/scripts',
+              '/opt/coze/.fuse_drive/蓁宝/所有对话/主对话/codeact/scripts'):
+        if os.path.isdir(os.path.join(p, 'data_hub')):
+            return p
+    return None
+
+
+def get_zz1000_main_pcr(trading_date_compact, smooth_days=5, min_days=3):
+    """中证1000 PCR —— 中金所 MO 股指期权「主力系列」口径。
+
+    主力系列 = 成交+持仓量最大的到期月（近月主力）；严禁用 ETF 期权替代、
+    严禁用全系列合并冒充主力系列。
+    5 日平滑 = Σ认沽成交量 / Σ认购成交量（逐日按主力系列加总）。
+
+    返回 dict（与 _compute_pcr_from_tushare 的逐指数结构一致），失败返回 None。
+    """
+    dh = _datahub_scripts_dir()
+    if not dh:
+        print("    ❌ 中证1000(MO主力): data_hub 路径不可用")
+        return None
+    if dh not in sys.path:
+        sys.path.insert(0, dh)
+    try:
+        from data_hub.collectors import option_intraday as _oi
+        from data_hub.collectors.stock_daily import get_trade_dates
+    except Exception as e:  # noqa: BLE001
+        print(f"    ❌ 中证1000(MO主力): data_hub 导入失败 {e}")
+        return None
+
+    end_dt = datetime.strptime(trading_date_compact, '%Y%m%d')
+    start = (end_dt - timedelta(days=20)).strftime('%Y%m%d')
+    try:
+        tds = get_trade_dates(start, trading_date_compact)
+    except Exception:  # noqa: BLE001
+        tds = []
+    tds = [d for d in tds if d <= trading_date_compact]
+    if not tds:
+        print("    ⚠️ 中证1000(MO主力): 交易日历为空")
+        return None
+    tds = tds[-smooth_days:]
+
+    rows_all = []
+    used, months = [], []
+    for td in tds:
+        chain = _oi.fetch_cffex_daily_chain(td)
+        if not chain:
+            continue
+        ms, mm = _oi.select_main_series(chain, 'cffex')
+        if not ms:
+            continue
+        used.append(td)
+        if mm:
+            months.append(mm)
+        for c in ms:
+            rows_all.append({
+                'call_put': str(c.get('call_put')).upper(),
+                'vol': float(c.get('vol') or 0),
+                'oi': float(c.get('oi') or 0),
+            })
+
+    if len(used) < 1 or not rows_all:
+        print(f"    ⚠️ 中证1000(MO主力): 有效交易日 {len(used)} 天，无合约数据，返回空")
+        return None
+    # 5 日平滑 = 把各日主力系列合约行合并成一个 df 后统一求和相除，
+    # 比值走 data_hub 官方口径 calc_pcr_from_df（Σput/Σcall 与逐日累加等价）。
+    _mo_df = pd.DataFrame(rows_all)
+    vol_pcr = None
+    oi_pcr = None
+    if _calc_pcr_from_df is not None:
+        try:
+            _r = _calc_pcr_from_df(_mo_df, nearest_month_only=False)
+            if _r:
+                vol_pcr = _r.get('vol_pcr')
+                oi_pcr = _r.get('oi_pcr')
+        except Exception as _e:  # noqa
+            print(f"    [WARN] calc_pcr_from_df 失败，回退本地相除: {_e}")
+    if vol_pcr is None:
+        _c = _mo_df.loc[_mo_df['call_put'] == 'C', 'vol'].sum()
+        _p = _mo_df.loc[_mo_df['call_put'] == 'P', 'vol'].sum()
+        vol_pcr = round(_p / _c, 4) if _c > 0 else None
+    if oi_pcr is None:
+        _c = _mo_df.loc[_mo_df['call_put'] == 'C', 'oi'].sum()
+        _p = _mo_df.loc[_mo_df['call_put'] == 'P', 'oi'].sum()
+        oi_pcr = round(_p / _c, 4) if _c > 0 else None
+    if vol_pcr is None:
+        print("    ⚠️ 中证1000(MO主力): 认购量为 0，返回空")
+        return None
+    warn = None
+    if len(used) < min_days:
+        warn = f"⚠️样本不足(仅{len(used)}天)"
+    print(f"    ✅ 中证1000(MO主力) PCR={vol_pcr:.3f} "
+          f"(主力月{months[-1] if months else '?'}, {len(used)}日平滑, 全主力系列)")
+    return {
+        'vol_pcr': vol_pcr,
+        'oi_pcr': oi_pcr,
+        'date_range': f"{used[0]}~{used[-1]}",
+        'smooth_days': len(used),
+        'source': 'cffex_mo_main',
+        'excluded': False,
+        'etfs': [],
+        'etf_label': 'MO主力系列',
+        'warning': warn,
+    }
+
+
+def get_all_index_pcr(trading_date, smooth_days=5, min_days=3, exclude_current_month=True):
+    """统一 PCR 接口：4 ETF 指数（Tushare/AKShare 多级降级）+ 中证1000（MO 主力系列）。
+
+    2026-10-23：在 ETF 结果之上追加中证1000（MO 股指期权主力系列）。
+    红线候选集 = 沪深300 / 中证500 / 中证1000 / 科创50 / 创业板。
+    """
+    result = _get_all_index_pcr_etf(
+        trading_date, smooth_days=smooth_days, min_days=min_days,
+        exclude_current_month=exclude_current_month)
+    td_compact = trading_date.replace('-', '')
+    try:
+        zz = get_zz1000_main_pcr(td_compact, smooth_days=smooth_days, min_days=min_days)
+    except Exception as e:  # noqa: BLE001
+        print(f"    ❌ 中证1000(MO主力) 异常: {e}")
+        zz = None
+    result[ZZ1000_INDEX_NAME] = zz if zz else {
+        'vol_pcr': None, 'oi_pcr': None, 'date_range': '', 'smooth_days': 0,
+        'source': 'none', 'excluded': False, 'etfs': [], 'etf_label': 'MO主力系列',
+        'warning': '❌中证1000(MO主力)取数失败',
+    }
+    return result
+
+
+# ================================================================
+# 便捷函数（兼容底部监测脚本的调用模式）
+# ================================================================
+def fetch_pcr_for_bottom_monitor(trading_date_compact):
+    """兼容底部监测脚本的PCR获取接口
+    
+    返回格式与原来 fetch_pcr_excluding_current_month 兼容:
+    {
+        '上证50': {'vol_pcr': float, 'oi_pcr': None, 'info': str, ...},
+        ...
+        'fallback': bool,
+        'date_range': str,
+    }
+    """
+    all_pcr = get_all_index_pcr(trading_date_compact, smooth_days=5, min_days=3, exclude_current_month=True)
+    
+    # 转换为兼容格式
+    result = {}
+    # 2026-10-23：候选集 = 4 ETF 指数 + 中证1000(MO 主力系列)
+    _pcr_index_names = list(INDEX_ETF_MAP.keys()) + [ZZ1000_INDEX_NAME]
+    for index_name in _pcr_index_names:
+        d = all_pcr.get(index_name, {})
+        vol_pcr = d.get('vol_pcr')
+        smooth_days = d.get('smooth_days', 0)
+        source = d.get('source', 'none')
+        warning = d.get('warning')
+        etf_label = d.get('etf_label', '')
+        
+        # 构建info字符串（兼容原格式）
+        info_parts = []
+        if vol_pcr is not None:
+            info_parts.append(f"5日平滑PCR={vol_pcr:.2f}")
+        else:
+            info_parts.append("5日平滑PCR=⚠️缺失")
+        
+        if source == 'tushare':
+            info_parts.append(f"非当月合约×{smooth_days}日")
+        elif source == 'akshare_summary':
+            info_parts.append("⚠️含当月(单日)")
+        elif source == 'cffex_mo_main':
+            info_parts.append(f"MO主力系列×{smooth_days}日")
+        
+        if etf_label and '+' in etf_label:
+            info_parts.append(f"合并ETF({etf_label})")
+        
+        if warning:
+            info_parts.append(warning)
+        
+        if smooth_days < 3 and source == 'tushare':
+            info_parts.append(f"⚠️样本不足(仅{smooth_days}天)")
+        
+        result[index_name] = {
+            'vol_pcr': vol_pcr,
+            'vol_pcr_all': vol_pcr,  # 兼容字段
+            'oi_pcr': d.get('oi_pcr'),
+            'info': '; '.join(info_parts),
+            'excluded': d.get('excluded', False),
+            'nc_contracts': 0,  # Tushare模式下不单独统计
+            'smooth_days': smooth_days,
+            'smooth_low': smooth_days < 3,
+            'etfs': d.get('etfs', INDEX_ETF_MAP.get(index_name, [])),
+            'found_etfs': d.get('etfs', []),
+            'source': source,
+        }
+    
+    result['fallback'] = all_pcr['_meta']['fallback']
+    result['date_range'] = all_pcr['_meta']['date_range']
+    result['source'] = all_pcr['_meta']['source']
+    
+    return result
+
+
+# ================================================================
+# 自测
+# ================================================================
+if __name__ == '__main__':
+    print("=" * 60)
+    print("期权PCR统一模块 自测")
+    print("=" * 60)
+    
+    today = datetime.now().strftime('%Y%m%d')
+    print(f"\n测试日期: {today}")
+    
+    all_pcr = get_all_index_pcr(today, smooth_days=5, min_days=3, exclude_current_month=True)
+    
+    print("\n" + "=" * 60)
+    print("结果汇总:")
+    print("=" * 60)
+    for index_name in INDEX_ETF_MAP:
+        d = all_pcr.get(index_name, {})
+        vol_pcr = d.get('vol_pcr')
+        source = d.get('source', 'none')
+        warning = d.get('warning', '')
+        pcr_str = f"{vol_pcr:.3f}" if vol_pcr is not None else "⚠️缺失"
+        src_tag = f"[{source}]"
+        warn_tag = f" {warning}" if warning else ""
+        print(f"  {index_name:<6} PCR={pcr_str:>8} {src_tag}{warn_tag}")
+    
+    meta = all_pcr.get('_meta', {})
+    print(f"\n数据源: {meta.get('source', 'none')}")
+    print(f"日期范围: {meta.get('date_range', '')}")
+    print(f"降级: {meta.get('fallback', True)}")

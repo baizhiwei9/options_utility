@@ -137,7 +137,13 @@ def _norm(x):
 
 
 def bsm_iv(s, k, t, r, q, mid):
-    """二分法反推看涨 IV；输入无效返回 None。"""
+    """二分法反推看涨 IV；输入无效返回 None。
+
+    2026-11-18 冗余收敛：本函数保留不切 option_monitor.bs_iv，理由——
+    (1) 含深实值/套利失真过滤（0.02<moneyness<0.98），bs_iv 无此护栏；
+    (2) option_monitor 会拖入 tushare + alert.trigger + credentials 等 CN 依赖，
+        本脚本是美股专用链路，不宜引入。参数虽兼容，口径/依赖不兼容，标注保留。
+    """
     if not all(v is not None and v > 0 for v in (s, k, t, r, mid)):
         return None
     if 0.02 < (mid - math.exp(-r * t) * k) / (s * math.exp(-q * t)) > 0.98:

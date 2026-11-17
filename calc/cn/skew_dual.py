@@ -38,7 +38,11 @@ def _ncdf(x: float) -> float:
 
 def bs_delta(S: float, K: float, T: float, vol: float, is_call: bool = True,
              q: float = 0.0) -> float:
-    """BS delta（带分红的远期口径）。返回带符号 delta。"""
+    """BS delta（带分红的远期口径）。返回带符号 delta。
+
+    【冗余收敛·保留】本模块为 10Δ/25Δ 双口径、delta-space 取腿（见模块头注释）。
+    与库 data_hub bs_delta（r 口径、无 q）及 delta_to_strike 反解路径不同，保留。
+    """
     if T <= 0 or vol <= 0 or S <= 0 or K <= 0:
         return 1.0 if (is_call and S > K) else 0.0
     d1 = (math.log(S / K) + (0.0 - q + 0.5 * vol * vol) * T) / (vol * math.sqrt(T))

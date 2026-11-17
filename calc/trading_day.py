@@ -45,10 +45,9 @@ def _get_trading_days():
     try:
         import sys
         sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-        from option_monitor import pro, API_SLEEP
-        import time
-        time.sleep(API_SLEEP)
-        df = pro.trade_cal(exchange='SSE', start_date=f'{date.today().year}0101', end_date=f'{date.today().year}1231')
+        # 2026-11-17 改造：交易日历统一走 data_hub（hub_option_api）
+        from hub_option_api import fetch_trade_cal
+        df = fetch_trade_cal(exchange='SSE', start_date=f'{date.today().year}0101', end_date=f'{date.today().year}1231')
         trading_days = set(df[df['is_open'] == 1]['cal_date'].tolist())
         
         by_year = {str(date.today().year): list(trading_days)}

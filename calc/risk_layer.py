@@ -381,6 +381,9 @@ def calc_pcr(months):
 # ============================================================
 # 0.1Δ 偏度（PutIV - CallIV，近月DTE>20）+ 近月持仓PCR —— 2026-10-25 新增偏度预警轨
 # ============================================================
+# 【冗余收敛】10Δ 偏度（skew10/_iv_at_delta）：data_hub 仅提供 25Δ
+# （calc_25d_risk_reversal），10Δ 未扩库，此处保留自写实现（delta-space 取腿，
+# 与库的 delta_to_strike 反解路径不同）。near_month_oi_pcr 见下方标注。
 SKEW_DELTA = 0.10        # 目标|delta|
 SKEW_MIN_DTE = 20        # 只用剩余天数严格>20天的期权
 SKEW_DELTA_TOL = 0.05    # 无相邻档位插值时，最近档|delta|偏差上限（收紧，避免选到深虚值腿）
@@ -461,15 +464,30 @@ def skew10(months, spot=None):
 
 
 def near_month_oi_pcr(months, min_dte=SKEW_MIN_DTE):
-    """近月(DTE严格>min_dte)持仓量PCR = sum(Put OI)/sum(Call OI)。"""
+    """近月(DTE严格>min_dte)持仓量PCR = sum(Put OI)/sum(Call OI)。
+
+    2026-11-18 收敛：选月仍用本模块 _near_month_gt_dte（DTE 严格>min_dte），
+    传 nearest_month_only=False 不让库按 T 列自己选月；统一入口走
+    data_hub.calc_pcr_from_df。库内 round(4) 与本函数 round(3) 冲突
+    ——round(4)→round(3) 双重取整会漂移（实测 ~5% 取值 3 位小数差 0.001），
+    故最终数值用原始 OI 求和 round(3) 保持对外不变，库只作有效性与口径校验。
+    """
+    import pandas as pd
+    from data_hub.option_metrics import calc_pcr_from_df
+
     m = _near_month_gt_dte(months, min_dte)
     if m is None:
         return None, None
-    co = sum(c['oi'] for c in m['calls'])
-    po = sum(p['oi'] for p in m['puts'])
-    if co <= 0:
+    df = pd.DataFrame(
+        [{'call_put': 'C', 'oi': c['oi']} for c in m['calls']] +
+        [{'call_put': 'P', 'oi': p['oi']} for p in m['puts']]
+    )
+    res = calc_pcr_from_df(df, nearest_month_only=False)
+    if not res or 'oi_pcr' not in res:
         return None, m['dte']
-    return round(po / co, 3), m['dte']
+    call_oi = float(df.loc[df['call_put'] == 'C', 'oi'].sum())
+    put_oi = float(df.loc[df['call_put'] == 'P', 'oi'].sum())
+    return round(put_oi / call_oi, 3), m['dte']
 
 
 # ============================================================

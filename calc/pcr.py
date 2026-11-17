@@ -66,6 +66,26 @@ from pathlib import Path
 import pandas as pd
 import numpy as np
 
+# ============================================================
+# PCR 计算内核（2026-11-17 统一口径）
+#   data_hub/core/option_metrics.py::calc_pcr_from_df 是官方声明的
+#   "全系统PCR计算统一使用此函数，确保口径一致"。
+#   本文件只保留业务侧逻辑：ETF/合约筛选、剔除当月、5日平滑，
+#   不再自写 put/call 求和相除。
+# ============================================================
+try:
+    _DH_ROOT = '/Coze/Drive/dataHub_三级体系'
+    if not os.path.isdir(_DH_ROOT):
+        _alt = '/opt/coze/.fuse_drive/dataHub_三级体系'
+        if os.path.isdir(_alt):
+            _DH_ROOT = _alt
+    if _DH_ROOT not in sys.path:
+        sys.path.insert(0, _DH_ROOT)
+    from data_hub.core.option_metrics import calc_pcr_from_df as _calc_pcr_from_df
+except Exception as _e:  # noqa
+    _calc_pcr_from_df = None
+    print(f"  [WARN] 导入 data_hub.calc_pcr_from_df 失败，PCR 比值回退本地相除: {_e}")
+
 # ============ 路径配置 ============
 SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
 PROJECT_DIR = os.path.dirname(os.path.dirname(SCRIPT_DIR))
@@ -123,10 +143,14 @@ def _ts_safe_sleep():
 
 
 def _get_ts_pro():
-    """获取Tushare pro API对象"""
-    import tushare as ts
-    ts.set_token(TUSHARE_TOKEN)
-    return ts.pro_api()
+    """获取 Tushare pro API 对象。
+
+    2026-11-17 改造：统一走 data_hub 托管的连接
+    （data_hub.core.sources.tushare_source.TushareSource），
+    复用其代理配置 / 限频 / 熔断 / IP 轮动，禁止本模块自行 ts.pro_api() 直连。
+    """
+    from hub_option_api import get_pro
+    return get_pro()
 
 
 # ================================================================
@@ -177,16 +201,17 @@ def _fetch_contracts_tushare(exchange):
     if cached is not None:
         return pd.DataFrame(cached)
     
-    _ts_safe_sleep()
+    # 2026-11-17 改造：合约基础信息统一走 data_hub（hub_option_api 薄封装）
     try:
-        pro = _get_ts_pro()
-        df = pro.opt_basic(exchange=exchange, fields='ts_code,name,exercise_price,maturity_date,call_put,opt_code,list_date,delist_date')
+        from hub_option_api import fetch_exchange_contracts
+        df = fetch_exchange_contracts(exchange)
         if df is not None and not df.empty:
             _write_cache('contracts', cache_key, df.to_dict(orient='records'))
-            print(f"    ✅ Tushare {exchange} 合约列表: {len(df)}个")
+            print(f"    ✅ data_hub {exchange} 合约列表: {len(df)}个")
             return df
+        print(f"    ⚠️ data_hub {exchange} 合约列表为空")
     except Exception as e:
-        print(f"    ❌ Tushare {exchange} 合约列表获取失败: {e}")
+        print(f"    ❌ data_hub {exchange} 合约列表获取失败: {e}")
     return None
 
 
@@ -200,17 +225,23 @@ def _fetch_daily_range_tushare(exchange, start_date, end_date):
     if cached is not None:
         return pd.DataFrame(cached)
     
-    _ts_safe_sleep()
+    # 2026-11-17 改造：期权日线统一走 data_hub（hub_option_api 薄封装，
+    # 内部按交易日循环 + 复用 opt_basic 缓存 + 自动合并 call_put/opt_code）
     try:
-        pro = _get_ts_pro()
-        df = pro.opt_daily(exchange=exchange, start_date=start_date, end_date=end_date,
-                           fields='ts_code,trade_date,exchange,vol,amount,oi')
+        from hub_option_api import fetch_exchange_daily_range
+        df = fetch_exchange_daily_range(exchange, start_date, end_date)
         if df is not None and not df.empty:
+            keep = ['ts_code', 'trade_date', 'exchange', 'vol', 'amount', 'oi',
+                    'name', 'exercise_price', 'maturity_date', 'opt_type',
+                    'call_put', 'opt_code']
+            cols = [c for c in keep if c in df.columns]
+            df = df[cols].copy()
             _write_cache('daily', cache_key, df.to_dict(orient='records'))
-            print(f"    ✅ Tushare {exchange} {start_date}~{end_date} 日线: {len(df)}条")
+            print(f"    ✅ data_hub {exchange} {start_date}~{end_date} 日线: {len(df)}条")
             return df
+        print(f"    ⚠️ data_hub {exchange} {start_date}~{end_date} 日线为空")
     except Exception as e:
-        print(f"    ❌ Tushare {exchange} {start_date}~{end_date} 日线获取失败: {e}")
+        print(f"    ❌ data_hub {exchange} {start_date}~{end_date} 日线获取失败: {e}")
     return None
 
 
@@ -383,6 +414,7 @@ def _compute_pcr_from_tushare(trading_date_compact, smooth_days=5, min_days=3, e
         call_vol_nc = 0  # non-current-month
         put_vol_nc = 0
         found_etfs = []
+        rows_all = []
         
         for etf_code in etf_codes:
             # 找到该ETF对应的所有合约ts_code
@@ -400,30 +432,42 @@ def _compute_pcr_from_tushare(trading_date_compact, smooth_days=5, min_days=3, e
             
             for _, drow in etf_daily.iterrows():
                 ts_code = drow['ts_code']
-                vol = float(drow['vol'])
-                oi = float(drow['oi'])
-                
                 info = contract_info.get(ts_code, {})
-                call_put = info.get('call_put', '')
-                maturity_month = info.get('maturity_month', '')
-                
-                is_current_month = (maturity_month == current_month)
-                is_call = (call_put == 'C')
-                
-                if is_call:
-                    call_vol_total += vol
-                    call_oi_total += oi
-                    if not is_current_month or not exclude_current_month:
-                        call_vol_nc += vol
-                else:
-                    put_vol_total += vol
-                    put_oi_total += oi
-                    if not is_current_month or not exclude_current_month:
-                        put_vol_nc += vol
-        
-        # 计算PCR
-        vol_pcr = put_vol_nc / call_vol_nc if call_vol_nc > 0 else None
-        oi_pcr = put_oi_total / call_oi_total if call_oi_total > 0 else None
+                rows_all.append({
+                    'call_put': info.get('call_put', ''),
+                    'maturity_month': info.get('maturity_month', ''),
+                    'vol': float(drow['vol']),
+                    'oi': float(drow['oi']),
+                })
+
+        # 计算PCR —— 比值统一走 data_hub 官方口径 calc_pcr_from_df
+        #   vol_pcr：剔除当月（业务口径，当月合约临近到期会失真）
+        #   oi_pcr ：全合约（保持原实现口径，零漂移）
+        _all_df = pd.DataFrame(rows_all) if rows_all else pd.DataFrame(
+            columns=['call_put', 'maturity_month', 'vol', 'oi'])
+        _vol_df = _all_df[_all_df['maturity_month'] != current_month] if exclude_current_month else _all_df
+        vol_pcr = None
+        oi_pcr = None
+        if _calc_pcr_from_df is not None:
+            try:
+                if not _vol_df.empty:
+                    _r = _calc_pcr_from_df(_vol_df, nearest_month_only=False)
+                    if _r:
+                        vol_pcr = _r.get('vol_pcr')
+                if not _all_df.empty:
+                    _r2 = _calc_pcr_from_df(_all_df, nearest_month_only=False)
+                    if _r2:
+                        oi_pcr = _r2.get('oi_pcr')
+            except Exception as _e:  # noqa
+                print(f"    [WARN] calc_pcr_from_df 失败，回退本地相除: {_e}")
+        if vol_pcr is None and not _vol_df.empty:
+            _c = _vol_df.loc[_vol_df['call_put'] == 'C', 'vol'].sum()
+            _p = _vol_df.loc[_vol_df['call_put'] == 'P', 'vol'].sum()
+            vol_pcr = _p / _c if _c > 0 else None
+        if oi_pcr is None and not _all_df.empty:
+            _c = _all_df.loc[_all_df['call_put'] == 'C', 'oi'].sum()
+            _p = _all_df.loc[_all_df['call_put'] == 'P', 'oi'].sum()
+            oi_pcr = _p / _c if _c > 0 else None
         
         etf_label = '+'.join(found_etfs) if len(found_etfs) > 1 else (found_etfs[0] if found_etfs else '')
         
@@ -444,10 +488,16 @@ def _compute_pcr_from_tushare(trading_date_compact, smooth_days=5, min_days=3, e
 
 def _compute_pcr_from_akshare_summary(date_compact):
     """从AKShare汇总数据计算PCR（降级方案）
-    
+
     注意：汇总数据无法剔除当月到期合约，也无法做5日平滑
     只能给出当日的单日PCR（含当月）
-    
+
+    【为何不走 calc_pcr_from_df（2026-11-17 口径统一说明）】
+    AKShare 日统计接口只返回"全市场 put/call 汇总总量"，
+    没有分合约的 [call_put, vol, oi] 明细行，无法喂给统一内核。
+    口径规则：Tushare opt_daily（分合约）必须走 calc_pcr_from_df；
+    只有本汇总降级路径允许直接对总量相除。
+
     返回: dict 或 None
     """
     sse_df, szse_df = _fetch_daily_stats_akshare(date_compact)

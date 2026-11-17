@@ -111,8 +111,13 @@ class TestRulesAndEngine(unittest.TestCase):
         miss = AlertRule(key='t.miss', name='t', indicator='x', kind=THRESHOLD,
                          op='>=', threshold=99, level='red')
         s = [('20261109', 12.0)]          # judge() 收单序列；judge_all() 收指标字典
-        self.assertTrue(judge(hit, s).triggered)
-        self.assertFalse(judge(miss, s).triggered)
+        # 2026-11-18：judge() 增加数据陈旧检查后，序列日期写死会让用例随系统
+        # 日期推移变红（age > max_stale_days 被 skipped）。本用例只测阈值逻辑，
+        # 显式把判定基准日锚到序列当日。
+        from datetime import date as _date
+        _today = _date(2026, 11, 9)
+        self.assertTrue(judge(hit, s, today=_today).triggered)
+        self.assertFalse(judge(miss, s, today=_today).triggered)
 
         pct = AlertRule(key='t.pct', name='t', indicator='x', kind=PERCENTILE,
                         window=60, op='>=', threshold=90, min_samples=60)

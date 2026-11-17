@@ -456,7 +456,12 @@ def _get_spot_price(cfg):
 
 
 def _estimate_spot_from_contracts(contracts):
-    """从合约数据估算现货价（Call和Put OI/成交量最接近的行权价附近）"""
+    """从合约数据估算现货价（Call和Put OI/成交量最接近的行权价附近）。
+
+    【冗余收敛·保留】data_hub.core.option_metrics 只有 get_atm_iv，没有
+    「从合约反估现货价」的能力，本函数为自写兜底逻辑，保留。
+    若后续 data_hub 补 get_spot_from_contracts，再切到库。
+    """
     if not contracts:
         return None
     

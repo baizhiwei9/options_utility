@@ -238,7 +238,8 @@ def _fetch_level2_tushare(target_name, cfg, trade_date=None):
         
         # 1. 获取该标的的合约列表
         time.sleep(API_SLEEP)
-        opt_basic = pro.opt_basic(exchange=ts_exchange)
+        from hub_option_api import fetch_exchange_contracts, fetch_daily_by_codes
+        opt_basic = fetch_exchange_contracts(ts_exchange)
         filtered = opt_basic[opt_basic['opt_code'].str.contains(opt_code, na=False)]
         
         if len(filtered) == 0:
@@ -267,10 +268,10 @@ def _fetch_level2_tushare(target_name, cfg, trade_date=None):
             time.sleep(API_SLEEP)
             
             if trade_date:
-                df = pro.opt_daily(ts_code=codes_str, trade_date=trade_date.replace('-', ''))
+                df = fetch_daily_by_codes(codes_str, trade_date=trade_date.replace('-', ''))
             else:
                 # 最近一个交易日
-                df = pro.opt_daily(ts_code=codes_str, fields='ts_code,trade_date,close,volume,oi,amount')
+                df = fetch_daily_by_codes(codes_str, fields='ts_code,trade_date,close,vol,oi,amount')
                 if len(df) > 0:
                     latest_date = df['trade_date'].max()
                     df = df[df['trade_date'] == latest_date]

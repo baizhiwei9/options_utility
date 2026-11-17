@@ -78,6 +78,13 @@ EMAIL_TO_ADDR = _get('EMAIL_TO_ADDR', '')
 AGENT_EMAIL = _get('AGENT_EMAIL', '')
 
 
+# ==================== 邮件（QQ 历史脚本专用）====================
+
+# 历史脚本（deriv_*/topbottom_*/bottom_redline/derivative_sentiment）内置的
+# QQ 邮箱 SMTP 授权码。原先是明文硬编码在 6 个文件里，现统一收敛到这里。
+QQ_EMAIL_AUTH_CODE = _get('QQ_EMAIL_AUTH_CODE', '')
+
+
 # ==================== 自检 ====================
 
 _MASK_KEYS = ('TOKEN', 'PASS', 'CHAT_ID', 'USER_ID')

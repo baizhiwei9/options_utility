@@ -57,7 +57,12 @@ warnings.filterwarnings('ignore')
 import tushare as ts
 TS_TOKEN = TS_TOKEN
 ts.set_token(TS_TOKEN)
-pro = ts.pro_api()
+# 2026-11-17 改造：pro 统一由 data_hub 托管（代理/限频/熔断/IP轮动）
+from hub_option_api import (  # noqa: E402
+    get_pro, fetch_index_daily, fetch_exchange_contracts, fetch_exchange_daily,
+    fetch_fund_daily,
+)
+pro = get_pro()
 API_SLEEP = 0.15
 
 TARGETS = [
@@ -81,24 +86,10 @@ def bs_call(S, K, T, r, sigma, q=0):
     try: return S*math.exp(-q*T)*norm.cdf(d1) - K*math.exp(-r*T)*norm.cdf(d2)
     except: return max(S-K, 0)
 
-def bs_put(S, K, T, r, sigma, q=0):
-    d1 = bs_d1(S, K, T, r, sigma, q)
-    if d1 is None: return max(K-S, 0)
-    d2 = d1 - sigma*math.sqrt(T)
-    try: return K*math.exp(-r*T)*norm.cdf(-d2) - S*math.exp(-q*T)*norm.cdf(-d1)
-    except: return max(K-S, 0)
-
-def bs_iv(S, K, T, r, mkt_price, opt_type='call', q=0):
-    if T <= 0 or mkt_price <= 0: return None
-    intrinsic = max(S-K, 0) if opt_type == 'call' else max(K-S, 0)
-    if mkt_price < intrinsic - 1e-8: return None
-    def obj(sigma):
-        p = bs_call(S, K, T, r, sigma, q) if opt_type == 'call' else bs_put(S, K, T, r, sigma, q)
-        return p - mkt_price if p is not None else 1e10
-    try:
-        iv = brentq(obj, 0.001, 5.0, xtol=1e-7)
-        return iv if 0.01 < iv < 3.0 else None
-    except: return None
+# IV 反解 —— 2026-11-18 收敛到生产主线口径 option_monitor.bs_iv（唯一真源）。
+# 原 ev.py 自写 bs_iv（1e-8 容差 + xtol=1e-7）会硬解出伪 IV（见 data_hub 注释），
+# 连同仅被其使用的 bs_put 一并删除；bs_d1 / bs_call 仍被下方 RND 理论价计算使用，保留。
+from option_monitor import bs_iv  # noqa: E402
 
 def bs_survival(K, S, T, r, sigma, q):
     """BS生存函数 P(S_T > K) = N(d2)"""
@@ -113,26 +104,26 @@ def bs_survival(K, S, T, r, sigma, q):
 def get_spot(t, trade_date):
     if t['type'] == 'IDX':
         try:
-            df = pro.index_daily(ts_code=t['idx'], start_date=trade_date, end_date=trade_date)
+            df = fetch_index_daily(ts_code=t['idx'], start_date=trade_date, end_date=trade_date)
             if df is not None and len(df) > 0: return float(df.iloc[0]['close'])
         except: pass
         try:
             end = trade_date
             start = (datetime.datetime.strptime(trade_date,'%Y%m%d') - timedelta(days=10)).strftime('%Y%m%d')
-            df = pro.index_daily(ts_code=t['idx'], start_date=start, end_date=end)
+            df = fetch_index_daily(ts_code=t['idx'], start_date=start, end_date=end)
             if df is not None and len(df) > 0:
                 return float(df.sort_values('trade_date', ascending=False).iloc[0]['close'])
         except: pass
     else:
         ts_code = f"{t['code']}.SH" if t['exchange'] == 'SSE' else f"{t['code']}.SZ"
         try:
-            df = pro.fund_daily(ts_code=ts_code, trade_date=trade_date)
+            df = fetch_fund_daily(ts_code=ts_code, trade_date=trade_date)
             if df is not None and len(df) > 0: return float(df.iloc[0]['close'])
         except: pass
         try:
             end = trade_date
             start = (datetime.datetime.strptime(trade_date,'%Y%m%d') - timedelta(days=10)).strftime('%Y%m%d')
-            df = pro.fund_daily(ts_code=ts_code, start_date=start, end_date=end)
+            df = fetch_fund_daily(ts_code=ts_code, start_date=start, end_date=end)
             if df is not None and len(df) > 0:
                 return float(df.sort_values('trade_date', ascending=False).iloc[0]['close'])
         except: pass
@@ -141,7 +132,7 @@ def get_spot(t, trade_date):
 def get_chain(t, trade_date):
     time.sleep(API_SLEEP)
     try:
-        opt_list = pro.opt_basic(exchange=t['exchange'])
+        opt_list = fetch_exchange_contracts(t['exchange'])
     except Exception as e:
         return {}, f"opt_basic失败: {e}"
     if opt_list is None or opt_list.empty:
@@ -160,7 +151,7 @@ def get_chain(t, trade_date):
     for retry in range(2):
         time.sleep(API_SLEEP)
         try:
-            daily_df = pro.opt_daily(exchange=t['exchange'], start_date=trade_date, end_date=trade_date)
+            daily_df = fetch_exchange_daily(t['exchange'], trade_date)
             if daily_df is not None and not daily_df.empty: break
         except: time.sleep(1)
     if daily_df is None or daily_df.empty: return {}, "日线数据获取失败"
@@ -591,7 +582,7 @@ def main():
         try:
             end = today
             start = (datetime.datetime.strptime(today,'%Y%m%d') - timedelta(days=10)).strftime('%Y%m%d')
-            df = pro.index_daily(ts_code='000300.SH', start_date=start, end_date=end)
+            df = fetch_index_daily(ts_code='000300.SH', start_date=start, end_date=end)
             if df is not None and len(df) > 0:
                 trade_date = df.sort_values('trade_date', ascending=False).iloc[0]['trade_date']
             else: trade_date = today

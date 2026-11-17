@@ -170,14 +170,20 @@ class TestDataHubImports(unittest.TestCase):
         缺 List 不会 NameError。原断言把「注解名」当「运行期名」，属误报。
         真正需要检查的是函数体里实打实调用的 datetime（现已改为函数内局部 import）。
         """
-        p = os.path.join(PARENT, 'data_hub', 'sources', 'akshare_source.py')
+        # 2026-11-18：data_hub 分层重构后源码在 core/sources/，旧 sources/ 只剩
+        # __init__ 兼容 shim，这里按新路径取，旧路径留作回退。
+        p = os.path.join(PARENT, 'data_hub', 'core', 'sources', 'akshare_source.py')
+        if not os.path.exists(p):
+            p = os.path.join(PARENT, 'data_hub', 'sources', 'akshare_source.py')
         src = open(p, encoding='utf-8').read()
         names = _imported_names(src)
         self.assertIn('datetime', names, 'akshare_source.py 缺 datetime 导入')
 
     def test_tushare_source_imports_list(self):
         """tushare_source 若哪天去掉 future annotations，就必须补 import List。"""
-        p = os.path.join(PARENT, 'data_hub', 'sources', 'tushare_source.py')
+        p = os.path.join(PARENT, 'data_hub', 'core', 'sources', 'tushare_source.py')
+        if not os.path.exists(p):
+            p = os.path.join(PARENT, 'data_hub', 'sources', 'tushare_source.py')
         src = open(p, encoding='utf-8').read()
         if 'from __future__ import annotations' in src:
             self.skipTest('文件有 future annotations，注解不参与运行期求值，List 可缺失')

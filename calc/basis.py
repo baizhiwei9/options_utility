@@ -325,10 +325,11 @@ def _fetch_level2_tushare(symbol, cfg, start_date=None, end_date=None):
         fut_symbol = cfg['futures_symbol']
         
         # 期货日线（用主力连续或具体合约）
-        # Tushare期货日线: trade_cal, daily
-        df_fut = pro.fut_daily(ts_code=f'{fut_symbol}.CFX', start_date=start_date, end_date=end_date)
+        # 2026-11-17 改造：期货日线统一走 data_hub（hub_option_api 薄封装）
+        from hub_option_api import fetch_fut_daily, fetch_index_daily
+        df_fut = fetch_fut_daily(f'{fut_symbol}.CFX', start_date=start_date, end_date=end_date)
         if df_fut is None or len(df_fut) == 0:
-            return None, None, 'tushare期货返回空'
+            return None, None, 'data_hub期货返回空'
         
         # 现货指数
         spot_data = {}
@@ -337,7 +338,7 @@ def _fetch_level2_tushare(symbol, cfg, start_date=None, end_date=None):
             idx_code = {
                 'IF': '000300.SH', 'IC': '000905.SH', 'IM': '000852.SH'
             }.get(symbol, '000300.SH')
-            df_idx = pro.index_daily(ts_code=idx_code, start_date=start_date, end_date=end_date)
+            df_idx = fetch_index_daily(ts_code=idx_code, start_date=start_date, end_date=end_date)
             if df_idx is not None and len(df_idx) > 0:
                 for _, row in df_idx.iterrows():
                     spot_data[str(row['trade_date'])] = float(row['close'])

@@ -41,3 +41,6 @@ EMAIL_TO_ADDR = ''
 
 # Agent 自有邮箱（部分报警用这个地址收发）
 AGENT_EMAIL = ''
+
+# 历史脚本（deriv/topbottom 等）用的 QQ 邮箱 SMTP 授权码
+QQ_EMAIL_AUTH_CODE = ''

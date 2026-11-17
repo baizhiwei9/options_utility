@@ -125,19 +125,35 @@ def _get_atm_iv_from_chain(exp_data, spot):
 
 
 def _get_pcr(exp_data, spot):
-    """计算PCR（成交量口径优先，其次持仓量）"""
+    """计算PCR（成交量口径优先，其次持仓量）。
+
+    2026-11-18 收敛：选月已由 exp_data 在上层完成（dte≥MIN_NEAR_DTE），本函数
+    只做求和相除，统一入口走 data_hub.calc_pcr_from_df（nearest_month_only=False）。
+    库内 round(4) 与本函数「返回原始未取整、下游统一 round(,3)」的既有口径冲突
+    ——round(4)→round(3) 双重取整会漂移（实测 ~5% 取值 3 位小数差 0.001），
+    故最终数值仍用原始求和相除，库只作 vol 优先/oi 兜底判定与校验。
+    """
+    import pandas as pd
+    from data_hub.option_metrics import calc_pcr_from_df
+
     calls = exp_data['calls']
     puts = exp_data['puts']
-    call_vol = sum(c.get('volume', 0) or 0 for c in calls)
-    put_vol = sum(p.get('volume', 0) or 0 for p in puts)
-    if call_vol > 0:
+    if not calls and not puts:
+        return None
+    df = pd.DataFrame(
+        [{'call_put': 'C', 'vol': c.get('volume', 0) or 0, 'oi': c.get('oi', 0) or 0} for c in calls] +
+        [{'call_put': 'P', 'vol': p.get('volume', 0) or 0, 'oi': p.get('oi', 0) or 0} for p in puts]
+    )
+    res = calc_pcr_from_df(df, nearest_month_only=False)
+    if not res:
+        return None
+    if 'vol_pcr' in res:
+        call_vol = float(df.loc[df['call_put'] == 'C', 'vol'].sum())
+        put_vol = float(df.loc[df['call_put'] == 'P', 'vol'].sum())
         return put_vol / call_vol
-    # 持仓量兜底
-    call_oi = sum(c.get('oi', 0) or 0 for c in calls)
-    put_oi = sum(p.get('oi', 0) or 0 for p in puts)
-    if call_oi > 0:
-        return put_oi / call_oi
-    return None
+    call_oi = float(df.loc[df['call_put'] == 'C', 'oi'].sum())
+    put_oi = float(df.loc[df['call_put'] == 'P', 'oi'].sum())
+    return put_oi / call_oi if 'oi_pcr' in res else None
 
 
 def _get_skew(exp_data, spot, r=0.02):

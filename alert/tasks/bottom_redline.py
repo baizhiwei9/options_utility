@@ -45,7 +45,7 @@ _cred_cfg = _cred_os.path.join(_cd, 'config')
 if _cred_cfg not in _cred_sys.path:
     _cred_sys.path.insert(0, _cred_cfg)
 from credentials import (TS_TOKEN, FEISHU_CHAT_ID, FEISHU_PRIVATE_USER_ID,
-                         EMAIL_FROM_ADDR, EMAIL_FROM_PASS, EMAIL_TO_ADDR, AGENT_EMAIL)
+                         EMAIL_FROM_ADDR, EMAIL_FROM_PASS, EMAIL_TO_ADDR, AGENT_EMAIL, QQ_EMAIL_AUTH_CODE)
 # =======================================================================
 import os as _opt_os, sys as _opt_sys
 _p = _opt_os.path.dirname(_opt_os.path.abspath(__file__))
@@ -109,7 +109,7 @@ EMAIL_CONFIG = {
     'smtp_server': 'smtp.qq.com',
     'smtp_port': 465,           # SSL端口
     'sender': EMAIL_TO_ADDR,
-    'auth_code': 'jnmmytxtdlwebghj',  # QQ邮箱授权码
+    'auth_code': QQ_EMAIL_AUTH_CODE,  # QQ邮箱授权码
     'receiver': AGENT_EMAIL,  # 主人邮箱
 }
 

@@ -54,7 +54,11 @@ def _ncdf(x: float) -> float:
 
 
 def _black76(F: float, K: float, T: float, sigma: float, cp: str) -> float:
-    """Black-76 价格（期权链用远期口径，比 BS 少一个分红项）"""
+    """Black-76 价格（期权链用远期口径，比 BS 少一个分红项）
+
+    2026-11-18 冗余收敛：Black-76 与 BS 不等价（股指期货长期贴水，S ≠ F·e^(-rT)），
+    本模块 _black76 / _implied_vol 保留，不进 BS 收敛。
+    """
     if T <= 0 or sigma <= 0:
         return max(0.0, (F - K) if cp == "C" else (K - F))
     d1 = (math.log(F / K) + 0.5 * sigma * sigma * T) / (sigma * math.sqrt(T))

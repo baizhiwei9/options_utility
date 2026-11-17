@@ -1,6 +1,6 @@
 {
   "name": "options_utility",
-  "version": "1.4.4",
+  "version": "1.5.0",
   "date": "2026-11-18",
   "merged_from": [
     "GitHub baizhiwei9/options_utility @354e131（A股计算层 + 报警引擎 + 29条规则基线，实为38条）",
@@ -71,6 +71,26 @@
     ]
   },
   "changelog": [
+    {
+      "version": "1.5.0",
+      "date": "2026-11-18",
+      "title": "期权库收敛为唯一一份：options_refactor 全量合入 + 重复实现去重 + 路径/幂等收敛",
+      "breaking_behavior": "无对外口径变化。options_refactor 目录已归档为 options_refactor.ARCHIVED_20261118，所有调用方（crontab / 顶底 wrapper / codeact）统一指向本库。",
+      "items": [
+        "合入 options_refactor 的 6 个独有文件：hub_option_api.py（515行，data_hub 薄封装，get_pro/fetch_exchange_contracts/fetch_exchange_daily/fetch_index_daily/fetch_fund_daily/fetch_fut_daily/fetch_margin/fetch_shibor_risk_free/fetch_trade_cal）、deriv_v2.py(2612) / deriv_src.py(2450) / topbottom_v2.py(2626) / topbottom_src.py(2562) / option_pcr.py(964)",
+        "合入 14 个 data_hub 化改造文件：calc/pcr.py（_get_ts_pro→hub_option_api.get_pro、opt_basic/opt_daily 走 data_hub、PCR 内核切 data_hub.core.option_metrics.calc_pcr_from_df）、calc/option_monitor.py（index_daily/fund_daily/fut_daily/opt_basic/opt_daily 全走 hub_option_api；shibor 无风险利率改 fetch_shibor_risk_free）、calc/ev.py、calc/ev_io.py、calc/oi_backfill.py、calc/fetch.py（fields volume→vol）、calc/basis.py、calc/trading_day.py（trade_cal 走 data_hub）、config/credentials.py（新增 QQ_EMAIL_AUTH_CODE）、config/private.example.py、config/private.py、alert/tasks/bottom_redline.py、alert/tasks/derivative_sentiment.py、alert/tasks/topbottom.py（QQ 授权码明文 → credentials.QQ_EMAIL_AUTH_CODE）",
+        "保留生产库三个新版、拒绝被旧版覆盖：calc/risk_layer.py 的 BKM(2003) 严格口径（BKM_STRICT_BAND=0.15 / BKM_STRICT_MIN_LEGS=8 / strict=True，不满足返回 NA 不放宽不插值）、calc/db/store.py 的逐合约 chain 快照库（option_chain.db + OPTION_CHAIN_KEEP_DAYS=365 + _resolve_output_dir 本机兜底）、alert/notifier/feishu_push.py 的 LARKSUITE_CLI_* 环境变量兜底",
+        "P0 收敛（PCR 口径统一）：calc/iv_term.py::_get_pcr 与 calc/risk_layer.py::near_month_oi_pcr 改走 data_hub.option_metrics.calc_pcr_from_df(nearest_month_only=False)。因库内 round(4) 与本处 round(3) 双重取整会漂移（实测约 5% 取值差 0.001），库只作有效性与口径判定，对外数值仍用原始求和，保证零漂移",
+        "P1 收敛（BS/IV 去重）：calc/ev.py 删自写 bs_iv 与仅被其使用的 bs_put，calc/ev_io.py 删 bs_d1/bs_call/bs_put/bs_iv 四个函数，统一改 from option_monitor import bs_iv（brentq xtol=1e-6 唯一真源）。原 ev 自写版 1e-8 容差 + xtol=1e-7 会硬解出伪 IV",
+        "保留标注（不进收敛，各有硬理由）：calc/gex.py 与 calc/cn/iv_history.py 的 Black-76（股指期权标的期货长期贴水，S≠F·e^(-rT)，不能收敛到 BS）、calc/cn/skew_dual.py 的 bs_delta（10Δ/25Δ 双口径 delta-space 取腿）、calc/oi.py 的 _estimate_spot_from_contracts（库无对应）、calc/us/treasury_fetch.py 的 bsm_iv（含深实值过滤 0.02<moneyness<0.98，且 option_monitor 会拖入 tushare+alert.trigger+credentials 等 CN 依赖）",
+        "修复 BUG calc/risk_layer.py::near_month_oi_pcr 返回值：正常路径 return round(put_oi/call_oi,3) 漏了 m[\"dte\"]，返回裸 float 导致调用方 pcr20, pcr20_dte = near_month_oi_pcr(months) 解包 TypeError（影响 risk_layer.py:894 与 skew_backfill.py:233/322/434）。已改为 return round(put_oi/call_oi,3), m[\"dte\"]",
+        "路径收敛（合并后 OUTPUT_DIR/CACHE_DIR 漂移会失联幂等状态）：topbottom_v2.py 与 deriv_v2.py 的输出根显式钉回 「主对话/output」（yangkangping_*.json / deriv_pcr_history.csv / deriv_alert_state.json / pcr_backfill_state.json / pcr_daily_cache 都在此），option_pcr.py 的 CACHE_DIR 钉回「主对话/codeact/output/data_cache」（约 88MB 合约与日线缓存）。三处均支持 TOP_BOTTOM_DATA_ROOT / OPTION_PCR_CACHE_ROOT 覆盖。若不钉住，合并后会自动漂到 dataHub_三级体系/output，导致同日重复推送与缓存全量重抓",
+        "沙箱/容器兜底：hub_option_api.py、calc/pcr.py、deriv_v2.py、option_pcr.py、topbottom_v2.py 五处 data_hub 根路径增加「/Coze/Drive/dataHub_三级体系 不存在时回退 /opt/coze/.fuse_drive/dataHub_三级体系」。生产命中第一分支，行为不变；沙箱内可完整跑通（原硬编码路径在只挂载部分云盘的容器里必然失败）",
+        "测试修复：tests/test_offline.py::test_engine_threshold_and_percentile 因 judge() 新增数据陈旧检查，写死 20261109 的序列会随系统日期推移被判 skipped 而变红，改为显式传 today 锚定基准日；tests/test_regressions.py 两处 data_hub 源码路径由 data_hub/sources/ 改为 data_hub/core/sources/（data_hub 已分层，旧路径只剩 __init__ 兼容 shim），保留旧路径回退",
+        "options_refactor 归档下线：/Coze/Drive/蓁宝/所有对话/主对话/options_refactor → options_refactor.ARCHIVED_20261118。顶底 cron 入口 run_topbottom_patched.py 的 _PATCH_DIR/_TARGET/_REMAP 全部改指生产库，不再有任何 sys.path 覆盖层，消除同名模块双份歧义。归档目录内 tmp_verify/ 下 12 个一次性排查脚本未进生产库",
+        "回归验证（2026-11-18 凌晨实测）：86 个 py 全量 py_compile 通过；pytest 29 passed / 1 skipped（与 1.4.4 基线一致）；午盘链路 5 标的 SKEW+EV+共振+BND+期限结构+PCR-MACD 全出、18 元素卡片构建成功；收盘链路 20261118 五轨 SKEW 106.82/106.05/102.42/103.03/105.55 与 EV 全正常，20261117 历史日期正确触发「历史日期保护」拒绝算假偏度；顶底链路 2026-11-17 dry-run 与合并前 JSON 逐字段对比 350 字段仅 11 处差异，全部为 VIX 实时快照时点与 PE/PB 分位小数第 3~4 位的正常数据波动，红线数 5/9、顶部信号 0/6、策略建议完全一致"
+      ]
+    },
     {
       "version": "1.3.0",
       "date": "2026-11-12",

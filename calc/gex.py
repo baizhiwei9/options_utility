@@ -131,6 +131,10 @@ def contracts_to_chain(contracts: list) -> dict:
 
 
 # ============ Black-1976 Gamma 计算 ============
+# 2026-11-18 冗余收敛：Black-76（期货 F + 折现）与 BS（现货 S + 分红）不等价，
+# 股指期权（IO/MO/HO）标的期货长期贴水，S ≠ F·e^(-rT)，直接拿 S 套 BS 会系统性
+# 偏 IV。本模块 black76_gamma / black76_call_price / black76_put_price /
+# implied_vol_from_price 保留，不进 BS 收敛。
 
 def black76_gamma(F: float, K: float, T: float, sigma: float) -> Optional[float]:
     """

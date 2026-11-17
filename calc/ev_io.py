@@ -53,42 +53,17 @@ warnings.filterwarnings('ignore')
 import tushare as ts
 TS_TOKEN = TS_TOKEN
 ts.set_token(TS_TOKEN)
-pro = ts.pro_api()
+# 2026-11-17 改造：pro 统一由 data_hub 托管
+from hub_option_api import get_pro, fetch_index_daily, fetch_exchange_contracts, fetch_daily_by_codes  # noqa: E402
+pro = get_pro()
 
 MULTIPLIER = 100  # 合约乘数: 每点100元
 
 # ===== BS 模型 =====
-def bs_d1(S, K, T, r, sigma, q=0):
-    if T <= 0 or sigma <= 0: return None
-    try:
-        return (math.log(S/K) + (r - q + 0.5*sigma**2)*T) / (sigma*math.sqrt(T))
-    except: return None
-
-def bs_call(S, K, T, r, sigma, q=0):
-    d1 = bs_d1(S, K, T, r, sigma, q)
-    if d1 is None: return max(S-K, 0)
-    d2 = d1 - sigma*math.sqrt(T)
-    try: return S*math.exp(-q*T)*norm.cdf(d1) - K*math.exp(-r*T)*norm.cdf(d2)
-    except: return max(S-K, 0)
-
-def bs_put(S, K, T, r, sigma, q=0):
-    d1 = bs_d1(S, K, T, r, sigma, q)
-    if d1 is None: return max(K-S, 0)
-    d2 = d1 - sigma*math.sqrt(T)
-    try: return K*math.exp(-r*T)*norm.cdf(-d2) - S*math.exp(-q*T)*norm.cdf(-d1)
-    except: return max(K-S, 0)
-
-def bs_iv(S, K, T, r, mkt_price, opt_type='call', q=0):
-    if T <= 0 or mkt_price <= 0: return None
-    intrinsic = max(S-K, 0) if opt_type == 'call' else max(K-S, 0)
-    if mkt_price < intrinsic - 1e-6: return None
-    def obj(sigma):
-        p = bs_call(S, K, T, r, sigma, q) if opt_type == 'call' else bs_put(S, K, T, r, sigma, q)
-        return p - mkt_price if p is not None else 1e10
-    try:
-        iv = brentq(obj, 0.001, 5.0, xtol=1e-6)
-        return iv if 0.01 < iv < 3.0 else None
-    except: return None
+# 2026-11-18 收敛：bs_d1 / bs_call / bs_put / bs_iv 全部删除，IV 反解改调
+# option_monitor.bs_iv（唯一真源）。本模块原 4 个 BS 函数只被 bs_iv 内部使用
+# （IV 反解中间量），无其他调用方，故一并删除，不保留死代码。
+from option_monitor import bs_iv  # noqa: E402
 
 
 # ===== 数据获取 =====
@@ -99,7 +74,7 @@ def get_last_trade_date():
     try:
         end = today
         start = (datetime.datetime.strptime(today, '%Y%m%d') - timedelta(days=10)).strftime('%Y%m%d')
-        df = pro.index_daily(ts_code='000300.SH', start_date=start, end_date=end)
+        df = fetch_index_daily(ts_code='000300.SH', start_date=start, end_date=end)
         if df is not None and len(df) > 0:
             return df.sort_values('trade_date', ascending=False).iloc[0]['trade_date']
     except: pass
@@ -108,7 +83,7 @@ def get_last_trade_date():
 def get_spot_price(trade_date):
     """沪深300指数收盘价"""
     try:
-        df = pro.index_daily(ts_code='000300.SH', start_date=trade_date, end_date=trade_date)
+        df = fetch_index_daily(ts_code='000300.SH', start_date=trade_date, end_date=trade_date)
         if df is not None and len(df) > 0:
             return float(df.iloc[0]['close'])
     except: pass
@@ -121,7 +96,7 @@ def get_io_option_chain(trade_date):
     """
     # 1. 获取所有IO合约基本信息
     try:
-        opt_list = pro.opt_basic(exchange='CFFEX')
+        opt_list = fetch_exchange_contracts('CFFEX')
     except Exception as e:
         print(f"[Error] opt_basic失败: {e}")
         return {}
@@ -135,7 +110,7 @@ def get_io_option_chain(trade_date):
     # 2. 获取日线行情
     try:
         all_codes = ','.join(io_contracts['ts_code'].tolist())
-        daily = pro.opt_daily(ts_code=all_codes, trade_date=trade_date)
+        daily = fetch_daily_by_codes(all_codes, trade_date=trade_date)
     except Exception as e:
         print(f"[Error] opt_daily失败: {e}")
         # 分批获取
@@ -145,7 +120,7 @@ def get_io_option_chain(trade_date):
         for i in range(0, len(codes), 50):
             batch = ','.join(codes[i:i+50])
             try:
-                d = pro.opt_daily(ts_code=batch, trade_date=trade_date)
+                d = fetch_daily_by_codes(batch, trade_date=trade_date)
                 if d is not None and len(d) > 0:
                     daily_list.append(d)
                 time.sleep(0.3)

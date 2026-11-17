@@ -57,9 +57,15 @@ import tushare as ts
 from alert.trigger import trigger  # noqa: E402
 TS_TOKEN = TS_TOKEN
 ts.set_token(TS_TOKEN)
-pro = ts.pro_api()
+# 2026-11-17 改造：pro 统一由 data_hub 托管（代理/限频/熔断/IP轮动复用），
+# 保留模块级变量名 pro 供旧调用方 `from option_monitor import pro` 兼容。
+from hub_option_api import get_pro  # noqa: E402
+pro = get_pro()
 
 API_SLEEP = 0.15  # API请求间隔(秒)
+
+# 2026-11-17 改造：基金/期货日线统一走 data_hub（hub_option_api 薄封装）
+from hub_option_api import fetch_fund_daily, fetch_fut_daily  # noqa: E402
 
 # ============ 标的配置 ============
 OPTION_TARGETS = [
@@ -343,15 +349,17 @@ def get_spot_price(code, exchange, trade_date, underlying_code=None):
     # ================== 指数（CFFEX） ==================
     if exchange == 'CFFEX' and underlying_code:
         def _ts_index(exact):
+            # 2026-11-17 改造：指数行情统一走 data_hub（hub_option_api 薄封装）
             try:
+                from hub_option_api import fetch_index_daily
                 if exact:
-                    df = pro.index_daily(ts_code=f"{underlying_code}.SH",
-                                         start_date=date_tag, end_date=date_tag)
+                    df = fetch_index_daily(ts_code=f"{underlying_code}.SH",
+                                           start_date=date_tag, end_date=date_tag)
                 else:
                     start = (datetime.datetime.strptime(date_tag, '%Y%m%d')
                              - timedelta(days=10)).strftime('%Y%m%d')
-                    df = pro.index_daily(ts_code=f"{underlying_code}.SH",
-                                         start_date=start, end_date=date_tag)
+                    df = fetch_index_daily(ts_code=f"{underlying_code}.SH",
+                                           start_date=start, end_date=date_tag)
                 if df is not None and len(df) > 0:
                     return float(df.sort_values('trade_date',
                                                 ascending=False).iloc[0]['close'])
@@ -396,11 +404,11 @@ def get_spot_price(code, exchange, trade_date, underlying_code=None):
     def _ts_fund(exact):
         try:
             if exact:
-                df = pro.fund_daily(ts_code=ts_code, trade_date=date_tag)
+                df = fetch_fund_daily(ts_code=ts_code, trade_date=date_tag)
             else:
                 start = (datetime.datetime.strptime(date_tag, '%Y%m%d')
                          - timedelta(days=10)).strftime('%Y%m%d')
-                df = pro.fund_daily(ts_code=ts_code, start_date=start, end_date=date_tag)
+                df = fetch_fund_daily(ts_code=ts_code, start_date=start, end_date=date_tag)
             if df is not None and len(df) > 0:
                 return float(df.sort_values('trade_date',
                                             ascending=False).iloc[0]['close'])
@@ -447,13 +455,15 @@ def get_option_contracts_tushare(exchange, opt_code_filter, trade_date):
     """Tushare主链路：获取期权合约列表+日线数据"""
     time.sleep(API_SLEEP)
     try:
-        opt_list = pro.opt_basic(exchange=exchange)
+        # 2026-11-17 改造：合约基础信息统一走 data_hub
+        from hub_option_api import fetch_exchange_contracts
+        opt_list = fetch_exchange_contracts(exchange)
     except Exception as e:
-        print(f"  [Tushare] opt_basic失败: {e}")
+        print(f"  [data_hub] opt_basic失败: {e}")
         return []
 
     if opt_list is None or opt_list.empty:
-        print(f"  [Tushare] opt_basic返回空")
+        print(f"  [data_hub] opt_basic返回空")
         return []
 
     # 按opt_code过滤
@@ -475,17 +485,16 @@ def get_option_contracts_tushare(exchange, opt_code_filter, trade_date):
     target_codes = set(target['ts_code'].tolist())
 
     # 获取日线数据（重试2次）
+    # 2026-11-17 改造：期权日线统一走 data_hub
     daily_df = None
-    for retry in range(2):
-        time.sleep(API_SLEEP)
-        try:
-            daily_df = pro.opt_daily(exchange=exchange, start_date=trade_date, end_date=trade_date)
-            if daily_df is not None and not daily_df.empty:
-                break
-            print(f"  [Tushare] opt_daily返回空 (重试{retry+1}/2)")
-        except Exception as e:
-            print(f"  [Tushare] opt_daily失败: {e} (重试{retry+1}/2)")
-            time.sleep(1)
+    try:
+        from hub_option_api import fetch_exchange_daily
+        daily_df = fetch_exchange_daily(exchange, trade_date)
+        if daily_df is None or daily_df.empty:
+            print(f"  [data_hub] opt_daily返回空")
+    except Exception as e:
+        print(f"  [data_hub] opt_daily失败: {e}")
+        daily_df = None
 
     if daily_df is None or daily_df.empty:
         print(f"  [Tushare] 日线数据获取失败，全部重试后仍为空")
@@ -1797,11 +1806,12 @@ def calc_basis(trade_date):
         except Exception:
             spot = {}
 
-        # akshare 失败则降级 tushare
+        # akshare 失败则降级 data_hub 指数日线
         if not spot:
             try:
                 time.sleep(API_SLEEP)
-                sdf = pro.index_daily(ts_code=info['idx'], start_date=start, end_date=end)
+                from hub_option_api import fetch_index_daily
+                sdf = fetch_index_daily(ts_code=info['idx'], start_date=start, end_date=end)
                 if sdf is not None and not sdf.empty:
                     sdf = sdf.sort_values('trade_date').reset_index(drop=True)
                     sdf['trade_date'] = sdf['trade_date'].astype(str)
@@ -1837,7 +1847,7 @@ def calc_basis(trade_date):
                 try:
                     tc = f'{p}{ym[2:]}.CFX'
                     time.sleep(API_SLEEP)
-                    tdf = pro.fut_daily(ts_code=tc, start_date=start, end_date=end)
+                    tdf = fetch_fut_daily(tc, start_date=start, end_date=end)
                     if tdf is not None and len(tdf) > 0:
                         tdf = tdf.sort_values('trade_date').reset_index(drop=True)
                         tdf['trade_date'] = tdf['trade_date'].astype(str)
@@ -1966,14 +1976,13 @@ def main():
 
     def _collect_data():
         """采集一次完整数据，返回 (result_dict, missing_count)"""
-        r = 0.03  # 无风险利率
-        try:
-            time.sleep(API_SLEEP)
-            shibor_df = pro.shibor()
-            if shibor_df is not None and len(shibor_df) > 0:
-                yr = shibor_df[shibor_df['tenor'] == '1Y']
-                if len(yr) > 0: r = float(yr.iloc[0]['rate']) / 100
-        except: pass
+        # 2026-11-17 改造：无风险利率统一走 data_hub。
+        # 历史 bug：原写法 shibor_df[shibor_df['tenor']=='1Y']['rate'] 列名不存在
+        # （Tushare shibor 列为 date,on,1w,2w,1m,3m,6m,9m,1y），KeyError 被
+        # except 吞掉，r 长期恒为 3%。为保持现有 Skew/IV 口径零漂移，
+        # 此处仍取 default=0.03；确认要切真实 Shibor 1Y 时把 use_live 改 True。
+        from hub_option_api import fetch_shibor_risk_free
+        r = fetch_shibor_risk_free(default=0.03, use_live=False)
         print(f"无风险利率: {r*100:.2f}%\n")
 
         _skew = {}
