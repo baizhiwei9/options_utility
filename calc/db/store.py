@@ -91,7 +91,16 @@ def _resolve_output_dir():
     for d in _LEGACY_CANDIDATES:
         if _db_ok(os.path.join(d, 'risk_history.db')) or _db_ok(os.path.join(d, 'skew_history.db')):
             return d
-    return _LEGACY_CANDIDATES[1]
+    # ⚠️ 2026-11-17：原来无条件返回 _LEGACY_CANDIDATES[1]
+    # (/opt/coze/.fuse_drive/… 是 Coze 容器路径)，本机没这个盘 →
+    # 「outputs 下的东西」会被指到一个不存在的目录。
+    # 改为：本机项目 outputs/ 存在就用它，否则才落到存在的 legacy（云盘场景）。
+    if os.path.isdir(proj):
+        return proj
+    for d in _LEGACY_CANDIDATES:
+        if os.path.isdir(d):
+            return d
+    return proj
 
 
 OUTPUT_DIR = _resolve_output_dir()
@@ -112,6 +121,9 @@ def outputs_dir():
 DBS = {
     'risk': ('risk_history.db', '日频风险指标 VIX/GEX/SKEW10/PCR/IV-HV', 'trade_date'),
     'skew': ('skew_history.db', '25Δ 偏度日频（atm/put25/call25/iv_skew/cboe）', 'trade_date'),
+    # 逐合约日频快照（每个期权合约一行：IV/分call-put的OI/成交…），
+    # 由 data_hub.collectors.misc.option_chain_db 写入，读侧 pcr_series() 也从这里算。
+    'chain': ('option_chain.db', '期权逐合约日频快照（IV + 分call/put OI/Vol）', 'trade_date'),
 }
 
 # ==================== 保留策略 ====================
@@ -119,6 +131,8 @@ DBS = {
 RETENTION_DB = {
     ('risk', 'daily_metrics'): None,
     ('skew', 'skew_daily'): None,
+    # 大佬 2026-11-16 定：逐合约快照只留 1 年（体量大，且历史 IV 用不到更久）。
+    ('chain', 'chain_daily'): int(os.environ.get('OPTION_CHAIN_KEEP_DAYS', '365')),
 }
 
 # 文件保留天数（用户要求「一个月就清了」）

@@ -497,10 +497,42 @@ def _iv_smile_at_dte(months, spot, target_dte):
     return smile
 
 
-def bkm_skew_index(months, spot, target_dte=TARGET_DTE):
+# BKM 积分的最少 OTM 档位 / 带宽。
+#
+# **严格口径（默认）**：死区间 0.85S~1.15S、最少 8 档 OTM。不够就返回 None（NA），
+#   不插值、不放宽、不换档 —— 大佬 2026-11-17 定：
+#   「偏度是用按照严格的来偏度来做的，不要偷懒」。
+# **非严格（strict=False，仅保留能力，不作默认）**：档位不够就逐级放宽区间
+#   （0.85→0.80→0.75→0.70）、档位阈值下调（8→7→6→5）。这是 2026-11-16 为补低价
+#   标的 NA 临时加的口径（科创50ETF 2025-08 价格 1.09 元、行权价间距 0.05≈4.6%），
+#   拿它当默认会把偏度积分区间拉宽到 0.70S~1.30S，与 BKM 原设定不符。
+BKM_MIN_LEGS = 8
+BKM_BANDS = (0.15, 0.20, 0.25, 0.30)     # 相对现价的上下带宽
+BKM_MIN_LEGS_BY_BAND = (8, 7, 6, 5)
+BKM_STRICT_BAND = 0.15                   # 严格口径：0.85S ~ 1.15S
+BKM_STRICT_MIN_LEGS = 8                  # 严格口径：至少 8 档 OTM
+
+
+def bkm_skew_index(months, spot, target_dte=TARGET_DTE, strict=True,
+                   band=None, min_legs=None):
+    """BKM(2003) 风险中性偏度 → 近似 SKEW 指数（100 − 10×skew）。
+
+    Args:
+        months:      risk_layer.prepare_chain / DataHub contracts_to_rl_months 的结构
+        spot:        标的现价
+        target_dte:  目标剩余到期（日历日），smile 会插值到这一天
+        strict:      **默认 True = 严格口径**：带宽固定 0.85S~1.15S、最少 8 档 OTM，
+                     不满足直接返回 (None, 原因)，**不放宽、不插值补数**。
+                     False = 自适应放宽（历史口径，仅为兼容保留）。
+        band:        覆盖带宽（相对现价，0.15 = 0.85S~1.15S）
+        min_legs:    覆盖最少 OTM 档位数
+
+    Returns:
+        (skew_index|None, reason|None)
+    """
     T = target_dte / 365.0
     smile = _iv_smile_at_dte(months, spot, target_dte)
-    if len(smile) < 8:
+    if len(smile) < 5:
         return None, '行权价样本不足'
     strikes = sorted(smile.keys())
     er = math.exp(RISK_FREE * T)
@@ -518,28 +550,48 @@ def bkm_skew_index(months, spot, target_dte=TARGET_DTE):
         x = (12 * lnk ** 2 - 4 * lnk ** 3) / K ** 2
         return v, w, x
 
-    # 数据质量过滤：限0.85S~1.15S，剔除深度虚值脏IV
-    K_LO, K_HI = spot * 0.85, spot * 1.15
+    # 数据质量过滤：按带宽取 OTM 档位（剔除深度虚值脏IV）。
+    # strict=True 只试一档（0.85S~1.15S / ≥8 档），不满足即 NA；
+    # strict=False 才逐级放宽（band 列表依次尝试）。
+    if strict:
+        _bands = ((BKM_STRICT_BAND if band is None else float(band),
+                   BKM_STRICT_MIN_LEGS if min_legs is None else int(min_legs)),)
+    elif band is not None or min_legs is not None:
+        _bands = ((BKM_BANDS[0] if band is None else float(band),
+                   BKM_MIN_LEGS_BY_BAND[0] if min_legs is None else int(min_legs)),)
+    else:
+        _bands = tuple(zip(BKM_BANDS, BKM_MIN_LEGS_BY_BAND))
     atm0 = smile.get(min(strikes, key=lambda k: abs(k - spot)))
-    raw = [(K, smile[K]) for K in strikes if K_LO <= K <= K_HI and smile[K]]
-    cleaned = []
-    for i, (K, iv) in enumerate(raw):
-        if atm0 and iv - atm0 > 0.30:
-            continue
-        neigh = [raw[j][1] for j in (i - 1, i + 1) if 0 <= j < len(raw)]
-        if neigh and iv - sum(neigh) / len(neigh) > 0.20:
-            continue
-        cleaned.append(K)
-
     otm = []
-    for K in cleaned:
-        p = otm_price(K)
-        if p is None or p <= 0:
-            continue
-        v, w, x = kernels(K)
-        otm.append((K, v * p, w * p, x * p))
-    if len(otm) < 8:
-        return None, '有效OTM合约不足'
+    used_band = None
+    need_legs = 5
+    for _band, _need in _bands:
+        band, min_legs = _band, _need
+        need_legs = min_legs
+        K_LO, K_HI = spot * (1 - band), spot * (1 + band)
+        raw = [(K, smile[K]) for K in strikes if K_LO <= K <= K_HI and smile[K]]
+        cleaned = []
+        for i, (K, iv) in enumerate(raw):
+            if atm0 and iv - atm0 > 0.30:
+                continue
+            neigh = [raw[j][1] for j in (i - 1, i + 1) if 0 <= j < len(raw)]
+            if neigh and iv - sum(neigh) / len(neigh) > 0.20:
+                continue
+            cleaned.append(K)
+        otm = []
+        for K in cleaned:
+            p = otm_price(K)
+            if p is None or p <= 0:
+                continue
+            v, w, x = kernels(K)
+            otm.append((K, v * p, w * p, x * p))
+        if len(otm) >= min_legs:
+            used_band = band
+            break
+    if len(otm) < need_legs:
+        return None, ('有效OTM合约不足（严格口径需≥%d档@±%.0f%%，实得%d档）'
+                      % (need_legs, (used_band or band) * 100, len(otm))
+                      if strict else '有效OTM合约不足')
 
     V = W = X = 0.0
     for i, (K, vt, wt, xt) in enumerate(otm):
