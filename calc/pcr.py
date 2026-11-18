@@ -312,12 +312,15 @@ def _chain_db():
 
 
 def _compute_pcr_from_chain_db(trading_date_compact, smooth_days=5, min_days=3,
-                               exclude_current_month=True):
+                               exclude_current_month=False, exclude_dte_max=5):
     """L0：本地期权链库计算 5 日平滑 PCR（零网络）。
 
-    与 _compute_pcr_from_tushare 完全同口径：
-        vol_pcr = 剔除当月到期合约后的 put_vol / call_vol
-        oi_pcr  = 全合约 put_oi / call_oi
+    口径（2026-11-18 大佬二次明确，成交量与持仓量**必须同一合约池**）：
+        默认剔除 dte ≤ exclude_dte_max 的合约（还有 5 天到期就不算，近月自然被排除）；
+        exclude_current_month=True 时，额外剔除当月到期月整月。
+        vol_pcr = base 池 put_vol / call_vol
+        oi_pcr  = base 池 put_oi  / call_oi
+    与 calc/pcr_history.py、data_hub option_chain_db.pcr_series 同口径。
     返回结构一致，source='chain_db'。
     库不可用 / 交易日不足 / 库内数据落后目标日 >5 天 → 返回 None，交回在线降级链。
     """
@@ -343,7 +346,7 @@ def _compute_pcr_from_chain_db(trading_date_compact, smooth_days=5, min_days=3,
                 return None
             ph = ','.join('?' * len(dates))
             data = conn.execute(
-                "SELECT underlying, call_put, maturity, vol, oi FROM chain_daily "
+                "SELECT underlying, call_put, maturity, dte, vol, oi FROM chain_daily "
                 f"WHERE trade_date IN ({ph})", dates
             ).fetchall()
         finally:
@@ -357,10 +360,11 @@ def _compute_pcr_from_chain_db(trading_date_compact, smooth_days=5, min_days=3,
 
     current_month = trading_date_compact[:6]
     by_under = {}
-    for under, cp, mat, vol, oi in data:
+    for under, cp, mat, dte, vol, oi in data:
         by_under.setdefault(str(under), []).append({
             'call_put': str(cp or '').upper(),
             'maturity_month': str(mat or '')[:6],
+            'dte': int(dte) if dte is not None else 9999,
             'vol': float(vol or 0),
             'oi': float(oi or 0),
         })
@@ -376,30 +380,34 @@ def _compute_pcr_from_chain_db(trading_date_compact, smooth_days=5, min_days=3,
         if not rows_all:
             continue
         _all = pd.DataFrame(rows_all)
-        _vol = _all[_all['maturity_month'] != current_month] if exclude_current_month else _all
+        # 2026-11-18 口径统一：成交量与持仓量 PCR 用**同一个合约池**
+        #   默认剔除 dte ≤ exclude_dte_max；exclude_current_month=True 时再剔当月整月
+        _all = _all[_all['dte'] > int(exclude_dte_max)]
+        _base = _all[_all['maturity_month'] != current_month] if exclude_current_month else _all
         vol_pcr = oi_pcr = None
         if _calc_pcr_from_df is not None:
             try:
-                if not _vol.empty:
-                    _r = _calc_pcr_from_df(_vol, nearest_month_only=False)
-                    vol_pcr = _r.get('vol_pcr') if _r else None
-                _r2 = _calc_pcr_from_df(_all, nearest_month_only=False)
-                oi_pcr = _r2.get('oi_pcr') if _r2 else None
+                if not _base.empty:
+                    _r = _calc_pcr_from_df(_base, nearest_month_only=False)
+                    if _r:
+                        vol_pcr = _r.get('vol_pcr')
+                        oi_pcr = _r.get('oi_pcr')
             except Exception:                     # noqa: BLE001
                 pass
-        if vol_pcr is None and not _vol.empty:
-            _c = _vol.loc[_vol['call_put'] == 'C', 'vol'].sum()
-            _p = _vol.loc[_vol['call_put'] == 'P', 'vol'].sum()
+        if vol_pcr is None and not _base.empty:
+            _c = _base.loc[_base['call_put'] == 'C', 'vol'].sum()
+            _p = _base.loc[_base['call_put'] == 'P', 'vol'].sum()
             vol_pcr = _p / _c if _c > 0 else None
-        if oi_pcr is None and not _all.empty:
-            _c = _all.loc[_all['call_put'] == 'C', 'oi'].sum()
-            _p = _all.loc[_all['call_put'] == 'P', 'oi'].sum()
+        if oi_pcr is None and not _base.empty:
+            _c = _base.loc[_base['call_put'] == 'C', 'oi'].sum()
+            _p = _base.loc[_base['call_put'] == 'P', 'oi'].sum()
             oi_pcr = _p / _c if _c > 0 else None
         result[index_name] = {
             'vol_pcr': vol_pcr,
             'oi_pcr': oi_pcr,
             'source': 'chain_db',
             'excluded': exclude_current_month,
+            'exclude_dte_max': exclude_dte_max,
             'etfs': found,
             'etf_label': '+'.join(found) if len(found) > 1 else (found[0] if found else ''),
             'date_range': date_range,
@@ -409,7 +417,8 @@ def _compute_pcr_from_chain_db(trading_date_compact, smooth_days=5, min_days=3,
     return result or None
 
 
-def _compute_pcr_from_tushare(trading_date_compact, smooth_days=5, min_days=3, exclude_current_month=True):
+def _compute_pcr_from_tushare(trading_date_compact, smooth_days=5, min_days=3,
+                             exclude_current_month=False, exclude_dte_max=5):
     """从Tushare计算5日平滑PCR（核心函数）
     
     流程:
@@ -567,6 +576,8 @@ def _compute_pcr_from_tushare(trading_date_compact, smooth_days=5, min_days=3, e
                 rows_all.append({
                     'call_put': _cp,
                     'maturity_month': info.get('maturity_month', ''),
+                    'maturity_date': info.get('maturity_date', ''),
+                    'trade_date': str(drow.get('trade_date', '') or '').replace('-', ''),
                     'vol': float(drow['vol']),
                     'oi': float(drow['oi']),
                 })
@@ -575,29 +586,40 @@ def _compute_pcr_from_tushare(trading_date_compact, smooth_days=5, min_days=3, e
         #   vol_pcr：剔除当月（业务口径，当月合约临近到期会失真）
         #   oi_pcr ：全合约（保持原实现口径，零漂移）
         _all_df = pd.DataFrame(rows_all) if rows_all else pd.DataFrame(
-            columns=['call_put', 'maturity_month', 'vol', 'oi'])
-        _vol_df = _all_df[_all_df['maturity_month'] != current_month] if exclude_current_month else _all_df
+            columns=['call_put', 'maturity_month', 'maturity_date', 'trade_date', 'vol', 'oi'])
+
+        # 2026-11-18 口径统一（与 L0 / pcr_history 一致）：成交量与持仓量 PCR 同一个合约池
+        #   默认剔除 dte ≤ exclude_dte_max（还有 5 天到期就不算）；
+        #   exclude_current_month=True 时再额外剔除当月整月。
+        if not _all_df.empty:
+            def _dte_of(row):
+                try:
+                    return (datetime.strptime(str(row['maturity_date']), '%Y%m%d')
+                            - datetime.strptime(str(row['trade_date']), '%Y%m%d')).days
+                except Exception:                 # noqa: BLE001
+                    return 9999
+            _all_df['dte'] = _all_df.apply(_dte_of, axis=1)
+            _all_df = _all_df[_all_df['dte'] > int(exclude_dte_max)]
+        _base_df = (_all_df[_all_df['maturity_month'] != current_month]
+                    if exclude_current_month else _all_df)
         vol_pcr = None
         oi_pcr = None
         if _calc_pcr_from_df is not None:
             try:
-                if not _vol_df.empty:
-                    _r = _calc_pcr_from_df(_vol_df, nearest_month_only=False)
+                if not _base_df.empty:
+                    _r = _calc_pcr_from_df(_base_df, nearest_month_only=False)
                     if _r:
                         vol_pcr = _r.get('vol_pcr')
-                if not _all_df.empty:
-                    _r2 = _calc_pcr_from_df(_all_df, nearest_month_only=False)
-                    if _r2:
-                        oi_pcr = _r2.get('oi_pcr')
+                        oi_pcr = _r.get('oi_pcr')
             except Exception as _e:  # noqa
                 print(f"    [WARN] calc_pcr_from_df 失败，回退本地相除: {_e}")
-        if vol_pcr is None and not _vol_df.empty:
-            _c = _vol_df.loc[_vol_df['call_put'] == 'C', 'vol'].sum()
-            _p = _vol_df.loc[_vol_df['call_put'] == 'P', 'vol'].sum()
+        if vol_pcr is None and not _base_df.empty:
+            _c = _base_df.loc[_base_df['call_put'] == 'C', 'vol'].sum()
+            _p = _base_df.loc[_base_df['call_put'] == 'P', 'vol'].sum()
             vol_pcr = _p / _c if _c > 0 else None
-        if oi_pcr is None and not _all_df.empty:
-            _c = _all_df.loc[_all_df['call_put'] == 'C', 'oi'].sum()
-            _p = _all_df.loc[_all_df['call_put'] == 'P', 'oi'].sum()
+        if oi_pcr is None and not _base_df.empty:
+            _c = _base_df.loc[_base_df['call_put'] == 'C', 'oi'].sum()
+            _p = _base_df.loc[_base_df['call_put'] == 'P', 'oi'].sum()
             oi_pcr = _p / _c if _c > 0 else None
         
         etf_label = '+'.join(found_etfs) if len(found_etfs) > 1 else (found_etfs[0] if found_etfs else '')
@@ -612,6 +634,7 @@ def _compute_pcr_from_tushare(trading_date_compact, smooth_days=5, min_days=3, e
             'oi_pcr': oi_pcr,
             'source': 'tushare',
             'excluded': exclude_current_month,
+            'exclude_dte_max': exclude_dte_max,
             'etfs': found_etfs,
             'etf_label': etf_label,
             'date_range': actual_dates_str,
@@ -715,7 +738,8 @@ def _compute_pcr_from_akshare_summary(date_compact):
 # ================================================================
 # 公开接口
 # ================================================================
-def get_index_pcr(index_name, trading_date, smooth_days=5, min_days=3, exclude_current_month=True):
+def get_index_pcr(index_name, trading_date, smooth_days=5, min_days=3,
+                  exclude_current_month=False, exclude_dte_max=5):
     """获取指定指数的PCR（成交量PCR）
     
     三级降级:
@@ -763,7 +787,8 @@ def get_index_pcr(index_name, trading_date, smooth_days=5, min_days=3, exclude_c
     try:
         _l0 = _compute_pcr_from_chain_db(
             trading_date_compact, smooth_days=smooth_days,
-            min_days=min_days, exclude_current_month=exclude_current_month)
+            min_days=min_days, exclude_current_month=exclude_current_month,
+            exclude_dte_max=exclude_dte_max)
         if _l0 and index_name in _l0 and _l0[index_name].get('vol_pcr') is not None:
             d = _l0[index_name]
             print(f"    ✅ {index_name} PCR={d['vol_pcr']:.3f} (本地库, {d['smooth_days']}日平滑)")
@@ -776,7 +801,8 @@ def get_index_pcr(index_name, trading_date, smooth_days=5, min_days=3, exclude_c
     try:
         result = _compute_pcr_from_tushare(
             trading_date_compact, smooth_days=smooth_days,
-            min_days=min_days, exclude_current_month=exclude_current_month
+            min_days=min_days, exclude_current_month=exclude_current_month,
+            exclude_dte_max=exclude_dte_max
         )
         if result and index_name in result:
             d = result[index_name]
@@ -813,7 +839,8 @@ def get_index_pcr(index_name, trading_date, smooth_days=5, min_days=3, exclude_c
     }
 
 
-def _get_all_index_pcr_etf(trading_date, smooth_days=5, min_days=3, exclude_current_month=True):
+def _get_all_index_pcr_etf(trading_date, smooth_days=5, min_days=3,
+                           exclude_current_month=False, exclude_dte_max=5):
     """获取所有5个指数的PCR数据（批量优化，减少API调用）
     
     参数同 get_index_pcr
@@ -840,7 +867,8 @@ def _get_all_index_pcr_etf(trading_date, smooth_days=5, min_days=3, exclude_curr
     try:
         _l0 = _compute_pcr_from_chain_db(
             trading_date_compact, smooth_days=smooth_days,
-            min_days=min_days, exclude_current_month=exclude_current_month)
+            min_days=min_days, exclude_current_month=exclude_current_month,
+            exclude_dte_max=exclude_dte_max)
         if _l0:
             _valid = sum(1 for idx in INDEX_ETF_MAP
                          if idx in _l0 and _l0[idx].get('vol_pcr') is not None)
@@ -865,7 +893,8 @@ def _get_all_index_pcr_etf(trading_date, smooth_days=5, min_days=3, exclude_curr
     try:
         ts_result = _compute_pcr_from_tushare(
             trading_date_compact, smooth_days=smooth_days,
-            min_days=min_days, exclude_current_month=exclude_current_month
+            min_days=min_days, exclude_current_month=exclude_current_month,
+            exclude_dte_max=exclude_dte_max
         )
         if ts_result:
             # 检查是否至少有部分指数成功
@@ -1025,7 +1054,8 @@ def get_zz1000_main_pcr(trading_date_compact, smooth_days=5, min_days=3):
     }
 
 
-def get_all_index_pcr(trading_date, smooth_days=5, min_days=3, exclude_current_month=True):
+def get_all_index_pcr(trading_date, smooth_days=5, min_days=3,
+                      exclude_current_month=False, exclude_dte_max=5):
     """统一 PCR 接口：4 ETF 指数（Tushare/AKShare 多级降级）+ 中证1000（MO 主力系列）。
 
     2026-10-23：在 ETF 结果之上追加中证1000（MO 股指期权主力系列）。
@@ -1033,7 +1063,8 @@ def get_all_index_pcr(trading_date, smooth_days=5, min_days=3, exclude_current_m
     """
     result = _get_all_index_pcr_etf(
         trading_date, smooth_days=smooth_days, min_days=min_days,
-        exclude_current_month=exclude_current_month)
+        exclude_current_month=exclude_current_month,
+        exclude_dte_max=exclude_dte_max)
     td_compact = trading_date.replace('-', '')
     try:
         zz = get_zz1000_main_pcr(td_compact, smooth_days=smooth_days, min_days=min_days)
@@ -1062,7 +1093,7 @@ def fetch_pcr_for_bottom_monitor(trading_date_compact):
         'date_range': str,
     }
     """
-    all_pcr = get_all_index_pcr(trading_date_compact, smooth_days=5, min_days=3, exclude_current_month=True)
+    all_pcr = get_all_index_pcr(trading_date_compact, smooth_days=5, min_days=3, exclude_current_month=False)
     
     # 转换为兼容格式
     result = {}
@@ -1131,7 +1162,7 @@ if __name__ == '__main__':
     today = datetime.now().strftime('%Y%m%d')
     print(f"\n测试日期: {today}")
     
-    all_pcr = get_all_index_pcr(today, smooth_days=5, min_days=3, exclude_current_month=True)
+    all_pcr = get_all_index_pcr(today, smooth_days=5, min_days=3, exclude_current_month=False)
     
     print("\n" + "=" * 60)
     print("结果汇总:")
