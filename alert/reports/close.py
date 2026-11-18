@@ -1083,6 +1083,7 @@ def main():
         'resonance': {},
         'rnd': {},
         'rnd_chart': None,
+        'risk_chart': None,
         'vts': {},
         'vts_summary': None,
         'pcr_macd': None,
@@ -1228,6 +1229,17 @@ def main():
         print(f"⚠️ RND模块异常: {e}")
         import traceback
         traceback.print_exc()
+
+    # ---- 指数+风险指标走势图（上图指数、下图偏度/PCR/VIX）----
+    risk_chart_path = None
+    try:
+        print("\n--- 指数+风险指标走势图 ---")
+        from alert.reports.risk_chart import build_risk_chart
+        risk_chart_path = build_risk_chart(trade_date, days=60)
+        result['risk_chart'] = risk_chart_path
+        print(f"  📊 风险走势图 → {risk_chart_path}")
+    except Exception as e:
+        print(f"  ⚠️ 风险走势图生成失败: {e}")
 
     # ---- 波动率期限结构分析 ----
     vts_data_for_card = {}
@@ -1431,6 +1443,15 @@ def main():
                     print("✅ RND密度图附件推送成功")
                 else:
                     print("⚠️ RND密度图附件推送失败")
+
+            # 推送指数+风险指标走势图（上图指数、下图偏度/PCR/VIX）
+            if risk_chart_path and os.path.exists(risk_chart_path):
+                rc_ok = trigger('收盘 指数风险走势图', files=[risk_chart_path],
+                                source='收盘期权监控')['ok']
+                if rc_ok:
+                    print("✅ 指数风险走势图附件推送成功")
+                else:
+                    print("⚠️ 指数风险走势图附件推送失败")
 
             # 推送波动率预警文本（如有触发）
             if vts_alert_path and os.path.exists(vts_alert_path):
