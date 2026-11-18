@@ -29,6 +29,8 @@ for _sub in (_OPT_ROOT, _opt_os.path.join(_OPT_ROOT, 'calc'), _opt_os.path.join(
 
 import os
 import csv
+import shutil
+import time
 import sqlite3
 import datetime
 
@@ -73,7 +75,64 @@ else:
         (d for d in _LEGACY_CANDIDATES if _db_ok(os.path.join(d, 'risk_history.db'))),
         _LEGACY_CANDIDATES[1],
     )
-DB_PATH = os.path.join(OUTPUT_DIR, 'risk_history.db')
+_CLOUD_DB = os.path.join(OUTPUT_DIR, 'risk_history.db')
+
+# 2026-11-18 修复（disk I/O error 根因）：
+# 云盘 FUSE 挂载点不支持 SQLite 随机写，直接写 OUTPUT_DIR 下的库会间歇性抛
+# `sqlite3.OperationalError: disk I/O error`（同一天 5 个标的里 2 个写进去、
+# 3 个静默失败），导致 daily_metrics 长期残缺、偏度/VIX 数据停在几天前。
+# 按项目既定纪律：**活库落本地盘，云盘只放快照**。
+_LOCAL_DB_DIR = (os.environ.get('LOCAL_DB_DIR')
+                 or os.path.join(os.path.expanduser('~'), '.local', 'share', 'cozedb'))
+_LOCAL_DB = os.path.join(_LOCAL_DB_DIR, 'risk_history.db')
+
+
+def _seed_local():
+    """本地库不存在、或云盘快照更新时，从云盘复制一份到本地（只读云盘，安全）。"""
+    try:
+        os.makedirs(_LOCAL_DB_DIR, exist_ok=True)
+    except OSError:
+        return _CLOUD_DB
+    need = not _db_ok(_LOCAL_DB)
+    if not need:
+        try:
+            need = os.path.getmtime(_CLOUD_DB) > os.path.getmtime(_LOCAL_DB) + 2
+        except OSError:
+            need = False
+    if need and _db_ok(_CLOUD_DB):
+        try:
+            shutil.copy2(_CLOUD_DB, _LOCAL_DB)
+        except Exception:                              # noqa: BLE001
+            return _CLOUD_DB if _db_ok(_CLOUD_DB) else _LOCAL_DB
+    return _LOCAL_DB
+
+
+DB_PATH = _seed_local()
+_LAST_SNAP = [0.0]
+
+
+def snapshot(force=False, min_interval=30.0):
+    """本地活库 → 云盘快照（节流，默认 30s 内只同步一次）。失败静默不阻断。"""
+    if os.path.abspath(DB_PATH) == os.path.abspath(_CLOUD_DB):
+        return False
+    now = time.time()
+    if not force and now - _LAST_SNAP[0] < min_interval:
+        return False
+    try:
+        if not os.path.exists(DB_PATH) or os.path.getsize(DB_PATH) == 0:
+            return False
+        tmp = _CLOUD_DB + '.tmp'
+        shutil.copy2(DB_PATH, tmp)
+        os.replace(tmp, _CLOUD_DB)
+        _LAST_SNAP[0] = now
+        return True
+    except Exception:                                  # noqa: BLE001
+        try:
+            os.replace(DB_PATH, _CLOUD_DB)
+            _LAST_SNAP[0] = now
+            return True
+        except Exception:                              # noqa: BLE001
+            return False
 # ================================================================
 IV_HISTORY_CSV = os.path.join(OUTPUT_DIR, 'iv_term_history.csv')
 
@@ -160,6 +219,7 @@ def upsert_daily(trade_date, target_key, rec):
             ON CONFLICT(trade_date,target_key) DO UPDATE SET
             {','.join(f'{f}=excluded.{f}' for f in FIELDS)},updated_at=excluded.updated_at''',
             [trade_date, target_key] + [vals.get(f) for f in FIELDS] + [now])
+    snapshot()
 
 
 def _series(key, field, window=252, include_date=None):

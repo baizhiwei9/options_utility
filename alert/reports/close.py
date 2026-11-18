@@ -1472,7 +1472,9 @@ def main():
             # ===== 追加：五轨期权风险速览（同一任务第二条消息，内部按天幂等；失败不影响主卡片）=====
             try:
                 import subprocess
-                rl = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'risk_layer_monitor.py')
+                # 2026-11-18 修复：原指向 alert/reports/risk_layer_monitor.py（文件不存在），
+                # 每天静默失败 → 五轨速览从未推送、daily_metrics 也没落库。改调 calc/risk_layer.py。
+                rl = os.path.join(_OPT_ROOT, 'calc', 'risk_layer.py')
                 pr = subprocess.run(['python3', rl, '--push', 'close'],
                                     capture_output=True, text=True, timeout=600)
                 print(pr.stdout.strip() or pr.stderr.strip()[-200:])

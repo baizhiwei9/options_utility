@@ -41,15 +41,28 @@ SMOOTH_COL = 'pcr_5d'
 
 
 def _db_paths():
-    """三个本地库路径（与 pcr_history / risk 模块口径一致）"""
+    """两个本地库路径（与 pcr_history / risk_history 模块口径一致）"""
     try:
         from options.calc import pcr_history
-        _m = pcr_history._db()
-        opt_db = _m.DB_PATH
+        opt_db = pcr_history._db().DB_PATH
     except Exception:                                  # noqa: BLE001
         opt_db = os.path.expanduser('~/.local/share/cozedb/option_chain.db')
-    base = os.path.dirname(opt_db)
-    return opt_db, os.path.join(base, 'risk_history.db')
+    # 2026-11-18 修复：原按「同目录猜文件名」拼 risk_history.db，读到的是
+    # ~/.local/share/cozedb 下的旧库（停在 20261116），而实际写入方是
+    # options/calc/db/risk_history.py —— 它的 DB_PATH 探测出的是 legacy 云盘目录。
+    # 必须直接用模块自己的 DB_PATH，否则图上偏度/VIX 永远滞后。
+    risk_db = None
+    for _imp in ('import risk_history as _hdb', 'from options.calc.db import risk_history as _hdb'):
+        try:
+            ns = {}
+            exec(_imp, ns)                              # noqa: S102
+            risk_db = ns['_hdb'].DB_PATH
+            break
+        except Exception:                              # noqa: BLE001
+            continue
+    if not risk_db:
+        risk_db = os.path.join(os.path.dirname(opt_db), 'risk_history.db')
+    return opt_db, risk_db
 
 
 def _q(conn, sql, args=()):
@@ -246,11 +259,9 @@ def build_risk_chart(trade_date=None, days=60, out_path=None):
     fig.text(0.055, 0.012, '　|　'.join(notes), color=FG_DIM, fontsize=9)
 
     if out_path is None:
-        try:
-            from options.alert.reports.close import OUTPUT_DIR as _OD
-        except Exception:                              # noqa: BLE001
-            _OD = os.path.join(os.path.dirname(os.path.dirname(
-                os.path.dirname(os.path.abspath(__file__)))), 'outputs')
+        # 与 close.py 的 OUTPUT_DIR 一致：options/alert/outputs
+        _OD = os.path.join(os.path.dirname(os.path.dirname(
+            os.path.abspath(__file__))), 'outputs')
         os.makedirs(_OD, exist_ok=True)
         out_path = os.path.join(_OD, f'{td}_risk_chart.png')
     os.makedirs(os.path.dirname(os.path.abspath(out_path)), exist_ok=True)

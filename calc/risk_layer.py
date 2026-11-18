@@ -1211,6 +1211,12 @@ def run(verbose=True):
     state['run_dates'] = run_dates[-BASELINE_DAYS:]
     state['cold_start'] = cold
     save_state(state)
+    # 2026-11-18：upsert_daily 内部 snapshot 有 30s 节流，5 个标的循环太快只会同步
+    # 第一条，收尾强制回写云盘快照，保证其它脚本读到完整当日数据。
+    try:
+        hdb.snapshot(force=True)
+    except Exception:                                  # noqa: BLE001
+        pass
 
     payload = {
         'date': today_str,
