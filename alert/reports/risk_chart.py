@@ -207,6 +207,63 @@ def _last(ser, dates):
     return (ser[max(got)], max(got) != dates[-1]) if got else (None, False)
 
 
+# ==================== 警戒点判定 ====================
+# 阈值全部取自 options/alert/rules.py，不另造口径：
+#   · VIX 年分位 ≥ PCT_NORMAL(90%)  → 波动高位，风险（看空）
+#   · SKEW 指数 > 100               → 左偏，跌保护定价贵（看空）
+#   · SKEW 指数 < 100               → 右偏，尾部风险定价低（看多）
+#   · 量/仓 PCR ≥ OI_PCR_THRESHOLD(1.5) → 对冲需求过热（看空）
+WATCH_VIX_PCT = 90.0
+WATCH_PCR = 1.5
+SKEW_PIVOT = 100.0
+
+
+def watch_status(name, d, dates):
+    """返回 dict：{'alert': bool, 'dir': 'bear'|'bull'|None, 'points': [...]}"""
+    pts = []
+    vp, _ = _last(d.get('vix_pct', {}).get(name) or {}, dates)
+    if vp is not None and vp >= WATCH_VIX_PCT:
+        pts.append(('bear', f'VIX一年分位{vp:.1f}%≥{WATCH_VIX_PCT:.0f}%'))
+    sk, _ = _last(d.get('skew', {}).get(name) or {}, dates)
+    if sk is not None:
+            if sk > SKEW_PIVOT:
+                pts.append(('bear', f'SKEW{sk:.1f}>100 左偏'))
+            elif sk < SKEW_PIVOT:
+                pts.append(('bull', f'SKEW{sk:.1f}<100 右偏'))
+            else:
+                pts.append(('neutral', f'SKEW{sk:.1f} 中性'))
+    for lbl, key in (('量PCR', 'vol_pcr'), ('仓PCR', 'oi_pcr')):
+        v, _ = _last(d.get(key, {}).get(name) or {}, dates)
+        if v is not None and v >= WATCH_PCR:
+            pts.append(('bear', f'{lbl}{v:.2f}≥{WATCH_PCR}'))
+
+    n_bear = sum(1 for t, _ in pts if t == 'bear')
+    n_bull = sum(1 for t, _ in pts if t == 'bull')
+    # 方向以 SKEW 为主（方向指标）：>100 左偏看空、<100 右偏看多；
+    # VIX 分位 / PCR 只代表「热度/拥挤」，不单独定方向。
+    _sk_bear = any(t == 'bear' and p.startswith('SKEW') for t, p in pts)
+    _sk_bull = any(t == 'bull' and p.startswith('SKEW') for t, p in pts)
+    if _sk_bear and not _sk_bull:
+        dr = 'bear'
+    elif _sk_bull and not _sk_bear:
+        dr = 'bull'
+    else:
+        dr = 'bear' if n_bear > n_bull else ('bull' if n_bull > n_bear else None)
+    # 是否「到了警戒点」：只看硬阈值（VIX 分位 / PCR），SKEW 只给方向
+    hard = [p for p in pts if p[1].startswith(('VIX', '量PCR', '仓PCR'))]
+    return {'alert': bool(hard), 'dir': dr, 'points': pts, 'hard': hard}
+
+
+def watch_summary(trade_date=None, days=DEFAULT_DAYS):
+    """供报告正文用：每指数警戒状态 + 触发点文字。"""
+    d = load_data(trade_date, days)
+    out = []
+    for name, _und, _rk, _pn, _c in CHART_TARGETS:
+        st = watch_status(name, d, d['dates'])
+        out.append({'name': name, **st})
+    return {'trade_date': d['trade_date'], 'items': out}
+
+
 def _rolling_pct(series_sorted, window=252, min_n=20):
     """逐日滚动分位（%）。公式与 risk_history.percentile 完全一致：
     sum(v < current) / n * 100，窗口含当日、不足 min_n 不出值。
@@ -262,6 +319,26 @@ def build_risk_chart(trade_date=None, days=DEFAULT_DAYS, out_path=None):
         _style(ax, title=f'{name}　收盘 / 点位{_vtag}', ylabel='价格', dates=dates,
                show_x=(i == n - 1))
 
+        # ---------- 警戒点状态标签（行情图右上角，最空的位置）----------
+        # 硬阈值触发（VIX分位≥90% / PCR≥1.5）才标「警戒」；方向：看空★红、看多◐绿
+        st = watch_status(name, d, dates)
+        if st['alert']:
+            if st['dir'] == 'bear':
+                _txt, _bg = '★ 警戒 · 看空', '#c0392b'
+            elif st['dir'] == 'bull':
+                _txt, _bg = '◐ 警戒 · 看多', '#1e8449'
+            else:
+                _txt, _bg = '⚠ 警戒 · 多空交织', '#7d6608'
+            ax.text(0.994, 0.90, _txt, transform=ax.transAxes, fontsize=9,
+                    fontweight='bold', color='#ffffff', ha='right', va='top',
+                    bbox=dict(boxstyle='round,pad=0.34', facecolor=_bg,
+                              edgecolor='none', alpha=0.95))
+        else:
+            ax.text(0.994, 0.90, '正常', transform=ax.transAxes, fontsize=8.5,
+                    color=FG_DIM, ha='right', va='top',
+                    bbox=dict(boxstyle='round,pad=0.30', facecolor='#21262d',
+                              edgecolor=GRID, alpha=0.9))
+
         # ---------- 下图：该指数风险指标 ----------
         # 左轴：SKEW 指数（90~110 量级）；右轴：VIX 一年分位 + 量/仓 PCR
         ax2 = fig.add_subplot(gs[i * 2 + 1])
@@ -273,7 +350,7 @@ def build_risk_chart(trade_date=None, days=DEFAULT_DAYS, out_path=None):
 
         _tag = []
         for _lbl, _ser, _fmt in (('SKEW', d['skew'].get(name) or {}, '{:.1f}'),
-                                 ('VIX一年分位', d['vix_pct'].get(name) or {}, '{:.0f}%'),
+                                 ('VIX一年分位', d['vix_pct'].get(name) or {}, '{:.1f}%'),
                                  ('量PCR', d['vol_pcr'].get(name) or {}, '{:.2f}'),
                                  ('仓PCR', d['oi_pcr'].get(name) or {}, '{:.2f}')):
             _v, _st = _last(_ser, dates)
@@ -309,6 +386,8 @@ def build_risk_chart(trade_date=None, days=DEFAULT_DAYS, out_path=None):
                        facecolor=PANEL_BG, edgecolor=GRID, labelcolor=FG,
                        ncol=4, framealpha=0.9, handlelength=1.6)
 
+
+
     # ---------- 标题 / 脚注 ----------
     fig.text(0.055, 0.988, f'{td}　指数行情 + 风险指标（每指数一组，近 {len(dates)} 交易日）',
              color=FG, fontsize=14, fontweight='bold', ha='left', va='top')
@@ -321,7 +400,9 @@ def build_risk_chart(trade_date=None, days=DEFAULT_DAYS, out_path=None):
     line2 = ['SKEW = BKM 风险中性偏度指数化 100−10×skew（>100 左偏、跌保护贵）',
              'VIX一年分位 = 当日 VIX 在近 252 交易日分布中的百分位',
              'PCR = 全合约剔除 dte≤5 的 5 日平滑',
-             '* = 该标的当日无数据，取最近有效值']
+             '* = 该标的当日无数据，取最近有效值',
+             '警戒点：VIX分位≥90% 或 量/仓PCR≥1.5（阈值取自 alert/rules.py）；'
+             '★红=看空（VIX高位·左偏·对冲过热）、◐绿=看多（右偏·尾部风险定价低）']
     fig.text(0.055, 0.018, '　|　'.join(line1), color=FG_DIM, fontsize=8.5, ha='left', va='bottom')
     fig.text(0.055, 0.004, '　|　'.join(line2), color=FG_DIM, fontsize=8.5, ha='left', va='bottom')
 

@@ -701,7 +701,7 @@ def _color_dir_cell(text):
 
 def build_close_card(date_str, skew_data, ev_data, resonance_data,
                       rnd_data=None, vts_data=None, vts_summary=None, data_warnings=None,
-                      pcr_macd_meta=None, basis_ma20=None):
+                      pcr_macd_meta=None, basis_ma20=None, watch_data=None):
     """
     构建收盘期权监控卡片
 
@@ -1033,6 +1033,34 @@ def build_close_card(date_str, skew_data, ev_data, resonance_data,
             tag="info"
         ))
 
+    # ===== 警戒点状态（哪个指数到了警戒点 + 方向）=====
+    if watch_data and watch_data.get('items'):
+        elements.append(build_hr())
+        lines = ['**🚨 警戒点状态**　阈值：VIX一年分位≥90% 或 量/仓PCR≥1.5（alert/rules.py）']
+        _alerts, _normals = [], []
+        for it in watch_data['items']:
+            nm = it['name']
+            if it.get('alert'):
+                dr = it.get('dir')
+                if dr == 'bear':
+                    tag = "<font color='red'>★ 警戒·看空</font>"
+                elif dr == 'bull':
+                    tag = "<font color='green'>◐ 警戒·看多</font>"
+                else:
+                    tag = "<font color='orange'>⚠ 警戒·多空交织</font>"
+                detail = '、'.join(p[1] for p in it.get('points') or []) or '—'
+                _alerts.append(f"{tag}　**{nm}**　{detail}")
+            else:
+                _normals.append(nm)
+        if _alerts:
+            lines.extend(_alerts)
+        else:
+            lines.append('本日 5 个指数均未触及警戒点')
+        if _normals:
+            lines.append(f"正常：{'、'.join(_normals)}")
+        lines.append('★红=看空（VIX高位·左偏·对冲过热）　◐绿=看多（SKEW<100 右偏，尾部风险定价低）')
+        elements.append(build_markdown('\n'.join(lines)))
+
     # 底部备注
     elements.append(build_hr())
     now_str = datetime.datetime.now().strftime('%Y-%m-%d %H:%M:%S')
@@ -1232,12 +1260,22 @@ def main():
 
     # ---- 指数+风险指标走势图（上图指数、下图偏度/PCR/VIX）----
     risk_chart_path = None
+    watch_data_for_card = None
     try:
         print("\n--- 指数+风险指标走势图 ---")
         from alert.reports.risk_chart import build_risk_chart
         risk_chart_path = build_risk_chart(trade_date, days=60)
         result['risk_chart'] = risk_chart_path
         print(f"  📊 风险走势图 → {risk_chart_path}")
+        # 警戒点状态（供卡片正文用，与图上标签同一套判定）
+        try:
+            from alert.reports.risk_chart import watch_summary
+            watch_data_for_card = watch_summary(trade_date, days=60)
+            result['watch_points'] = watch_data_for_card
+            _hit = [i['name'] for i in watch_data_for_card['items'] if i.get('alert')]
+            print(f"  🚨 警戒点: {_hit if _hit else '无'}")
+        except Exception as _we:
+            print(f"  ⚠️ 警戒点判定失败: {_we}")
     except Exception as e:
         print(f"  ⚠️ 风险走势图生成失败: {e}")
 
@@ -1426,6 +1464,7 @@ def main():
             data_warnings=data_warnings,
             pcr_macd_meta=pcr_macd_meta,
             basis_ma20=basis_ma20_result,
+            watch_data=watch_data_for_card,
         )
         # 验证卡片构建
         if card and 'header' in card and 'elements' in card:
