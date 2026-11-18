@@ -909,6 +909,81 @@ def get_option_contracts_sina(etf_code, exchange):
     return valid
 
 
+# ================================================================
+# L0 本地期权链库（data_hub/option_chain_db）—— 零网络、零配额、真历史
+# 2026-11-18 新增：逐合约明细（含 vol/oi/close/strike/maturity）已落本地库，
+# 优先于 Tushare 在线拉取；库缺失/当日未落库时自动落回原 tushare→akshare→sina 链。
+# ================================================================
+_CHAIN_DB = None          # None=未加载  False=不可用  module=可用
+
+
+def _chain_db():
+    """延迟加载 data_hub.collectors.misc.option_chain_db，失败返回 None"""
+    global _CHAIN_DB
+    if _CHAIN_DB is False:
+        return None
+    if _CHAIN_DB is not None:
+        return _CHAIN_DB
+    try:
+        import os as _o, sys as _s
+        _root = _o.path.dirname(_o.path.dirname(_o.path.dirname(_o.path.abspath(__file__))))
+        if _root not in _s.path:
+            _s.path.insert(0, _root)
+        from data_hub.collectors.misc import option_chain_db as _m
+        _CHAIN_DB = _m
+        return _m
+    except Exception as _e:                       # noqa: BLE001
+        print(f"  [chain_db] 本地库不可用（跳过 L0）: {_e}")
+        _CHAIN_DB = False
+        return None
+
+
+def get_option_contracts_chain_db(exchange, opt_code_filter, trade_date):
+    """L0：从本地期权链库取合约明细（按 trade_date 真历史）。返回结构同 Tushare 链路。"""
+    m = _chain_db()
+    if m is None:
+        return []
+    td = str(trade_date).replace('-', '')
+    try:
+        conn = m.connect()
+        try:
+            if opt_code_filter:
+                rows = conn.execute(
+                    "SELECT ts_code, call_put, strike, maturity, close, vol, oi, amount "
+                    "FROM chain_daily WHERE trade_date=? AND opt_code=?",
+                    (td, opt_code_filter)).fetchall()
+            else:
+                rows = conn.execute(
+                    "SELECT ts_code, call_put, strike, maturity, close, vol, oi, amount "
+                    "FROM chain_daily WHERE trade_date=? AND underlying=?",
+                    (td, str(exchange))).fetchall()
+        finally:
+            conn.close()
+    except Exception as _e:                       # noqa: BLE001
+        print(f"  [chain_db] 查询失败: {_e}")
+        return []
+
+    out = []
+    for ts_code, cp, strike, mat, close, vol, oi, amt in rows:
+        try:
+            _c = float(close or 0)
+        except (TypeError, ValueError):
+            continue
+        if _c <= 0:
+            continue
+        out.append({
+            'ts_code': ts_code,
+            'call_put': str(cp or '').upper(),
+            'exercise_price': float(strike or 0),
+            'maturity_date': str(mat or ''),
+            'close': _c,
+            'volume': int(vol or 0),
+            'oi': int(oi or 0),
+            'amount': float(amt or 0),
+        })
+    return out
+
+
 def get_option_contracts(exchange, opt_code_filter, trade_date, etf_code=None, source='auto'):
     """获取期权合约列表+日线数据（支持多数据源切换）
     
@@ -922,6 +997,20 @@ def get_option_contracts(exchange, opt_code_filter, trade_date, etf_code=None, s
             - 'sina': 新浪财经（eastmoney_option_crawler）
             - 'auto': 先试tushare+akshare，全部失败再试sina（保留原逻辑）
     """
+    # L0: 本地期权链库（真历史、零网络、零 API 配额）
+    if source in ('auto', 'tushare'):
+        try:
+            _l0 = get_option_contracts_chain_db(exchange, opt_code_filter, trade_date)
+            _c0 = [c for c in _l0 if c['call_put'] == 'C']
+            _p0 = [c for c in _l0 if c['call_put'] == 'P']
+            if len(_c0) >= 3 and len(_p0) >= 3:
+                print(f"  [chain_db] ✅ 本地库命中 {trade_date} {opt_code_filter}: 购{len(_c0)}/沽{len(_p0)}")
+                return _mark_contracts(_l0, 'chain_db', True)
+            elif _l0:
+                print(f"  [chain_db] 合约不足(购{len(_c0)}/沽{len(_p0)})，落回在线源")
+        except Exception as _e:                   # noqa: BLE001
+            print(f"  [chain_db] 异常，落回在线源: {_e}")
+
     if source == 'sina':
         # 只用新浪
         contracts = get_option_contracts_sina(etf_code, exchange)

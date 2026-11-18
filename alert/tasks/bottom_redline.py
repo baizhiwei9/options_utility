@@ -186,6 +186,12 @@ ETF_NAME = {
 
 # ============ 数据源：AKShare ============
 import akshare as ak
+# 2026-11-18 收敛进度（options 侧直连）：
+#   ✅ fetch_index_daily / fetch_futures_main 已切 data_hub 统一接口（akshare 仅兜底）
+#   ✅ PCR 已通过 calc/pcr.py 的 L0 本地期权链库自动获得零网络链路
+#   ⏳ 遗留：fetch_margin_sse/szse（两融）、fetch_cpi（CPI）、fetch_option_daily_stats*
+#      data_hub 已有 margin_trading / edb 接口，但返回列名口径与下游 calc_indicator_02/07/11
+#      的解析不一致，需同步改下游，列入下一批（不影响当前数据正确性，akshare 直连可用）。
 from alert.trigger import trigger  # noqa: E402
 import pandas as pd
 import numpy as np
@@ -314,6 +320,24 @@ def fetch_index_daily(symbol):
     返回:
         DataFrame，包含 date/open/close/high/low/volume 列
     """
+    # L0: data_hub 统一接口（AKShare→Baostock→AxData→Tushare→Web 五级降级）
+    try:
+        import sys as _sys, os as _os
+        _root = _os.path.dirname(_os.path.dirname(_os.path.dirname(_os.path.dirname(_os.path.abspath(__file__)))))
+        if _root not in _sys.path:
+            _sys.path.insert(0, _root)
+        from data_hub.collectors.stocks.index_daily import get_index_daily
+        _code = symbol[2:]
+        _mkt = 'SH' if symbol.startswith('sh') else 'SZ'
+        _df = get_index_daily(ts_code=f'{_code}.{_mkt}')
+        if _df is not None and len(_df) > 0:
+            df = _df.rename(columns={'trade_date': 'date', 'vol': 'volume'})
+            df['date'] = pd.to_datetime(df['date'])
+            df = df.sort_values('date').reset_index(drop=True)
+            return df
+    except Exception as _e:                       # noqa: BLE001
+        print(f"  ⚠️ data_hub 指数失败({_e})，落回 akshare")
+
     df = ak.stock_zh_index_daily(symbol=symbol)
     if df is not None and not df.empty:
         df['date'] = pd.to_datetime(df['date'])
@@ -331,6 +355,23 @@ def fetch_futures_main(symbol, start_date, end_date):
     返回:
         DataFrame，包含 日期/开盘价/收盘价/最高价/最低价 等
     """
+    # L0: data_hub 统一接口
+    try:
+        import sys as _sys, os as _os
+        _root = _os.path.dirname(_os.path.dirname(_os.path.dirname(_os.path.dirname(_os.path.abspath(__file__)))))
+        if _root not in _sys.path:
+            _sys.path.insert(0, _root)
+        from data_hub.collectors.futures.futures_main_daily import get_futures_main_daily
+        _df = get_futures_main_daily(symbol=symbol, start_date=start_date, end_date=end_date)
+        if _df is not None and len(_df) > 0:
+            df = _df.rename(columns={'trade_date': '日期', 'open': '开盘价', 'high': '最高价',
+                                     'low': '最低价', 'close': '收盘价', 'vol': '成交量', 'oi': '持仓量'})
+            df['日期'] = pd.to_datetime(df['日期'])
+            df = df.sort_values('日期').reset_index(drop=True)
+            return df
+    except Exception as _e:                       # noqa: BLE001
+        print(f"  ⚠️ data_hub 期货失败({_e})，落回 akshare")
+
     df = ak.futures_main_sina(symbol=symbol, start_date=start_date, end_date=end_date)
     if df is not None and not df.empty:
         df['日期'] = pd.to_datetime(df['日期'])

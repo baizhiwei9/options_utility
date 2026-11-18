@@ -722,6 +722,94 @@ def _format_text_table(summary_list, date_str, strike_pct):
 
 # ============ 主分析 (单指数) ============
 
+# ================================================================
+# L0 本地期权链库（data_hub/option_chain_db）—— 零网络、按 ref_date 真历史
+# 2026-11-18 新增：原实现（fetch_eastmoney）只抓「当前」快照，忽略 ref_date，
+# 历史日期会拿今日期权链配历史现价算假密度。改为库优先，库不可用再落回东财。
+# ================================================================
+_CHAIN_DB = None
+
+
+def _chain_db_mod():
+    global _CHAIN_DB
+    if _CHAIN_DB is False:
+        return None
+    if _CHAIN_DB is not None:
+        return _CHAIN_DB
+    try:
+        _root = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+        if _root not in sys.path:
+            sys.path.insert(0, _root)
+        from data_hub.collectors.misc import option_chain_db as _m
+        _CHAIN_DB = _m
+        return _m
+    except Exception as _e:                       # noqa: BLE001
+        log.debug(f'本地期权链库不可用: {_e}')
+        _CHAIN_DB = False
+        return None
+
+
+def fetch_chain_from_db(opt_code, ref_date):
+    """L0：从本地库取某标的某日完整期权链 → ({exp_date: {'calls': [], 'puts': []}}, err)"""
+    m = _chain_db_mod()
+    if m is None:
+        return None, '本地库不可用'
+    td = str(ref_date).replace('-', '')
+    try:
+        conn = m.connect()
+        try:
+            rows = conn.execute(
+                "SELECT call_put, strike, maturity, close, vol, oi, iv, spot_price "
+                "FROM chain_daily WHERE trade_date=? AND underlying=?",
+                (td, str(opt_code))).fetchall()
+        finally:
+            conn.close()
+    except Exception as _e:                       # noqa: BLE001
+        return None, f'本地库查询失败: {_e}'
+    if not rows:
+        return None, f'本地库无 {opt_code} {td} 数据'
+    chain, spot = {}, 0.0
+    for cp, strike, mat, close, vol, oi, iv, sp in rows:
+        if not strike or not mat:
+            continue
+        if sp and not spot:
+            spot = float(sp)
+        key = str(mat)
+        slot = chain.setdefault(key, {'calls': [], 'puts': []})
+        item = {
+            'k': float(strike),
+            'bid': 0.0, 'ask': 0.0,
+            'price': float(close or 0),
+            'iv': float(iv or 0),
+            'vol': float(vol or 0),
+            'oi': float(oi or 0),
+        }
+        if str(cp or '').upper() == 'C':
+            slot['calls'].append(item)
+        elif str(cp or '').upper() == 'P':
+            slot['puts'].append(item)
+    return chain or None, (None if chain else '本地库无有效合约')
+
+
+def get_spot_from_db(opt_code, ref_date):
+    """L0：标的当日收盘价（来自库内 spot_price）"""
+    m = _chain_db_mod()
+    if m is None:
+        return 0.0
+    td = str(ref_date).replace('-', '')
+    try:
+        conn = m.connect()
+        try:
+            r = conn.execute(
+                "SELECT spot_price FROM chain_daily WHERE trade_date=? AND underlying=? "
+                "AND spot_price IS NOT NULL LIMIT 1", (td, str(opt_code))).fetchone()
+        finally:
+            conn.close()
+        return float(r[0]) if r and r[0] else 0.0
+    except Exception:                             # noqa: BLE001
+        return 0.0
+
+
 def analyze_index(opt_code, ref_date, strike_pct):
     """
     分析单个指数的 RND
@@ -735,19 +823,27 @@ def analyze_index(opt_code, ref_date, strike_pct):
 
     #  现货价格
     if is_idx:
-        # 股指期权: 直接用指数现货价
-        etf_spot = get_index_spot(cfg['index_code'])
+        # 股指期权: 库内 spot_price 即标的指数点位（000300.SH / 000852.SH）
+        etf_spot = get_spot_from_db(opt_code, ref_date)
+        if etf_spot <= 0:
+            etf_spot = get_index_spot(cfg['index_code'])   # 落回新浪实时
         index_spot = etf_spot
         conv_ratio = 1.0
         if etf_spot <= 0:
             return {'error': f'指数价格获取失败 ({cfg["index_code"]})'}
     else:
         # ETF期权: ETF价格 + 指数价格 + 折溢价
-        etf_spot = get_spot_price(opt_code)
+        etf_spot = get_spot_from_db(opt_code, ref_date)
+        if etf_spot <= 0:
+            etf_spot = get_spot_price(opt_code)      # 落回东财实时
         if etf_spot <= 0:
             return {'error': f'ETF 价格获取失败 ({opt_code})'}
 
-        index_spot = get_index_spot(cfg['index_code'])
+        # 历史日不能用实时指数（会与历史 ETF 价错配出假换算比例）
+        _today = __import__('datetime').date.today().strftime('%Y%m%d')
+        index_spot = 0.0
+        if str(ref_date).replace('-', '') == _today:
+            index_spot = get_index_spot(cfg['index_code'])
         if index_spot and index_spot > 0 and etf_spot > 0:
             conv_ratio = index_spot / etf_spot
         else:
@@ -759,8 +855,11 @@ def analyze_index(opt_code, ref_date, strike_pct):
              f'conv={conv_ratio:.1f}')
 
     # ② 期权链
-    chain, err = fetch_option_chain(opt_code)
-    if err:
+    chain, err = fetch_chain_from_db(opt_code, ref_date)
+    if not chain:
+        log.info(f'  本地库无链（{err}），落回东财实时快照')
+        chain, err = fetch_option_chain(opt_code)
+    if err and not chain:
         return {'error': f'期权链失败: {err}'}
     if not chain:
         return {'error': '期权链为空'}

@@ -5,8 +5,9 @@
 ========================
 为底部监测、中线日报等脚本提供统一的PCR（Put/Call Ratio）数据接口。
 
-三级降级体系:
-  L1 Tushare pro.opt_daily（主）: 逐合约数据，可剔除当月、可5日平滑
+四级降级体系（2026-11-18 起）:
+  L0 本地期权链库 option_chain_db（主）: 逐合约明细落本地盘，零网络、可剔除当月、可5日平滑
+  L1 Tushare pro.opt_daily（在线主源）: 逐合约数据，可剔除当月、可5日平滑
   L2 AKShare option_daily_stats（降级）: 按标的汇总，准确但只能给全量PCR（含当月）
   L3 新浪 option_sse_daily_sina（兜底）: 数据不可靠，标注警告
 
@@ -282,6 +283,132 @@ def _fetch_daily_stats_akshare(date_compact):
 # ================================================================
 # PCR 核心计算
 # ================================================================
+# ================================================================
+# L0 本地期权链库（data_hub/option_chain_db）—— 零网络、零 API 配额
+# 2026-11-18 新增：期权链明细已落本地库（258K 行 / 242 交易日），
+# PCR 优先在本地算，断网/限流也能出；不可用时自动落回 L1 Tushare。
+# ================================================================
+_CHAIN_DB = None          # None=未加载  False=不可用  module=可用
+
+
+def _chain_db():
+    """延迟加载 data_hub.collectors.misc.option_chain_db，失败返回 None"""
+    global _CHAIN_DB
+    if _CHAIN_DB is False:
+        return None
+    if _CHAIN_DB is not None:
+        return _CHAIN_DB
+    try:
+        _root = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+        if _root not in sys.path:
+            sys.path.insert(0, _root)
+        from data_hub.collectors.misc import option_chain_db as _m
+        _CHAIN_DB = _m
+        return _m
+    except Exception as _e:                       # noqa: BLE001
+        print(f"    [PCR] 本地期权链库不可用（跳过 L0）: {_e}")
+        _CHAIN_DB = False
+        return None
+
+
+def _compute_pcr_from_chain_db(trading_date_compact, smooth_days=5, min_days=3,
+                               exclude_current_month=True):
+    """L0：本地期权链库计算 5 日平滑 PCR（零网络）。
+
+    与 _compute_pcr_from_tushare 完全同口径：
+        vol_pcr = 剔除当月到期合约后的 put_vol / call_vol
+        oi_pcr  = 全合约 put_oi / call_oi
+    返回结构一致，source='chain_db'。
+    库不可用 / 交易日不足 / 库内数据落后目标日 >5 天 → 返回 None，交回在线降级链。
+    """
+    m = _chain_db()
+    if m is None:
+        return None
+    try:
+        import datetime as _dt
+        conn = m.connect()
+        try:
+            rows = conn.execute(
+                "SELECT DISTINCT trade_date FROM chain_daily WHERE trade_date<=? "
+                "ORDER BY trade_date DESC LIMIT ?", (trading_date_compact, int(smooth_days))
+            ).fetchall()
+            dates = sorted(r[0] for r in rows)
+            if len(dates) < min_days:
+                print(f"    [PCR] 本地库可用交易日仅 {len(dates)} 天(<{min_days})，跳过 L0")
+                return None
+            _t = _dt.datetime.strptime(trading_date_compact, '%Y%m%d')
+            _l = _dt.datetime.strptime(dates[-1], '%Y%m%d')
+            if (_t - _l).days > 5:
+                print(f"    [PCR] 本地库最新 {dates[-1]} 落后目标日 {trading_date_compact}，跳过 L0")
+                return None
+            ph = ','.join('?' * len(dates))
+            data = conn.execute(
+                "SELECT underlying, call_put, maturity, vol, oi FROM chain_daily "
+                f"WHERE trade_date IN ({ph})", dates
+            ).fetchall()
+        finally:
+            conn.close()
+    except Exception as _e:                       # noqa: BLE001
+        print(f"    [PCR] 本地库查询失败: {_e}")
+        return None
+
+    if not data:
+        return None
+
+    current_month = trading_date_compact[:6]
+    by_under = {}
+    for under, cp, mat, vol, oi in data:
+        by_under.setdefault(str(under), []).append({
+            'call_put': str(cp or '').upper(),
+            'maturity_month': str(mat or '')[:6],
+            'vol': float(vol or 0),
+            'oi': float(oi or 0),
+        })
+
+    result = {}
+    date_range = f"{dates[0]}~{dates[-1]}"
+    for index_name, etf_codes in INDEX_ETF_MAP.items():
+        rows_all, found = [], []
+        for etf in etf_codes:
+            if etf in by_under:
+                found.append(etf)
+                rows_all.extend(by_under[etf])
+        if not rows_all:
+            continue
+        _all = pd.DataFrame(rows_all)
+        _vol = _all[_all['maturity_month'] != current_month] if exclude_current_month else _all
+        vol_pcr = oi_pcr = None
+        if _calc_pcr_from_df is not None:
+            try:
+                if not _vol.empty:
+                    _r = _calc_pcr_from_df(_vol, nearest_month_only=False)
+                    vol_pcr = _r.get('vol_pcr') if _r else None
+                _r2 = _calc_pcr_from_df(_all, nearest_month_only=False)
+                oi_pcr = _r2.get('oi_pcr') if _r2 else None
+            except Exception:                     # noqa: BLE001
+                pass
+        if vol_pcr is None and not _vol.empty:
+            _c = _vol.loc[_vol['call_put'] == 'C', 'vol'].sum()
+            _p = _vol.loc[_vol['call_put'] == 'P', 'vol'].sum()
+            vol_pcr = _p / _c if _c > 0 else None
+        if oi_pcr is None and not _all.empty:
+            _c = _all.loc[_all['call_put'] == 'C', 'oi'].sum()
+            _p = _all.loc[_all['call_put'] == 'P', 'oi'].sum()
+            oi_pcr = _p / _c if _c > 0 else None
+        result[index_name] = {
+            'vol_pcr': vol_pcr,
+            'oi_pcr': oi_pcr,
+            'source': 'chain_db',
+            'excluded': exclude_current_month,
+            'etfs': found,
+            'etf_label': '+'.join(found) if len(found) > 1 else (found[0] if found else ''),
+            'date_range': date_range,
+            'smooth_days': len(dates),
+            'warning': None,
+        }
+    return result or None
+
+
 def _compute_pcr_from_tushare(trading_date_compact, smooth_days=5, min_days=3, exclude_current_month=True):
     """从Tushare计算5日平滑PCR（核心函数）
     
@@ -631,6 +758,19 @@ def get_index_pcr(index_name, trading_date, smooth_days=5, min_days=3, exclude_c
             'warning': '❌中证1000(MO主力)取数失败',
         }
     
+    # L0: 本地期权链库（零网络，最快）
+    print(f"  [PCR] {index_name} → L0 本地期权链库...")
+    try:
+        _l0 = _compute_pcr_from_chain_db(
+            trading_date_compact, smooth_days=smooth_days,
+            min_days=min_days, exclude_current_month=exclude_current_month)
+        if _l0 and index_name in _l0 and _l0[index_name].get('vol_pcr') is not None:
+            d = _l0[index_name]
+            print(f"    ✅ {index_name} PCR={d['vol_pcr']:.3f} (本地库, {d['smooth_days']}日平滑)")
+            return d
+    except Exception as e:
+        print(f"    ❌ 本地库异常: {e}")
+
     # L1: Tushare
     print(f"  [PCR] {index_name} → L1 Tushare...")
     try:
@@ -695,6 +835,31 @@ def _get_all_index_pcr_etf(trading_date, smooth_days=5, min_days=3, exclude_curr
     
     result = {'_meta': {'source': 'none', 'date_range': '', 'trading_date': trading_date_compact, 'fallback': True}}
     
+    # L0: 本地期权链库（零网络，一次查全）
+    print(f"  [PCR] L0 本地期权链库批量获取...")
+    try:
+        _l0 = _compute_pcr_from_chain_db(
+            trading_date_compact, smooth_days=smooth_days,
+            min_days=min_days, exclude_current_month=exclude_current_month)
+        if _l0:
+            _valid = sum(1 for idx in INDEX_ETF_MAP
+                         if idx in _l0 and _l0[idx].get('vol_pcr') is not None)
+            if _valid > 0:
+                for index_name in INDEX_ETF_MAP:
+                    result[index_name] = _l0.get(index_name) or _empty_pcr(index_name)
+                _first = next((_l0[idx] for idx in INDEX_ETF_MAP
+                               if idx in _l0 and _l0[idx].get('vol_pcr') is not None), None)
+                result['_meta'] = {
+                    'source': 'chain_db',
+                    'date_range': _first['date_range'] if _first else '',
+                    'trading_date': trading_date_compact,
+                    'fallback': False,
+                }
+                print(f"  ✅ 本地库 PCR完成: {_valid}/5个指数有效")
+                return result
+    except Exception as e:
+        print(f"  ❌ 本地库批量异常: {e}")
+
     # L1: 尝试Tushare（一次获取全市场数据，效率最高）
     print(f"  [PCR] L1 Tushare 批量获取...")
     try:

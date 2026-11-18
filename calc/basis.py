@@ -215,6 +215,67 @@ def calc_multi_percentiles(history_values, current_value=None):
 
 # ========== 三级降级数据采集 ==========
 
+def _fetch_level0_datahub(symbol, cfg, start_date=None, end_date=None):
+    """Level 0: data_hub 统一接口（AKShare→Baostock→AxData→Tushare→Web 五级降级）
+
+    2026-11-18 新增：原先 basis 直接 import akshare 抓期货主力/指数/国债收益率，
+    违反「行情数据一律走 data_hub 统一接口」规则。改为 data_hub 优先，
+    失败再落回原有 L1 AKShare 直连链（保留兜底，不删旧路径）。
+    """
+    try:
+        import sys as _sys
+        import os as _os
+        _root = _os.path.dirname(_os.path.dirname(_os.path.dirname(_os.path.abspath(__file__))))
+        if _root not in _sys.path:
+            _sys.path.insert(0, _root)
+        from data_hub.collectors.futures.futures_main_daily import get_futures_main_daily
+        from data_hub.collectors.stocks.index_daily import get_index_daily
+        from data_hub.collectors.bond.interest_rate import get_bond_yield
+    except Exception as _e:                       # noqa: BLE001
+        return None, None, f'data_hub 不可用: {str(_e)[:60]}'
+
+    # ① 期货主力连续日线
+    fut_symbol = cfg['futures_symbol'] + '0'
+    try:
+        df_fut = get_futures_main_daily(symbol=fut_symbol,
+                                        start_date=start_date, end_date=end_date)
+    except Exception as _e:                       # noqa: BLE001
+        return None, None, f'data_hub 期货异常: {str(_e)[:60]}'
+    if df_fut is None or len(df_fut) == 0:
+        return None, None, 'data_hub 期货返回空'
+    fut_data = {}
+    for _, row in df_fut.iterrows():
+        _d = str(row['trade_date']).replace('-', '')
+        fut_data[_d] = {'close': float(row['close'])}
+    if not fut_data:
+        return None, None, 'data_hub 期货无有效行'
+
+    # ② 现货（股指指数 / 国债收益率）
+    spot_data = {}
+    spot_symbol = cfg['spot_symbol']
+    if cfg['category'] == '股指':
+        code = spot_symbol[2:]
+        market = 'SH' if spot_symbol.startswith('sh') else 'SZ'
+        try:
+            df_spot = get_index_daily(ts_code=f'{code}.{market}',
+                                      start_date=start_date, end_date=end_date)
+        except Exception as _e:                   # noqa: BLE001
+            return None, None, f'data_hub 指数异常: {str(_e)[:60]}'
+        if df_spot is None or len(df_spot) == 0:
+            return None, None, 'data_hub 指数返回空'
+        for _, row in df_spot.iterrows():
+            spot_data[str(row['trade_date']).replace('-', '')] = float(row['close'])
+    elif cfg['category'] == '国债':
+        # ⚠️ data_hub 的 get_bond_yield 目前忽略 start_date/end_date（实测任意区间都只返回
+        #    最近约 10 个交易日），拿不到基差百分位需要的 400 天历史 → 国债走 L1 akshare 分批。
+        #    待 data_hub bond/interest_rate 修好窗口参数后，删掉这行 return 即可自动接管。
+        return None, None, 'data_hub 国债窗口参数未生效（待修），走 L1'
+
+    if not spot_data:
+        return None, None, 'data_hub 无现货数据'
+    return fut_data, spot_data, 'data_hub_ok'
+
+
 def _fetch_level1_akshare(symbol, cfg, start_date=None, end_date=None):
     """Level 1: AKShare 新浪期货主力 + 指数现货"""
     try:
@@ -455,6 +516,13 @@ def get_basis_daily(symbol, start_date=None, end_date=None):
     nd = cfg.get('nominal_duration')
     cr = cfg.get('coupon_rate')
     
+    # Level 0: data_hub 统一接口（五级降级）
+    fut, spot, status = _fetch_level0_datahub(symbol, cfg, start_date, end_date)
+    if fut and spot:
+        basis = _calc_basis_series(fut, spot, cfg['category'], nd, cr)
+        return fut, spot, basis, 'data_hub', None
+    errors.append(f'L0:{status}')
+
     # Level 1: AKShare
     fut, spot, status = _fetch_level1_akshare(symbol, cfg, start_date, end_date)
     if fut and spot:
