@@ -324,11 +324,11 @@ def build_risk_chart(trade_date=None, days=DEFAULT_DAYS, out_path=None):
         st = watch_status(name, d, dates)
         if st['alert']:
             if st['dir'] == 'bear':
-                _txt, _bg = '★ 警戒 · 看空', '#c0392b'
+                _txt, _bg = '● ★ 警戒 · 看空', '#c0392b'
             elif st['dir'] == 'bull':
-                _txt, _bg = '◐ 警戒 · 看多', '#1e8449'
+                _txt, _bg = '● ◐ 警戒 · 看多', '#1e8449'
             else:
-                _txt, _bg = '⚠ 警戒 · 多空交织', '#7d6608'
+                _txt, _bg = '● ⚠ 警戒 · 多空交织', '#7d6608'
             ax.text(0.994, 0.90, _txt, transform=ax.transAxes, fontsize=9,
                     fontweight='bold', color='#ffffff', ha='right', va='top',
                     bbox=dict(boxstyle='round,pad=0.34', facecolor=_bg,

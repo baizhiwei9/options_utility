@@ -1042,12 +1042,13 @@ def build_close_card(date_str, skew_data, ev_data, resonance_data,
             nm = it['name']
             if it.get('alert'):
                 dr = it.get('dir')
+                # 用色点 + 符号标记（不用彩色文字）：🔴看空 / 🟢看多 / 🟡方向中性
                 if dr == 'bear':
-                    tag = "<font color='red'>★ 警戒·看空</font>"
+                    tag = "🔴 **★ 警戒·看空**"
                 elif dr == 'bull':
-                    tag = "<font color='green'>◐ 警戒·看多</font>"
+                    tag = "🟢 **◐ 警戒·看多**"
                 else:
-                    tag = "<font color='orange'>⚠ 警戒·多空交织</font>"
+                    tag = "🟡 **⚠ 警戒·多空交织**"
                 detail = '、'.join(p[1] for p in it.get('points') or []) or '—'
                 _alerts.append(f"{tag}　**{nm}**　{detail}")
             else:
