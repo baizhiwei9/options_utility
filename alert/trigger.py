@@ -177,8 +177,21 @@ def _push_feishu(p: 'Payload', **kw: Any) -> bool:
     ok = True
 
     if p.card:
-        return bool(push_card_to_feishu(card_dict=p.card, chat_id=chat_id,
-                                       user_id=user_id or None))
+        ok = bool(push_card_to_feishu(card_dict=p.card, chat_id=chat_id,
+                                      user_id=user_id or None))
+        # 卡片 + 附件：卡片正文发完后紧接着把图发出来，
+        # 让「报告带图片」在同一条任务里连续到达（图片走图片消息、其它走文件）。
+        for f in (p.files or []):
+            if not f or not os.path.exists(f):
+                continue
+            try:
+                if os.path.splitext(f)[1].lower() in ('.png', '.jpg', '.jpeg', '.webp', '.gif'):
+                    push_image_to_feishu(f, chat_id=chat_id)
+                else:
+                    push_to_feishu(file_path=f, chat_id=chat_id, as_file=True)
+            except Exception as exc:                     # noqa: BLE001
+                print(f'[trigger] 飞书附件发送失败 {os.path.basename(f)}: {exc}')
+        return ok
 
     if p.report_path:
         return bool(push_report_full_to_feishu(p.report_path, title=p.title, chat_id=chat_id))

@@ -1470,9 +1470,14 @@ def main():
         if card and 'header' in card and 'elements' in card:
             print(f"✅ 收盘卡片构建成功，共{len(card['elements'])}个元素")
 
-        success = trigger('收盘期权监控', card=card, source='收盘期权监控')['ok']
+        # 卡片正文 + 指数风险走势图 一起发（用户要求：报告带图片，同一条消息里就能看到）
+        _card_files = None
+        if risk_chart_path and os.path.exists(risk_chart_path):
+            _card_files = [risk_chart_path]
+        success = trigger('收盘期权监控', card=card, files=_card_files,
+                          source='收盘期权监控')['ok']
         if success:
-            print("✅ 收盘主卡片推送成功")
+            print("✅ 收盘主卡片推送成功" + ("（含指数风险走势图）" if _card_files else ""))
 
             # 推送 RND 密度图作为附件
             if rnd_chart_path and os.path.exists(rnd_chart_path):
@@ -1482,15 +1487,6 @@ def main():
                     print("✅ RND密度图附件推送成功")
                 else:
                     print("⚠️ RND密度图附件推送失败")
-
-            # 推送指数+风险指标走势图（上图指数、下图偏度/PCR/VIX）
-            if risk_chart_path and os.path.exists(risk_chart_path):
-                rc_ok = trigger('收盘 指数风险走势图', files=[risk_chart_path],
-                                source='收盘期权监控')['ok']
-                if rc_ok:
-                    print("✅ 指数风险走势图附件推送成功")
-                else:
-                    print("⚠️ 指数风险走势图附件推送失败")
 
             # 推送波动率预警文本（如有触发）
             if vts_alert_path and os.path.exists(vts_alert_path):
