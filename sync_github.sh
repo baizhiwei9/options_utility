@@ -74,6 +74,9 @@ EXCLUDES=(
     --exclude='__pycache__'
     --exclude='*.pyc'
     --exclude='*.pyo'
+    --exclude='*.bak'
+    --exclude='*.bak.*'
+    --exclude='*.bak_*'
     # 凭证：真实值绝不出门
     --exclude='private.py'
     --include='private.example.py'
