@@ -3,7 +3,7 @@
 """
 杨康平股市顶底判断体系 - 三层综合监控 V2
 ================================================
-三层架构：估值定区间 → 12条底部红线 + 7条顶部信号 → 触发层
+三层架构：估值定区间 → 11条底部红线 + 7条顶部信号 → 触发层
 
 底层因子：
   估值层（6个）：
@@ -14,19 +14,19 @@
     ⑤ 全A股息率vs国债（备）
     ⑥ 估值综合打分
   
-  情绪层 → 12条底部红线体系：
+  情绪层 → 11条底部红线体系：
     #1  中证1000 VIX > 35
     #2  融资余额 < 2.45万亿
     #3  IM贴水 > 160点
     #4  大阴线 ≥ 3根
     #5  缩量+放量 pattern
     #6  大盘小盘比MAX
-    #7  [宏观加息] 预留接口
+    #7  政策底：CPI同比<0(通缩) 且 MLF近3月有投放  [data_hub EDB]
     #8  IM点位 < 6600
     #9  科创50 < 1250
-    #10 [韭圈情绪] 预留接口
-    #11 PCR 3/4达标
-    #12 [科技板块] 预留接口
+    #11 PCR ≥3个指数 >80%分位
+    #12 半导体深度回撤：H30184 距120日高≥40% 且 60日分位<20%
+    （原 #10 韭圈情绪已于 2026-11-18 删除：外部源不可获取）
   
   触发层：
     IM机械点位防御（6400/6600/6800/7000）
@@ -146,6 +146,23 @@ for _p in (DATAHUB_SCRIPTS_DIR, _HUB_ROOT):
     while _p in sys.path:
         sys.path.remove(_p)
     sys.path.insert(0, _p)   # 循环结束后 _HUB_ROOT 位于 sys.path[0]
+
+# ---- EDB SQLite 主库引导（2026-11-18 新增，红线#7 依赖）----
+# EDB 的 edb.sqlite3 是 WAL 模式，云盘 /Coze/Drive 是 fuse ro 挂载，
+# 无法创建/写 -shm 文件，sqlite3.connect 会直接抛
+#   OperationalError: unable to open database file
+# 主库实际落在「外汇掉期点」卷，本地可写视图在 /opt/coze/.fuse_drive 下。
+# 这里用 EDB_DB_PATH 显式指到可写副本；两处都不可写时保持默认，
+# 红线#7 会判 has_data=False 自动跳过（skip 不计入分母），不影响其余红线。
+_EDB_DB_CANDIDATES = [
+    '/opt/coze/.fuse_drive/外汇掉期点/data_hub/edb/data/edb.sqlite3',
+    '/Coze/Drive/外汇掉期点/data_hub/edb/data/edb.sqlite3',
+]
+if not os.environ.get('EDB_DB_PATH'):
+    for _cand in _EDB_DB_CANDIDATES:
+        if os.path.isfile(_cand) and os.access(_cand, os.W_OK):
+            os.environ['EDB_DB_PATH'] = _cand
+            break
 try:
     from data_hub.tushare_config import get_tushare_pro
     pro = get_tushare_pro()
@@ -225,7 +242,11 @@ SIGNAL_COOLDOWN_DAYS = 3
 # 文件路径
 ALERT_STATE_JSON = os.path.join(OUTPUT_DIR, 'yangkangping_alert_state.json')
 
-# === 12条底部红线阈值 ===
+# === 底部红线阈值（2026-11-18：由 12 条改为 11 条）===
+# 变更说明：
+#   #7  「加息/宏观(预留)」→ 正式接入「政策底」：CPI 同比 + MLF 投放，数据源 data_hub EDB
+#   #10 「韭圈情绪指数(预留)」→ 删除：外部源已不可获取，长期恒 has_data=False 无意义
+#   #12 「科技板块(预留)」→ 正式接入「半导体深度回撤」：中证全指半导体 H30184.CSI
 REDLINE_CONFIG = {
     1:  {'name': '中证1000VIX', 'threshold': 35, 'direction': '>', 'unit': '', 'desc': '波动率>35(恐慌)'},
     2:  {'name': '融资余额', 'threshold': 2.45, 'direction': '<', 'unit': '万亿', 'desc': '融资余额<2.45万亿'},
@@ -233,13 +254,19 @@ REDLINE_CONFIG = {
     4:  {'name': '大阴线', 'threshold': 3, 'direction': '>=', 'unit': '根', 'desc': '近期阴线实体>1%≥3根'},
     5:  {'name': '缩量+放量', 'threshold': 1, 'direction': '>=', 'unit': '', 'desc': '先缩量后放量下跌'},
     6:  {'name': '大小盘比MAX', 'threshold': 0.90, 'direction': '>=', 'unit': '分位', 'desc': 'HS300/CSI1000比值>90%分位'},
-    7:  {'name': '加息/宏观', 'threshold': None, 'direction': None, 'unit': '', 'desc': '宏观加息环境(预留)', 'skip': True},
+    7:  {'name': '政策底(CPI/MLF)', 'threshold': 0, 'direction': '<', 'unit': '%', 'desc': 'CPI同比<0(通缩)且MLF近3月有投放'},
     8:  {'name': 'IM点位支撑', 'threshold': 6600, 'direction': '<', 'unit': '', 'desc': 'IM收盘<6600'},
     9:  {'name': '科创50支撑', 'threshold': 1250, 'direction': '<', 'unit': '', 'desc': '科创50<1250'},
-    10: {'name': '韭圈情绪指数', 'threshold': 3, 'direction': '<', 'unit': '', 'desc': '韭圈情绪<3(预留)', 'skip': True},
     11: {'name': 'PCR达标', 'threshold': 3, 'direction': '>=', 'unit': '个', 'desc': '≥3个指数Vol PCR 60日分位>80%'},
-    12: {'name': '科技板块点位', 'threshold': None, 'direction': None, 'unit': '', 'desc': 'CPO/半导体底部(预留)', 'skip': True},
+    12: {'name': '半导体深度回撤', 'threshold': 40, 'direction': '>=', 'unit': '%', 'desc': '距120日高点回撤≥40%且60日分位<20%'},
 }
+
+# === 红线#7 / #12 参数（2026-11-18 接入）===
+# #12 标的：中证全指半导体。选它而不是科创50（#9 已用）或半导体ETF，
+# 是因为它覆盖全产业链（设备/材料/设计/制造），且 tushare index_daily 有完整历史。
+TECH_INDEX_CODE = 'H30184.CSI'
+TECH_DRAWDOWN_PCT = 40      # 距 120 日高点回撤阈值（%）
+TECH_PCT60_MAX = 0.20       # 60 日分位上限
 
 # === 7条顶部信号阈值 ===
 TOP_SIGNAL_CONFIG = {
@@ -721,7 +748,7 @@ def calc_kc50_support_levels(trade_date):
 
 
 # ============================================================
-# ★ 12条底部红线体系 - 核心新增模块
+# ★ 底部红线体系（2026-11-18 起 11 条） - 核心新增模块
 # ============================================================
 
 def redline_1_vix(trade_date):
@@ -1038,10 +1065,143 @@ def redline_11_pcr_count(trade_date, sentiment_data):
     return result
 
 
+# ------------------------------------------------------------
+# 红线#7 / #12 的 EDB 取数（2026-11-18 新增）
+# ------------------------------------------------------------
+_EDB_MEMO = {}
+
+
+def _edb_series(code):
+    """从 data_hub EDB 取一条序列，返回 pandas.Series（按日期升序）。
+
+    失败一律返回 None，由调用方判 has_data=False —— EDB 打不开（例如
+    EDB_DB_PATH 指向的库不可写）不该拖垮整条顶底链路。进程内 memo 缓存。
+    """
+    if code in _EDB_MEMO:
+        return _EDB_MEMO[code]
+    out = None
+    try:
+        import pandas as _pd
+        from data_hub import edb as _edb
+        df = _edb.get_series(code)
+        if df is not None and len(df):
+            df = df.dropna(subset=['value'])
+            if len(df):
+                s = _pd.Series(
+                    _pd.to_numeric(df['value'], errors='coerce').values,
+                    index=_pd.to_datetime(df['date']),
+                ).dropna().sort_index()
+                if len(s):
+                    out = s
+    except Exception as _e:
+        print(f"    [WARN] EDB {code} 取数失败: {type(_e).__name__}: {_e}")
+    _EDB_MEMO[code] = out
+    return out
+
+
+def redline_7_macro_policy(trade_date):
+    """红线#7: 通缩 + 央行中长期流动性投放 → 政策底
+
+    2026-11-18 接入（原为「加息/宏观(预留)」）。数据源 data_hub EDB：
+      CN.CPI.YOY   中国CPI同比（月度，国家统计局）
+      LIQ.CN.MLF   MLF 投放量（月度，人民银行公开市场公告）
+
+    触发：CPI 同比 < 0（通缩）且 MLF 近 3 个月有投放记录。
+
+    为什么 MLF 用「近3个月有投放」而不是「当月有投放」：
+      MLF 自 2026 年起已基本退出日常操作，资金投放转由隔夜逆回购 +
+      买断式逆回购承担，操作节奏不固定（2026 年 8/25、9/24、10/26 各一次）。
+      按「当月」判会把正常节奏漂移误判成数据缺失。
+    """
+    result = {'value': None, 'triggered': False, 'detail': '', 'has_data': False}
+    try:
+        cpi = _edb_series('CN.CPI.YOY')
+        mlf = _edb_series('LIQ.CN.MLF')
+
+        if cpi is None or not len(cpi):
+            result['detail'] = 'CPI数据不可用'
+            return result
+        if mlf is None or not len(mlf):
+            result['detail'] = 'MLF数据不可用'
+            return result
+
+        cpi_v = float(cpi.iloc[-1])
+        cpi_d = str(cpi.index[-1])[:10]
+        mlf_recent = mlf.tail(3)
+        mlf_pos = int((mlf_recent > 0).sum())
+        mlf_desc = '/'.join(f'{str(d)[:7]}:{v:.0f}亿' for d, v in mlf_recent.items())
+
+        result['value'] = round(cpi_v, 2)
+        result['has_data'] = True
+
+        cond_cpi = cpi_v < 0
+        cond_mlf = mlf_pos >= 1
+        result['triggered'] = bool(cond_cpi and cond_mlf)
+        result['detail'] = (
+            f'CPI={cpi_v:.1f}%({cpi_d}) {"通缩" if cond_cpi else "非通缩"}'
+            f' | MLF近3月投放{mlf_pos}次[{mlf_desc}]'
+        )
+        result['note'] = 'MLF已非日常工具，用近3月投放次数判流动性方向'
+    except Exception as e:
+        result['detail'] = f'计算失败: {e}'
+    return result
+
+
+def redline_12_tech_bottom(trade_date):
+    """红线#12: 科技板块（半导体）深度回撤 → 科技底部
+
+    2026-11-18 接入（原为「科技板块(预留)」）。
+    标的：中证全指半导体 H30184.CSI（走 hub_option_api.fetch_index_daily）
+
+    触发：距 120 日高点回撤 >= 40% 且 60 日分位 < 20%
+    双条件是为了区分「深跌但仍在下跌通道」与「深跌且已止跌」：
+    单看回撤会在下跌中途一直触发，叠加分位才算底部区域。
+    """
+    result = {'value': None, 'triggered': False, 'detail': '', 'has_data': False}
+    try:
+        end_dt = datetime.datetime.strptime(str(trade_date), '%Y%m%d')
+        start_dt = end_dt - datetime.timedelta(days=400)
+        df = fetch_index_daily(
+            ts_code=TECH_INDEX_CODE,
+            start_date=start_dt.strftime('%Y%m%d'),
+            end_date=end_dt.strftime('%Y%m%d'),
+        )
+        if df is None or not len(df):
+            result['detail'] = '半导体指数数据不可用'
+            return result
+        df = df.sort_values('trade_date').reset_index(drop=True)
+        close = df['close'].astype(float)
+        cur = float(close.iloc[-1])
+        if cur <= 0:
+            result['detail'] = '半导体指数收盘价异常'
+            return result
+
+        win120 = close.tail(120)
+        hi120 = float(win120.max())
+        drawdown = (cur / hi120 - 1) * 100 if hi120 > 0 else 0.0
+        win60 = close.tail(60)
+        pct60 = float((win60 < cur).mean()) if len(win60) >= 20 else None
+
+        result['value'] = round(drawdown, 1)
+        result['has_data'] = True
+
+        cond_dd = drawdown <= -TECH_DRAWDOWN_PCT
+        cond_pct = pct60 is not None and pct60 < TECH_PCT60_MAX
+        result['triggered'] = bool(cond_dd and cond_pct)
+        pct_str = f'{pct60:.0%}' if pct60 is not None else '不可用'
+        result['detail'] = (
+            f'H30184={cur:.0f} 距120日高{hi120:.0f}回撤{drawdown:.1f}%'
+            f' | 60日分位={pct_str}'
+        )
+    except Exception as e:
+        result['detail'] = f'计算失败: {e}'
+    return result
+
+
 def compute_all_redlines(trade_date, sentiment_data):
-    """计算全部12条红线，返回结构化结果"""
+    """计算全部底部红线（2026-11-18 起 11 条），返回结构化结果"""
     print("\n" + "="*40)
-    print("[12条底部红线] 开始计算...")
+    print("[底部红线] 开始计算...")
     
     redlines = {}
     
@@ -1075,8 +1235,10 @@ def compute_all_redlines(trade_date, sentiment_data):
     redlines[6] = redline_6_large_small_ratio(trade_date)
     print(f"    {redlines[6]['detail']} → {'🔴触发' if redlines[6]['triggered'] else '✅未触发'}")
     
-    # #7 宏观加息 (预留)
-    redlines[7] = {'value': None, 'triggered': False, 'detail': '预留接口-待接入CPI/MLF', 'has_data': False, 'skip': True}
+    # #7 政策底（CPI通缩 + MLF投放，2026-11-18 接入）
+    print("  红线#7: 政策底(CPI通缩+MLF投放)...")
+    redlines[7] = redline_7_macro_policy(trade_date)
+    print(f"    {redlines[7]['detail']} → {'🔴触发' if redlines[7]['triggered'] else '✅未触发'}")
     
     # #8 IM点位
     print("  红线#8: IM点位<6600...")
@@ -1088,33 +1250,36 @@ def compute_all_redlines(trade_date, sentiment_data):
     redlines[9] = redline_9_kc50_level(trade_date)
     print(f"    {redlines[9]['detail']} → {'🔴触发' if redlines[9]['triggered'] else '✅未触发'}")
     
-    # #10 韭圈情绪 (预留)
-    redlines[10] = {'value': None, 'triggered': False, 'detail': '预留接口-无法获取', 'has_data': False, 'skip': True}
-    
     # #11 PCR
     print("  红线#11: PCR ≥3/5指数>80%分位...")
     redlines[11] = redline_11_pcr_count(trade_date, sentiment_data)
     print(f"    {redlines[11]['detail']} → {'🔴触发' if redlines[11]['triggered'] else '✅未触发'}")
     
-    # #12 科技板块 (预留)
-    redlines[12] = {'value': None, 'triggered': False, 'detail': '预留接口-待接入行业指数', 'has_data': False, 'skip': True}
+    # #12 半导体深度回撤（2026-11-18 接入）
+    print("  红线#12: 半导体距120日高回撤≥40%...")
+    redlines[12] = redline_12_tech_bottom(trade_date)
+    print(f"    {redlines[12]['detail']} → {'🔴触发' if redlines[12]['triggered'] else '✅未触发'}")
     
     # === 汇总统计 ===
     active_lines = {k: v for k, v in redlines.items() if not v.get('skip', False)}
     triggered_count = sum(1 for v in active_lines.values() if v.get('has_data') and v.get('triggered'))
     total_available = sum(1 for v in active_lines.values() if v.get('has_data'))
     
-    # 仓位建议
-    if triggered_count >= 11:
+    # 仓位建议（2026-11-18 改为按「可用红线比例」判定）
+    # 原口径是按 12 条绝对值写的（>=11 重仓 / >=9 加仓 / >=6 建底仓 / >=5 关注），
+    # 但 12 条里有 3 条长期是预留空壳，实际只有 9 条在跑，等于把阈值悄悄放松了
+    # （6/12=50% 变成 6/9=67%）。改成比例后，无论可用几条，语义都等价原设计。
+    _ratio = (triggered_count / total_available) if total_available else 0.0
+    if _ratio >= 11 / 12:
         position_advice = '重仓'
         position_emoji = '🔴🔴'
-    elif triggered_count >= 9:
+    elif _ratio >= 9 / 12:
         position_advice = '加仓'
         position_emoji = '🔴'
-    elif triggered_count >= 6:
+    elif _ratio >= 6 / 12:
         position_advice = '建底仓'
         position_emoji = '🟡'
-    elif triggered_count >= 5:
+    elif _ratio >= 5 / 12:
         position_advice = '关注'
         position_emoji = '🟠'
     else:
@@ -1122,7 +1287,7 @@ def compute_all_redlines(trade_date, sentiment_data):
         position_emoji = '⚪'
     
     redline_summary = {
-        'total_lines': 12,
+        'total_lines': len(REDLINE_CONFIG),
         'skipped_lines': [k for k, v in redlines.items() if v.get('skip', False)],
         'active_count': len(active_lines),
         'available_count': total_available,
@@ -1482,7 +1647,7 @@ def compute_top_signals(trade_date, valuation_data, sentiment_data, trigger_data
 def judge_topbottom_signals(valuation_data, sentiment_data, trigger_data,
                              redlines, redline_summary,
                              top_signals=None, top_summary=None):
-    """综合三层信号判断 + 12条底部红线 + 7条顶部信号"""
+    """综合三层信号判断 + 底部红线 + 7条顶部信号"""
     if top_signals is None:
         top_signals = {}
     if top_summary is None:
@@ -1575,9 +1740,12 @@ def judge_topbottom_signals(valuation_data, sentiment_data, trigger_data,
     
     # === 红线计数纳入综合判断 ===
     tc = redline_summary.get('triggered_count', 0)
-    if tc >= 6:
+    ac = redline_summary.get('available_count', 0)
+    # 2026-11-18：改用比例，避免可用条数变化时阈值语义漂移
+    tc_ratio = (tc / ac) if ac else 0.0
+    if tc_ratio >= 6 / 12:
         bottom_score += tc * 3
-        bottom_signals.append(f"12条红线触发{tc}条(底部区域)")
+        bottom_signals.append(f"底部红线触发{tc}/{ac}条({tc_ratio:.0%}，底部区域)")
     
     # === 顶部信号计数纳入综合判断 ===
     top_count = top_summary.get('triggered_count', 0)
@@ -1589,18 +1757,18 @@ def judge_topbottom_signals(valuation_data, sentiment_data, trigger_data,
         top_signals.append(f"7条顶部信号触发{top_count}条(偏顶部)")
     
     # 综合判断（结合底部红线+顶部信号）
-    bottom_high = tc >= 6
+    bottom_high = tc_ratio >= 6 / 12
     top_high = top_count >= 4
     
     if bottom_high and top_high:
         verdict = "⚡ 极端波动期 - 底部+顶部信号同时活跃，市场分歧极大"
-    elif tc >= 6:
-        if tc >= 11:
-            verdict = "🔴🔴 深度底部 - 12条红线≥11条触发，重仓信号"
-        elif tc >= 9:
-            verdict = "🔴 强底部 - 12条红线≥9条触发，加仓信号"
+    elif bottom_high:
+        if tc_ratio >= 11 / 12:
+            verdict = f"🔴🔴 深度底部 - 底部红线触发{tc}/{ac}条({tc_ratio:.0%})，重仓信号"
+        elif tc_ratio >= 9 / 12:
+            verdict = f"🔴 强底部 - 底部红线触发{tc}/{ac}条({tc_ratio:.0%})，加仓信号"
         else:
-            verdict = "🟢 底部区间 - 12条红线≥6条触发，建底仓"
+            verdict = f"🟢 底部区间 - 底部红线触发{tc}/{ac}条({tc_ratio:.0%})，建底仓"
     elif top_high:
         verdict = f"🔴 顶部区间 - 7条顶部信号触发{top_count}条，建议减仓"
     elif top_count >= 2:
@@ -1630,13 +1798,13 @@ def judge_topbottom_signals(valuation_data, sentiment_data, trigger_data,
 
 
 # ============================================================
-# 报告格式化 - V2（12条红线版）
+# 报告格式化 - V2（11条红线版）
 # ============================================================
 
 def format_feishu_card(trade_date, valuation_data, sentiment_data, trigger_data,
                        combined_signals, redlines, redline_summary,
                        top_signals=None, top_summary=None):
-    """生成飞书卡片 - 三层结构 + 12条底部红线 + 7条顶部信号"""
+    """生成飞书卡片 - 三层结构 + 11条底部红线 + 7条顶部信号"""
     if top_signals is None:
         top_signals = {}
     if top_summary is None:
@@ -1650,7 +1818,9 @@ def format_feishu_card(trade_date, valuation_data, sentiment_data, trigger_data,
     
     # 核心结论
     tc = redline_summary.get('triggered_count', 0)
-    ac = redline_summary.get('available_count', 10)
+    ac = redline_summary.get('available_count', len(REDLINE_CONFIG))
+    # 2026-11-18：策略建议按比例判，与 compute_all_redlines 的仓位口径保持一致
+    tc_ratio = (tc / ac) if ac else 0.0
     position = redline_summary.get('position_advice', '观望')
     pos_emoji = redline_summary.get('position_emoji', '⚪')
     verdict = combined_signals.get('verdict', '未知')
@@ -1660,9 +1830,9 @@ def format_feishu_card(trade_date, valuation_data, sentiment_data, trigger_data,
     top_level_emoji = top_summary.get('level_emoji', '✅')
     top_level_name = top_summary.get('level_name', '安全')
     
-    if tc >= 6:
+    if tc_ratio >= 6 / 12:
         status_emoji = '🔴'
-    elif tc >= 4:
+    elif tc_ratio >= 4 / 12:
         status_emoji = '🟡'
     else:
         status_emoji = '🟢'
@@ -1723,14 +1893,14 @@ def format_feishu_card(trade_date, valuation_data, sentiment_data, trigger_data,
         lines.append("  ⚠️股息率溢价: 数据缺失")
     lines.append("")
     
-    # ============ 二、12条底部红线 ============
+    # ============ 二、底部红线 ============
     lines.append("━━━━━━━━━━━━━━━━━━━━━")
-    lines.append("🚨 **二、12条底部红线**")
+    lines.append(f"🚨 **二、{len(REDLINE_CONFIG)}条底部红线**")
     lines.append("")
     lines.append("  | # | 指标 | 当前值 | 阈值 | 状态 |")
     lines.append("  |---|------|--------|------|------|")
     
-    for idx in range(1, 13):
+    for idx in sorted(REDLINE_CONFIG):
         cfg = REDLINE_CONFIG[idx]
         rl = redlines.get(idx, {})
         
@@ -1742,7 +1912,9 @@ def format_feishu_card(trade_date, valuation_data, sentiment_data, trigger_data,
         if rl.get('has_data') and rl.get('value') is not None:
             val = rl['value']
             if isinstance(val, float):
-                if abs(val) > 100:
+                if (cfg.get('unit') or '') == '%':
+                    val_str = f"{val:.1f}%"
+                elif abs(val) > 100:
                     val_str = f"{val:.0f}"
                 elif abs(val) > 1:
                     val_str = f"{val:.2f}"
@@ -1773,10 +1945,10 @@ def format_feishu_card(trade_date, valuation_data, sentiment_data, trigger_data,
     lines.append("")
     # 红线汇总
     lines.append(f"  📊 触发: **{tc}/{ac}** | 建议: **{pos_emoji} {position}**")
-    if tc >= 6:
-        lines.append(f"  🚨 🚨🚨 底部区域确认！红线{tc}条触发")
-    elif tc >= 4:
-        lines.append(f"  🟡 接近底部区域，继续观察")
+    if tc_ratio >= 6 / 12:
+        lines.append(f"  🚨 🚨🚨 底部区域确认！红线{tc}/{ac}条触发({tc_ratio:.0%})")
+    elif tc_ratio >= 4 / 12:
+        lines.append(f"  🟡 接近底部区域，继续观察({tc}/{ac})")
     lines.append("")
     
     # ============ 二B、7条顶部信号 ============
@@ -1919,14 +2091,14 @@ def format_feishu_card(trade_date, valuation_data, sentiment_data, trigger_data,
     lines.append(f"  🚨 底部红线: {tc}/{ac} → {pos_emoji} {position}")
     lines.append(f"  🔼 顶部信号: {top_tc}/{top_ac} → {top_level_emoji} {top_level_name}")
     
-    if tc >= 11:
-        lines.append("  → 12条红线几乎全部触发，历史级底部区域，可重仓")
-    elif tc >= 9:
-        lines.append("  → 底部信号强烈，建议加仓")
-    elif tc >= 6:
-        lines.append("  → 底部特征明显，建议建立底仓")
-    elif tc >= 4:
-        lines.append("  → 部分底部信号出现，密切关注")
+    if tc_ratio >= 11 / 12:
+        lines.append(f"  → 底部红线几乎全部触发({tc}/{ac})，历史级底部区域，可重仓")
+    elif tc_ratio >= 9 / 12:
+        lines.append(f"  → 底部信号强烈({tc}/{ac})，建议加仓")
+    elif tc_ratio >= 6 / 12:
+        lines.append(f"  → 底部特征明显({tc}/{ac})，建议建立底仓")
+    elif tc_ratio >= 4 / 12:
+        lines.append(f"  → 部分底部信号出现({tc}/{ac})，密切关注")
     else:
         lines.append("  → 底部信号不足，继续观望等待")
     
@@ -1947,7 +2119,7 @@ def format_feishu_card(trade_date, valuation_data, sentiment_data, trigger_data,
     
     lines.append("")
     lines.append("━━━━━━━━━━━━━━━━━━━━━")
-    lines.append("📐 框架: 估值定区间 → 12条红线锁底部 + 7条信号探顶部 → 触发层出手")
+    lines.append(f"📐 框架: 估值定区间 → {len(REDLINE_CONFIG)}条红线锁底部 + 7条信号探顶部 → 触发层出手")
     
     return "\n".join(lines)
 
@@ -2009,7 +2181,7 @@ def send_alert_email(signal_type, trade_date, combined_signals, redline_summary,
         <ul>{triggered_html}</ul>
         <h3>触发顶部信号明细</h3>
         <ul>{top_triggered_html}</ul>
-        <p style="color: #888; font-size: 12px;">杨康平12条底部红线 + 7条顶部信号体系 - 自动告警</p>
+        <p style="color: #888; font-size: 12px;">杨康平底部红线 + 7条顶部信号体系 - 自动告警</p>
     </body></html>
     """
     
@@ -2425,7 +2597,7 @@ def main_sync(trade_date, dry_run=False):
         print("  [ERROR] 衍生品情绪模块未加载")
     
     # ============================================================
-    # ★ 12条底部红线体系
+    # ★ 底部红线体系（11 条）
     # ============================================================
     redlines, redline_summary = compute_all_redlines(trade_date, sentiment_data)
     
@@ -2462,7 +2634,7 @@ def main_sync(trade_date, dry_run=False):
     # 综合信号判断
     # ============================================================
     print("\n" + "="*40)
-    print("[综合] 三层信号 + 12条红线汇总...")
+    print("[综合] 三层信号 + 底部红线汇总...")
     
     combined = judge_topbottom_signals(valuation_data, sentiment_data, trigger_data,
                                        redlines, redline_summary,
@@ -2521,7 +2693,7 @@ def main_sync(trade_date, dry_run=False):
     result_data = clean_for_json({
         'trade_date': trade_date,
         'date_display': parse_date_to_str(trade_date),
-        'framework': '杨康平股市顶底判断体系 V2 (12条底部红线 + 7条顶部信号)',
+        'framework': f'杨康平股市顶底判断体系 V2 ({len(REDLINE_CONFIG)}条底部红线 + 7条顶部信号)',
         'combined': combined,
         'redline_summary': redline_summary,
         'redlines': redlines_serializable,
@@ -2559,9 +2731,10 @@ def main_sync(trade_date, dry_run=False):
         print("\n[告警] 邮件检查...")
         alert_state = load_alert_state()
         
-        # 底部告警：红线≥6条
+        # 底部告警：红线触发比例≥50%（等价原 6/12 口径）
         tc = redline_summary.get('triggered_count', 0)
-        if tc >= 6:
+        _ac = redline_summary.get('available_count', 0)
+        if _ac and (tc / _ac) >= 6 / 12:
             if should_send_alert(alert_state, 'bottom_alert', trade_date):
                 send_alert_email('bottom', trade_date, combined, redline_summary,
                                  valuation_data, trigger_data, top_signals, top_summary)

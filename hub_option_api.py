@@ -84,12 +84,30 @@ def _call(fn, *args, **kwargs):
 # ================================================================
 # 期权合约基础信息
 # ================================================================
+def _infer_call_put(row) -> str:
+    """推断 call_put：优先 opt_type（C/P），其次按合约名称（购=C 沽=P）。
+
+    2026-11-18 修复：Tushare opt_basic 本身没有 call_put 字段，合约基础信息
+    必须靠本函数补齐；否则下游（PCR/EV/持仓量等）拿到空字符串，无法区分
+    认购/认沽，会静默算出空值。日线与合约信息统一走这一口径。
+    """
+    cp = str(row.get('opt_type', '') or '').strip().upper()
+    if cp in ('C', 'P'):
+        return cp
+    nm = str(row.get('name', '') or '')
+    if '购' in nm or '看涨' in nm:
+        return 'C'
+    if '沽' in nm or '看跌' in nm:
+        return 'P'
+    return ''
+
+
 def fetch_exchange_contracts(exchange: str) -> pd.DataFrame:
     """某交易所全量期权合约基础信息。
 
     Returns:
         DataFrame[ts_code, name, exercise_price, list_date, delist_date,
-                  maturity_date, opt_type, opt_code]
+                  maturity_date, opt_type, opt_code, call_put]
         失败返回空 DataFrame。
     """
     src = _get_source()
@@ -107,6 +125,8 @@ def fetch_exchange_contracts(exchange: str) -> pd.DataFrame:
     df = df.copy()
     df['list_date'] = df['list_date'].fillna('')
     df['delist_date'] = df['delist_date'].fillna('99999999')
+    # opt_basic 无 call_put 字段，按 opt_type/名称补齐（与日线同口径）
+    df['call_put'] = df.apply(_infer_call_put, axis=1)
     return df
 
 
@@ -162,19 +182,8 @@ def fetch_exchange_daily(exchange: str, trade_date: str,
     if merged.empty:
         return merged
 
-    # call_put：优先 opt_type，其次按名称推断（购=C 沽=P）
-    def _cp(row):
-        cp = str(row.get('opt_type', '')).strip().upper()
-        if cp in ('C', 'P'):
-            return cp
-        nm = str(row.get('name', ''))
-        if '购' in nm or '看涨' in nm:
-            return 'C'
-        if '沽' in nm or '看跌' in nm:
-            return 'P'
-        return ''
-
-    merged['call_put'] = merged.apply(_cp, axis=1)
+    # call_put：统一口径，复用模块级 _infer_call_put
+    merged['call_put'] = merged.apply(_infer_call_put, axis=1)
     return merged
 
 

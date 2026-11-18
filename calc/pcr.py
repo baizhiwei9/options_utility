@@ -433,8 +433,12 @@ def _compute_pcr_from_tushare(trading_date_compact, smooth_days=5, min_days=3, e
             for _, drow in etf_daily.iterrows():
                 ts_code = drow['ts_code']
                 info = contract_info.get(ts_code, {})
+                # call_put 优先取日线（hub_option_api 已按 opt_type/名称补齐），
+                # 回退合约基础信息。2026-11-18 修复：opt_basic 无 call_put 字段，
+                # 原实现只读合约信息 → 全部为空 → 认购/认沽无法区分 → PCR 全 None。
+                _cp = str(drow.get('call_put', '') or '').strip().upper()                     or str(info.get('call_put', '') or '').strip().upper()
                 rows_all.append({
-                    'call_put': info.get('call_put', ''),
+                    'call_put': _cp,
                     'maturity_month': info.get('maturity_month', ''),
                     'vol': float(drow['vol']),
                     'oi': float(drow['oi']),
@@ -471,6 +475,11 @@ def _compute_pcr_from_tushare(trading_date_compact, smooth_days=5, min_days=3, e
         
         etf_label = '+'.join(found_etfs) if len(found_etfs) > 1 else (found_etfs[0] if found_etfs else '')
         
+        if vol_pcr is None and not _all_df.empty:
+            _bad = int((_all_df['call_put'].astype(str).str.upper().isin(['C', 'P']) == False).sum())
+            print(f"    ⚠️ {index_name} PCR计算为空: 合约行{len(_all_df)}条, "
+                  f"call_put缺失/异常{_bad}条（检查 hub_option_api 合约字段）")
+
         result[index_name] = {
             'vol_pcr': vol_pcr,
             'oi_pcr': oi_pcr,
