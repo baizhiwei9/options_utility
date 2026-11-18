@@ -77,91 +77,47 @@ else:
     )
 _CLOUD_DB = os.path.join(OUTPUT_DIR, 'risk_history.db')
 
-# 2026-11-18 修复（disk I/O error 根因）：
-# 云盘 FUSE 挂载点不支持 SQLite 随机写，直接写 OUTPUT_DIR 下的库会间歇性抛
-# `sqlite3.OperationalError: disk I/O error`（同一天 5 个标的里 2 个写进去、
-# 3 个静默失败），导致 daily_metrics 长期残缺、偏度/VIX 数据停在几天前。
-# 按项目既定纪律：**活库落本地盘，云盘只放快照**。
-_LOCAL_DB_DIR = (os.environ.get('LOCAL_DB_DIR')
-                 or os.path.join(os.path.expanduser('~'), '.local', 'share', 'cozedb'))
-_LOCAL_DB = os.path.join(_LOCAL_DB_DIR, 'risk_history.db')
+# 2026-11-18 修复（disk I/O error 根因 + 路径可配置）：
+# 云盘（FilteredFS/FUSE）**不支持 SQLite 随机写**，直接写 OUTPUT_DIR 下的库会间歇性抛
+# `sqlite3.OperationalError: disk I/O error`（同一天 5 个标的里 2 个写进去、3 个静默失败）。
+# 统一按 data_hub.core.localdb 的既定规则：**活库落本地盘 + 云盘 gzip 快照**。
+#
+# 路径优先级（全部可配置，迁云主机只需改环境变量）：
+#   1) RISK_HISTORY_DB     直接指定库绝对路径（最高优先，指向任何可写盘都行）
+#   2) LOCAL_DB_DIR        本地库目录（默认 ~/.local/share/cozedb）
+#   3) OUTPUT_DIR          兜底：项目/legacy 的 outputs 目录（云盘，仅当 localdb 不可用时）
+_ENV_DB = os.environ.get('RISK_HISTORY_DB', '').strip()
 
+try:
+    from data_hub.core.localdb import path as _local_db_path, snapshot as _local_db_snapshot
+except Exception:                                      # noqa: BLE001
+    _local_db_path = None
+    _local_db_snapshot = None
 
-def _seed_local():
-    """本地库不存在、或云盘快照更新时，从云盘复制一份到本地（只读云盘，安全）。"""
-    try:
-        os.makedirs(_LOCAL_DB_DIR, exist_ok=True)
-    except OSError:
-        return _CLOUD_DB
-    need = not _db_ok(_LOCAL_DB)
-    if not need:
-        try:
-            need = os.path.getmtime(_CLOUD_DB) > os.path.getmtime(_LOCAL_DB) + 2
-        except OSError:
-            need = False
-    if need and _db_ok(_CLOUD_DB):
-        try:
-            shutil.copy2(_CLOUD_DB, _LOCAL_DB)
-        except Exception:                              # noqa: BLE001
-            return _CLOUD_DB if _db_ok(_CLOUD_DB) else _LOCAL_DB
-    return _LOCAL_DB
-
-
-DB_PATH = _seed_local()
-_LAST_SNAP = [0.0]
+if _ENV_DB:
+    DB_PATH = _ENV_DB
+elif _local_db_path is not None:
+    DB_PATH = _local_db_path('risk_history.db', cloud_dir=OUTPUT_DIR)
+else:
+    DB_PATH = os.path.join(OUTPUT_DIR, 'risk_history.db')
 
 
 def snapshot(force=False, min_interval=30.0):
-    """本地活库 → 云盘快照（节流，默认 30s 内只同步一次）。失败静默不阻断。"""
-    if os.path.abspath(DB_PATH) == os.path.abspath(_CLOUD_DB):
+    """本地活库 → 云盘 gzip 快照（节流，默认 30s 内只同步一次）。失败静默不阻断。"""
+    if _local_db_snapshot is None:
         return False
     now = time.time()
     if not force and now - _LAST_SNAP[0] < min_interval:
         return False
     try:
-        if not os.path.exists(DB_PATH) or os.path.getsize(DB_PATH) == 0:
-            return False
-        tmp = _CLOUD_DB + '.tmp'
-        shutil.copy2(DB_PATH, tmp)
-        os.replace(tmp, _CLOUD_DB)
+        _local_db_snapshot('risk_history.db', cloud_dir=OUTPUT_DIR)
         _LAST_SNAP[0] = now
         return True
     except Exception:                                  # noqa: BLE001
-        try:
-            os.replace(DB_PATH, _CLOUD_DB)
-            _LAST_SNAP[0] = now
-            return True
-        except Exception:                              # noqa: BLE001
-            return False
-# ================================================================
-IV_HISTORY_CSV = os.path.join(OUTPUT_DIR, 'iv_term_history.csv')
+        return False
 
-# iv_term_history.csv 的品种名 -> 五轨 target_key
-CSV_NAME_TO_KEY = {
-    '沪深300ETF': '300ETF',
-    '中证500ETF': '500ETF',
-    '科创50ETF': 'KC50',
-    '创业板ETF': 'CYB',
-    '中证1000指数': 'ZZ1000',
-}
 
-FIELDS = ['vix', 'r_ratio', 'skew', 'oi_pcr', 'iv_hv',
-          'gex_strength', 'flip_dist', 'flip_price', 'local_gex_yi',
-          'gex_intensity', 'gamma_wall', 'put_wall', 'im_z', 'mo_iv_main',
-          # 2026-10-25 新增「期权偏度预警轨」：
-          # skew10     = 0.1Δ偏度 PutIV-CallIV（百分数，近月DTE>20，delta空间线性插值）
-          # skew10_cum5= 偏度5日变化量（今日−5交易日前，>12红灯）
-          # skew10_pct = skew10 近252日分位
-          # pcr_oi20   = 近月(DTE>20)持仓量PCR（>1.5红灯）
-          'skew10', 'skew10_cum5', 'skew10_pct', 'pcr_oi20']
-
-# 历史库新增列迁移（旧库自动 ALTER，不丢数据）
-_MIGRATION_COLS = {
-    'skew10': 'REAL',
-    'skew10_cum5': 'REAL',
-    'skew10_pct': 'REAL',
-    'pcr_oi20': 'REAL',
-}
+_LAST_SNAP = [0.0]
 
 
 def _conn():

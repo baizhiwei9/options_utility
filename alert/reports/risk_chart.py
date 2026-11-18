@@ -1,27 +1,54 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
-"""指数 + 风险指标双区走势图（期权收盘日报配图）
-
-上图：5 个期权标的对应现货归一化走势（起点 = 100）
-下图：4 个风险面板 —— 偏度(skew10) / 成交量PCR / 持仓量PCR / VIX
-
-数据源（全部本地库，零网络、零 token）：
-- 指数走势      option_chain.db :: chain_daily.spot_price
-- 成交量 PCR    option_chain.db :: pcr_vol_daily.pcr_5d
-- 持仓量 PCR    option_chain.db :: pcr_oi_daily.pcr_5d
-- 偏度 / VIX    risk_history.db :: daily_metrics（skew10 / vix）
-
-口径说明：PCR 与 pcr_history 两张表完全同源，均为「全合约剔除 dte<=5」的 5 日平滑值。
-用法：
-    python options/alert/reports/risk_chart.py [YYYYMMDD] [days]
-    from alert.reports.risk_chart import build_risk_chart
 """
+指数 + 风险指标走势图（每指数一组：上行情、下风险指标）
+========================================================
+一指数一组双子图（2026-11-18 大佬定：一个指数一个子图，上面行情、下面该指数
+自己的那堆风险数据，不要五个指数混在一张、五个指标混在一张）：
 
+    沪深300  ├─ 上图：收盘/点位走势
+             └─ 下图：SKEW指数(左) + VIX(左) + 成交量PCR(右) + 持仓量PCR(右)
+
+偏度口径（2026-11-18 修正）
+--------------------------
+用 **risk_history.daily_metrics.skew**，即 `calc/risk_layer.py::bkm_skew_index()`
+算出的 BKM(2003) 风险中性偏度 → 近似 CBOE SKEW 指数（100 − 10×skew），
+常态区间 90~110，>100 表示左偏（跌保护贵）。**不是** skew10。
+skew10 是 10Δ PutIV−CallIV 的波动率点差（常态 6~11），只用于 skew10 预警轨。
+
+数据源（全本地库，零网络零 token）
+----------------------------------
+  指数行情      option_chain.db :: chain_daily.spot_price
+  成交量/持仓量PCR option_chain.db :: pcr_vol_daily / pcr_oi_daily（pcr_5d）
+  SKEW / VIX    risk_history.db :: daily_metrics（skew / vix）
+
+库路径全部可配置（2026-11-18）：
+  OPTION_CHAIN_DB   期权链库绝对路径
+  RISK_HISTORY_DB   风险历史库绝对路径
+  未设置时按各模块自己探测的默认路径。
+
+用法：
+  python3 alert/reports/risk_chart.py [YYYYMMDD] [days]
+  from alert.reports.risk_chart import build_risk_chart
+  build_risk_chart('20261118', days=40) → 图片绝对路径
+"""
 import os
+import sys
 import sqlite3
 import datetime
 
-# ============ 标的映射 ============
+# ==================== options 项目路径引导 ====================
+_p = os.path.dirname(os.path.abspath(__file__))
+while _p != os.path.dirname(_p) and not (
+        os.path.isdir(os.path.join(_p, 'calc')) and os.path.isdir(os.path.join(_p, 'alert'))):
+    _p = os.path.dirname(_p)
+_OPT_ROOT = _p
+for _sub in (_OPT_ROOT, os.path.join(_OPT_ROOT, 'calc'), os.path.join(_OPT_ROOT, 'calc', 'db'),
+             os.path.join(_OPT_ROOT, 'config'), os.path.join(_OPT_ROOT, 'alert'),
+             os.path.join(_OPT_ROOT, 'alert', 'notifier'), os.path.dirname(_OPT_ROOT)):
+    if _sub not in sys.path:
+        sys.path.insert(0, _sub)
+
 # (显示名, chain_daily.underlying, daily_metrics.target_key, pcr_*_daily.index_name, 颜色)
 CHART_TARGETS = [
     ('沪深300',  '510300', '300ETF', '沪深300',  '#e74c3c'),
@@ -36,30 +63,37 @@ PANEL_BG = '#161b22'
 GRID = '#21262d'
 FG = '#c9d1d9'
 FG_DIM = '#8b949e'
+C_SKEW = '#f1c40f'      # SKEW 指数（左轴）
+C_VIX = '#ff6b6b'       # VIX（左轴，虚线）
+C_PCRV = '#1abc9c'      # 成交量 PCR（右轴）
+C_PCRO = '#b07cf5'      # 持仓量 PCR（右轴）
 
 SMOOTH_COL = 'pcr_5d'
+DEFAULT_DAYS = 40
 
 
+# ==================== 库路径（全部可配置） ====================
 def _db_paths():
-    """两个本地库路径（与 pcr_history / risk_history 模块口径一致）"""
-    try:
-        from options.calc import pcr_history
-        opt_db = pcr_history._db().DB_PATH
-    except Exception:                                  # noqa: BLE001
-        opt_db = os.path.expanduser('~/.local/share/cozedb/option_chain.db')
-    # 2026-11-18 修复：原按「同目录猜文件名」拼 risk_history.db，读到的是
-    # ~/.local/share/cozedb 下的旧库（停在 20261116），而实际写入方是
-    # options/calc/db/risk_history.py —— 它的 DB_PATH 探测出的是 legacy 云盘目录。
-    # 必须直接用模块自己的 DB_PATH，否则图上偏度/VIX 永远滞后。
-    risk_db = None
-    for _imp in ('import risk_history as _hdb', 'from options.calc.db import risk_history as _hdb'):
+    """两个本地库路径。环境变量优先，其次各模块自己探测的默认值。"""
+    opt_db = os.environ.get('OPTION_CHAIN_DB', '').strip()
+    if not opt_db:
         try:
-            ns = {}
-            exec(_imp, ns)                              # noqa: S102
-            risk_db = ns['_hdb'].DB_PATH
-            break
-        except Exception:                              # noqa: BLE001
-            continue
+            from options.calc import pcr_history
+            opt_db = pcr_history._db().DB_PATH
+        except Exception:                                  # noqa: BLE001
+            opt_db = os.path.expanduser('~/.local/share/cozedb/option_chain.db')
+
+    risk_db = os.environ.get('RISK_HISTORY_DB', '').strip()
+    if not risk_db:
+        for _imp in ('import risk_history as _hdb',
+                     'from options.calc.db import risk_history as _hdb'):
+            try:
+                ns = {}
+                exec(_imp, ns)                              # noqa: S102
+                risk_db = ns['_hdb'].DB_PATH
+                break
+            except Exception:                              # noqa: BLE001
+                continue
     if not risk_db:
         risk_db = os.path.join(os.path.dirname(opt_db), 'risk_history.db')
     return opt_db, risk_db
@@ -68,12 +102,12 @@ def _db_paths():
 def _q(conn, sql, args=()):
     try:
         return conn.execute(sql, args).fetchall()
-    except Exception:                                  # noqa: BLE001
+    except sqlite3.Error:
         return []
 
 
-def load_data(trade_date=None, days=60):
-    """读取画图所需全部数据 → {'dates': [...], 'targets': {...}, 'coverage': {...}}"""
+# ==================== 取数 ====================
+def load_data(trade_date=None, days=DEFAULT_DAYS):
     opt_db, risk_db = _db_paths()
     if not os.path.exists(opt_db):
         raise RuntimeError(f'期权链库不存在: {opt_db}')
@@ -83,23 +117,23 @@ def load_data(trade_date=None, days=60):
         r = conn.execute('SELECT MAX(trade_date) FROM chain_daily').fetchone()
         trade_date = r[0] if r else datetime.datetime.now().strftime('%Y%m%d')
 
-    # 主日历：chain_daily 交易日（取近 days 个）
-    rows = _q(conn, 'SELECT DISTINCT trade_date FROM chain_daily WHERE trade_date<=? '
-                    'ORDER BY trade_date DESC LIMIT ?', (trade_date, int(days)))
-    dates = sorted(r[0] for r in rows)
+    dates = [d for (d,) in _q(conn,
+        'SELECT DISTINCT trade_date FROM chain_daily WHERE trade_date<=? '
+        'ORDER BY trade_date DESC LIMIT ?', (trade_date, days))][::-1]
     if not dates:
-        raise RuntimeError(f'{trade_date} 之前无期权链数据')
+        conn.close()
+        raise RuntimeError(f'期权链库无 {trade_date} 之前的数据')
     dset = set(dates)
 
-    # ① 指数现货（每标的每日取一个 spot_price）
+    # ① 标的行情
     spot = {}
     for name, und, _rk, _pn, _c in CHART_TARGETS:
         rows = _q(conn, 'SELECT trade_date, MIN(spot_price) FROM chain_daily '
-                        'WHERE underlying=? AND trade_date<=? AND spot_price>0 '
-                        'GROUP BY trade_date ORDER BY trade_date', (und, trade_date))
+                        'WHERE underlying=? AND trade_date<=? GROUP BY trade_date',
+                  (und, trade_date))
         spot[name] = {d: float(v) for d, v in rows if d in dset and v}
 
-    # ② 两张 PCR 表
+    # ② 两张 PCR 表（同口径 pcr_5d）
     pcr_vol, pcr_oi = {}, {}
     for tname, tgt in (('pcr_vol_daily', pcr_vol), ('pcr_oi_daily', pcr_oi)):
         for name, _u, _rk, pname, _c in CHART_TARGETS:
@@ -108,79 +142,87 @@ def load_data(trade_date=None, days=60):
             tgt[name] = {d: float(v) for d, v in rows if d in dset and v is not None}
     conn.close()
 
-    # ③ 偏度 / VIX（risk_history.db）
-    skew, vix = {}, {}
+    # ③ SKEW 指数 / VIX / VIX 252 日分位（risk_history.db）
+    skew, vix, vix_pct = {}, {}, {}
     coverage = {'skew': None, 'vix': None}
     if os.path.exists(risk_db):
         rc = sqlite3.connect(risk_db)
         for name, _u, rk, _pn, _c in CHART_TARGETS:
-            rows = _q(rc, 'SELECT trade_date, skew10, vix FROM daily_metrics '
+            rows = _q(rc, 'SELECT trade_date, skew, vix FROM daily_metrics '
                           'WHERE target_key=? AND trade_date<=? ORDER BY trade_date',
                       (rk, trade_date))
             skew[name] = {d: float(s) for d, s, _v in rows if d in dset and s is not None}
             vix[name] = {d: float(v) for d, _s, v in rows if d in dset and v is not None}
-        for f in ('skew10', 'vix'):
+            # VIX 一年分位：必须用全量历史算，不能只取图期（否则窗口不足）
+            allv = [(d, float(v)) for d, v in _q(
+                rc, 'SELECT trade_date, vix FROM daily_metrics '
+                    'WHERE target_key=? AND vix IS NOT NULL ORDER BY trade_date', (rk,))
+                if v is not None]
+            vix_pct[name] = {d: p for d, p in _rolling_pct(allv).items() if d in dset}
+        for f in ('skew', 'vix'):
             r = _q(rc, f'SELECT MAX(trade_date) FROM daily_metrics WHERE {f} IS NOT NULL '
                        f'AND trade_date<=?', (trade_date,))
-            coverage['skew' if f == 'skew10' else 'vix'] = r[0][0] if r else None
+            coverage[f] = r[0][0] if r else None
+        # SKEW 起始日（该列是 2026-10-22 才上线的，前面没有）
+        r = _q(rc, 'SELECT MIN(trade_date) FROM daily_metrics WHERE skew IS NOT NULL '
+                   'AND trade_date<=?', (trade_date,))
+        coverage['skew_from'] = r[0][0] if r else None
         rc.close()
 
     return {
         'trade_date': trade_date, 'dates': dates,
         'spot': spot, 'vol_pcr': pcr_vol, 'oi_pcr': pcr_oi,
-        'skew': skew, 'vix': vix, 'coverage': coverage,
+        'skew': skew, 'vix': vix, 'vix_pct': vix_pct, 'coverage': coverage,
+        'opt_db': opt_db, 'risk_db': risk_db,
     }
 
 
-def _style(ax, title=None, ylabel=None, show_x=False, dates=None):
+# ==================== 画图 ====================
+def _style(ax, title=None, ylabel=None, dates=None, show_x=False):
     ax.set_facecolor(PANEL_BG)
     ax.grid(True, color=GRID, linewidth=0.6, alpha=0.9)
     for s in ax.spines.values():
         s.set_color(GRID)
-    ax.tick_params(colors=FG_DIM, labelsize=9)
+    ax.tick_params(colors=FG_DIM, labelsize=8)
     if title:
-        ax.set_title(title, color=FG, fontsize=11, loc='left', pad=4)
+        ax.set_title(title, color=FG, fontsize=10.5, loc='left', pad=5)
     if ylabel:
-        ax.set_ylabel(ylabel, color=FG_DIM, fontsize=9)
-    if show_x and dates:
-        n = len(dates)
-        step = max(1, n // 10)
-        idx = list(range(0, n, step))
+        ax.set_ylabel(ylabel, color=FG_DIM, fontsize=8.5)
+    if dates and show_x:
+        step = max(1, len(dates) // 7)
+        idx = list(range(0, len(dates), step))
         ax.set_xticks(idx)
-        ax.set_xticklabels([f'{dates[i][4:6]}-{dates[i][6:8]}' for i in idx],
-                           color=FG_DIM, fontsize=8.5)
+        ax.set_xticklabels([dates[i][4:] for i in idx], fontsize=7.5)
     else:
         ax.set_xticks([])
 
 
-def _plot_panel(ax, data_map, dates, ylabel, fmt='{:.2f}', title=None):
-    """在一个面板里画 5 个标的的序列，右侧标注最新值"""
-    x = list(range(len(dates)))
+def _series_pts(ser, dates):
     xmap = {d: i for i, d in enumerate(dates)}
-    latest = []
-    for name, _u, _rk, _pn, color in CHART_TARGETS:
-        ser = data_map.get(name) or {}
-        pts = [(xmap[d], ser[d]) for d in dates if d in ser]
-        if len(pts) < 2:
-            continue
-        ax.plot([p[0] for p in pts], [p[1] for p in pts],
-                color=color, linewidth=1.5, label=name)
-        last_d = max((d for d in dates if d in ser))
-        latest.append((ser[last_d], color, name))
-    if latest:
-        # 右端错开标注，避免重叠
-        latest.sort(key=lambda t: t[0])
-        span = max(1e-9, (max(v for v, _, _ in latest) - min(v for v, _, _ in latest)))
-        last_i = len(dates) - 1
-        for k, (v, color, name) in enumerate(latest):
-            y = v + span * 0.09 * (k - (len(latest) - 1) / 2)
-            ax.text(last_i + len(dates) * 0.012, y, fmt.format(v),
-                    color=color, fontsize=8.5, va='center', fontweight='bold')
-    _style(ax, title=title, ylabel=ylabel)
+    return [xmap[d] for d in dates if d in ser], [ser[d] for d in dates if d in ser]
 
 
-def build_risk_chart(trade_date=None, days=60, out_path=None):
-    """生成双区走势图 → 返回图片绝对路径（失败抛异常）"""
+def _last(ser, dates):
+    got = [d for d in dates if d in ser]
+    return (ser[max(got)], max(got) != dates[-1]) if got else (None, False)
+
+
+def _rolling_pct(series_sorted, window=252, min_n=20):
+    """逐日滚动分位（%）。公式与 risk_history.percentile 完全一致：
+    sum(v < current) / n * 100，窗口含当日、不足 min_n 不出值。
+    series_sorted: [(trade_date, value)] 升序。"""
+    out = {}
+    vals = [v for _d, v in series_sorted]
+    for i, (dt, cur) in enumerate(series_sorted):
+        win = vals[max(0, i - window + 1): i + 1]
+        n = len(win)
+        if n >= min_n and cur is not None:
+            out[dt] = sum(1 for v in win if v < cur) / n * 100.0
+    return out
+
+
+def build_risk_chart(trade_date=None, days=DEFAULT_DAYS, out_path=None):
+    """生成「每指数一组」双子图 → 返回图片绝对路径（失败抛异常）"""
     import matplotlib
     matplotlib.use('Agg')
     import matplotlib.pyplot as plt
@@ -189,100 +231,111 @@ def build_risk_chart(trade_date=None, days=60, out_path=None):
     for _fn in ('Noto Sans CJK JP', 'WenQuanYi Micro Hei'):
         try:
             font_manager.findfont(_fn, fallback_to_default=False)
-            plt.rcParams['font.sans-serif'] = [_fn]
+            plt.rcParams['font.sans-serif'] = [_fn, 'DejaVu Sans']
             break
-        except Exception:                              # noqa: BLE001
+        except Exception:                                  # noqa: BLE001
             continue
     plt.rcParams['axes.unicode_minus'] = False
 
-    d = load_data(trade_date, days=days)
-    dates = d['dates']
-    td = d['trade_date']
-
-    fig = plt.figure(figsize=(16, 13.5), facecolor=BG)
-    gs = fig.add_gridspec(5, 1, height_ratios=[2.3, 1, 1, 1, 1],
-                          hspace=0.16, left=0.055, right=0.955, top=0.945, bottom=0.045)
-    ax_idx = fig.add_subplot(gs[0])
-    ax_skew = fig.add_subplot(gs[1])
-    ax_vpcr = fig.add_subplot(gs[2])
-    ax_opcr = fig.add_subplot(gs[3])
-    ax_vix = fig.add_subplot(gs[4])
-
-    # ── 上图：归一化指数走势 ──
-    x = list(range(len(dates)))
-    xmap = {dt: i for i, dt in enumerate(dates)}
-    ends = []
-    for name, _u, _rk, _pn, color in CHART_TARGETS:
-        ser = d['spot'].get(name) or {}
-        pts = [(xmap[dt], ser[dt]) for dt in dates if dt in ser]
-        if len(pts) < 2:
-            continue
-        base = pts[0][1]
-        ys = [v / base * 100 for _, v in pts]
-        ax_idx.plot([p[0] for p in pts], ys, color=color, linewidth=2.0, label=name)
-        ends.append((ys[-1], color, name))
-    if ends:
-        ends.sort(key=lambda t: t[0])
-        span = max(1e-9, ends[-1][0] - ends[0][0])
-        for k, (v, color, name) in enumerate(ends):
-            y = v + span * 0.075 * (k - (len(ends) - 1) / 2)
-            ax_idx.text(len(dates) - 1 + len(dates) * 0.008, y, f'{v:.1f}',
-                        color=color, fontsize=9.5, va='center', fontweight='bold')
-    ax_idx.axhline(100, color=FG_DIM, linewidth=0.8, linestyle='--', alpha=0.55)
-    _style(ax_idx, ylabel='归一化（起点=100）',
-           title=f'{td}  指数走势与风险指标（近 {len(dates)} 交易日，起点归一化=100）')
-    leg = ax_idx.legend(loc='upper left', ncol=5, frameon=False, fontsize=9.5)
-    for t in leg.get_texts():
-        t.set_color(FG)
-
-    # ── 下图：4 个风险面板 ──
-    _plot_panel(ax_skew, d['skew'], dates, '偏度', title='偏度 skew10（10日偏度，越高越看空）')
-    _plot_panel(ax_vpcr, d['vol_pcr'], dates, 'PCR',
-                title=f'成交量 PCR（{SMOOTH_COL}，全合约剔除 dte≤5）')
-    _plot_panel(ax_opcr, d['oi_pcr'], dates, 'PCR',
-                title=f'持仓量 PCR（{SMOOTH_COL}，全合约剔除 dte≤5）')
-    _plot_panel(ax_vix, d['vix'], dates, 'VIX',
-                title='VIX（自算 CBOE 法，年化波动率 %）')
-    _style(ax_vix, show_x=True, dates=dates)
-    ax_vix.tick_params(colors=FG_DIM)
-    for lbl in ax_vix.get_xticklabels():
-        lbl.set_color(FG_DIM)
-
-    # 脚注：数据覆盖说明
+    d = load_data(trade_date, days)
+    td, dates = d['trade_date'], d['dates']
     cov = d['coverage']
-    notes = [f'指数/PCR 数据至 {td}']
-    if cov.get('skew'):
-        notes.append(f'偏度至 {cov["skew"]}')
-    if cov.get('vix'):
-        notes.append(f'VIX 至 {cov["vix"]}')
-    notes.append('数据源：本地期权链库 + risk_history（零网络）')
-    fig.text(0.055, 0.012, '　|　'.join(notes), color=FG_DIM, fontsize=9)
+
+    n = len(CHART_TARGETS)
+    fig = plt.figure(figsize=(16, 3.05 * n + 1.6))
+    gs = fig.add_gridspec(n * 2, 1, height_ratios=[1.15, 1] * n,
+                          hspace=0.42, left=0.055, right=0.925, top=0.962, bottom=0.048)
+    fig.patch.set_facecolor(BG)
+
+    for i, (name, _und, _rk, _pn, color) in enumerate(CHART_TARGETS):
+        # ---------- 上图：该指数行情 ----------
+        ax = fig.add_subplot(gs[i * 2])
+        xs, ys = _series_pts(d['spot'].get(name) or {}, dates)
+        if len(xs) >= 2:
+            ax.plot(xs, ys, color=color, linewidth=1.9)
+            ax.fill_between(xs, ys, min(ys) - (max(ys) - min(ys)) * 0.35,
+                            color=color, alpha=0.10)
+            _v, _stale = _last(d['spot'][name], dates)
+            _vtag = (f'　最新 {_v:,.3f}'.rstrip('0').rstrip('.') + ('*' if _stale else '')) if _v is not None else ''
+        else:
+            _vtag = ''
+        _style(ax, title=f'{name}　收盘 / 点位{_vtag}', ylabel='价格', dates=dates,
+               show_x=(i == n - 1))
+
+        # ---------- 下图：该指数风险指标 ----------
+        # 左轴：SKEW 指数（90~110 量级）；右轴：VIX 一年分位 + 量/仓 PCR
+        ax2 = fig.add_subplot(gs[i * 2 + 1])
+        sxs, sys_ = _series_pts(d['skew'].get(name) or {}, dates)
+        if len(sxs) >= 2:
+            ax2.plot(sxs, sys_, color=C_SKEW, linewidth=1.9, label='SKEW指数')
+            ax2.axhline(100, color=C_SKEW, linewidth=0.8, linestyle=':', alpha=0.45)
+            ax2.set_ylim(min(min(sys_), 99) - 2, max(max(sys_), 101) + 2)
+
+        _tag = []
+        for _lbl, _ser, _fmt in (('SKEW', d['skew'].get(name) or {}, '{:.1f}'),
+                                 ('VIX一年分位', d['vix_pct'].get(name) or {}, '{:.0f}%'),
+                                 ('量PCR', d['vol_pcr'].get(name) or {}, '{:.2f}'),
+                                 ('仓PCR', d['oi_pcr'].get(name) or {}, '{:.2f}')):
+            _v, _st = _last(_ser, dates)
+            if _v is not None:
+                _tag.append(f'{_lbl} {_fmt.format(_v)}' + ('*' if _st else ''))
+        _style(ax2, title=f'{name}　风险指标　' + ' ｜ '.join(_tag),
+               ylabel='SKEW指数', dates=dates, show_x=(i == n - 1))
+
+        # 右轴：VIX 一年分位（画 0~1，刻度标 %）+ 成交量/持仓量 PCR
+        ax3 = ax2.twinx()
+        px_x, px_y = _series_pts(d['vix_pct'].get(name) or {}, dates)
+        if len(px_x) >= 2:
+            ax3.plot(px_x, [v / 100.0 for v in px_y], color=C_VIX, linewidth=1.6,
+                     linestyle='--', label='VIX一年分位')
+        pv_x, pv_y = _series_pts(d['vol_pcr'].get(name) or {}, dates)
+        po_x, po_y = _series_pts(d['oi_pcr'].get(name) or {}, dates)
+        if len(pv_x) >= 2:
+            ax3.plot(pv_x, pv_y, color=C_PCRV, linewidth=1.5, label='成交量PCR')
+        if len(po_x) >= 2:
+            ax3.plot(po_x, po_y, color=C_PCRO, linewidth=1.5, label='持仓量PCR')
+        ax3.set_facecolor('none')
+        for sp in ax3.spines.values():
+            sp.set_color(GRID)
+        ax3.tick_params(colors=FG_DIM, labelsize=8)
+        ax3.set_ylabel('VIX分位 / PCR', color=FG_DIM, fontsize=8.5)
+        _ymax = max([v / 100.0 for _x, v in zip(px_x, px_y)] + list(pv_y) + list(po_y) + [0.6])
+        ax3.set_ylim(0, _ymax * 1.18)
+
+        h1, l1 = ax2.get_legend_handles_labels()
+        h2, l2 = ax3.get_legend_handles_labels()
+        if h1 or h2:
+            ax2.legend(h1 + h2, l1 + l2, loc='lower left', fontsize=7,
+                       facecolor=PANEL_BG, edgecolor=GRID, labelcolor=FG,
+                       ncol=4, framealpha=0.9, handlelength=1.6)
+
+    # ---------- 标题 / 脚注 ----------
+    fig.text(0.055, 0.988, f'{td}　指数行情 + 风险指标（每指数一组，近 {len(dates)} 交易日）',
+             color=FG, fontsize=14, fontweight='bold', ha='left', va='top')
+
+    line1 = [f'行情/PCR 至 {dates[-1]}',
+             f"SKEW指数 至 {cov.get('skew') or '—'}"
+             + (f"（自 {cov['skew_from']} 起）" if cov.get('skew_from') else ''),
+             f"VIX 至 {cov.get('vix') or '—'}",
+             '数据源：本地期权链库 + risk_history（零网络）']
+    line2 = ['SKEW = BKM 风险中性偏度指数化 100−10×skew（>100 左偏、跌保护贵）',
+             'VIX一年分位 = 当日 VIX 在近 252 交易日分布中的百分位',
+             'PCR = 全合约剔除 dte≤5 的 5 日平滑',
+             '* = 该标的当日无数据，取最近有效值']
+    fig.text(0.055, 0.018, '　|　'.join(line1), color=FG_DIM, fontsize=8.5, ha='left', va='bottom')
+    fig.text(0.055, 0.004, '　|　'.join(line2), color=FG_DIM, fontsize=8.5, ha='left', va='bottom')
 
     if out_path is None:
-        # 与 close.py 的 OUTPUT_DIR 一致：options/alert/outputs
-        _OD = os.path.join(os.path.dirname(os.path.dirname(
-            os.path.abspath(__file__))), 'outputs')
+        _OD = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), 'outputs')
         os.makedirs(_OD, exist_ok=True)
         out_path = os.path.join(_OD, f'{td}_risk_chart.png')
-    os.makedirs(os.path.dirname(os.path.abspath(out_path)), exist_ok=True)
-    fig.savefig(out_path, dpi=150, bbox_inches='tight', facecolor=BG)
+    fig.savefig(out_path, dpi=125, facecolor=BG)
     plt.close(fig)
+    print(f'✅ 图已生成: {out_path}')
     return out_path
 
 
-def main():
-    import sys
-    td = None
-    days = 60
-    for a in sys.argv[1:]:
-        if a.isdigit() and len(a) == 8:
-            td = a
-        elif a.isdigit():
-            days = int(a)
-    p = build_risk_chart(td, days=days)
-    print(f'✅ 图已生成: {p}')
-    return p
-
-
 if __name__ == '__main__':
-    main()
+    _td = sys.argv[1] if len(sys.argv) > 1 else None
+    _days = int(sys.argv[2]) if len(sys.argv) > 2 else DEFAULT_DAYS
+    print(build_risk_chart(_td, _days))
