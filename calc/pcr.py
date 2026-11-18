@@ -105,7 +105,12 @@ INDEX_ETF_MAP = {
     '创业板':  ['159915'],
 }
 
-# 2026-10-23：中证1000 走 MO 股指期权「主力系列」口径（无 ETF 期权）
+# 中证1000 → 中金所 MO 股指期权（无 ETF 期权）
+# 2026-11-18 口径统一：由「MO 主力月单月」改为「MO 全合约 + 剔除 dte<=5」，
+# 与 calc/pcr_history.py 的 pcr_vol_daily / pcr_oi_daily 两张表完全一致。
+INDEX_OPT_MAP = {
+    '中证1000': 'MO',
+}
 ZZ1000_INDEX_NAME = '中证1000'
 ZZ1000_UNDERLYING = '000852'
 # 红线候选指数全集（上证50 出、中证1000 进，共 5 个）
@@ -371,17 +376,13 @@ def _compute_pcr_from_chain_db(trading_date_compact, smooth_days=5, min_days=3,
 
     result = {}
     date_range = f"{dates[0]}~{dates[-1]}"
-    for index_name, etf_codes in INDEX_ETF_MAP.items():
-        rows_all, found = [], []
-        for etf in etf_codes:
-            if etf in by_under:
-                found.append(etf)
-                rows_all.extend(by_under[etf])
-        if not rows_all:
-            continue
-        _all = pd.DataFrame(rows_all)
-        # 2026-11-18 口径统一：成交量与持仓量 PCR 用**同一个合约池**
-        #   默认剔除 dte ≤ exclude_dte_max；exclude_current_month=True 时再剔当月整月
+
+    def _pcr_from_pool(rows):
+        """同一合约池算 vol_pcr / oi_pcr —— 两指标共用池，口径绝不分开"""
+        if not rows:
+            return None, None
+        _all = pd.DataFrame(rows)
+        # 默认剔除 dte <= exclude_dte_max；exclude_current_month 时再剔当月整月
         _all = _all[_all['dte'] > int(exclude_dte_max)]
         _base = _all[_all['maturity_month'] != current_month] if exclude_current_month else _all
         vol_pcr = oi_pcr = None
@@ -402,6 +403,18 @@ def _compute_pcr_from_chain_db(trading_date_compact, smooth_days=5, min_days=3,
             _c = _base.loc[_base['call_put'] == 'C', 'oi'].sum()
             _p = _base.loc[_base['call_put'] == 'P', 'oi'].sum()
             oi_pcr = _p / _c if _c > 0 else None
+        return vol_pcr, oi_pcr
+
+    # ① ETF 指数（沪深300 / 中证500 / 科创50 / 创业板）
+    for index_name, etf_codes in INDEX_ETF_MAP.items():
+        rows_all, found = [], []
+        for etf in etf_codes:
+            if etf in by_under:
+                found.append(etf)
+                rows_all.extend(by_under[etf])
+        if not rows_all:
+            continue
+        vol_pcr, oi_pcr = _pcr_from_pool(rows_all)
         result[index_name] = {
             'vol_pcr': vol_pcr,
             'oi_pcr': oi_pcr,
@@ -414,6 +427,26 @@ def _compute_pcr_from_chain_db(trading_date_compact, smooth_days=5, min_days=3,
             'smooth_days': len(dates),
             'warning': None,
         }
+
+    # ② 中证1000：MO 全合约（2026-11-18 口径统一，原「主力月单月」废弃）
+    for index_name, opt_code in INDEX_OPT_MAP.items():
+        rows_all = by_under.get(opt_code, [])
+        if not rows_all:
+            continue
+        vol_pcr, oi_pcr = _pcr_from_pool(rows_all)
+        result[index_name] = {
+            'vol_pcr': vol_pcr,
+            'oi_pcr': oi_pcr,
+            'source': 'chain_db',
+            'excluded': exclude_current_month,
+            'exclude_dte_max': exclude_dte_max,
+            'etfs': [opt_code],
+            'etf_label': f'{opt_code}全合约',
+            'date_range': date_range,
+            'smooth_days': len(dates),
+            'warning': None,
+        }
+
     return result or None
 
 
@@ -752,7 +785,7 @@ def get_index_pcr(index_name, trading_date, smooth_days=5, min_days=3,
         trading_date: str - 日期 'YYYYMMDD' 或 'YYYY-MM-DD'
         smooth_days: int - 平滑天数 (默认5)
         min_days: int - 最少有效天数 (默认3)
-        exclude_current_month: bool - 是否剔除当月到期合约 (默认True)
+        exclude_current_month: bool - 是否剔除当月到期合约 (默认False，默认只剔 dte<=exclude_dte_max)
     
     返回:
         dict: {
@@ -770,16 +803,20 @@ def get_index_pcr(index_name, trading_date, smooth_days=5, min_days=3,
     # 统一日期格式
     trading_date_compact = trading_date.replace('-', '')
     
-    # 2026-10-23：中证1000 走 MO 股指期权「主力系列」
+    # 中证1000：MO 全合约（2026-11-18 口径统一，与两张 PCR 表一致）
     if index_name == ZZ1000_INDEX_NAME:
-        print(f"  [PCR] {index_name} → MO 主力系列...")
-        zz = get_zz1000_main_pcr(trading_date_compact, smooth_days=smooth_days, min_days=min_days)
+        print(f"  [PCR] {index_name} → MO 全合约...")
+        zz = get_zz1000_main_pcr(trading_date_compact, smooth_days=smooth_days,
+                                 min_days=min_days,
+                                 exclude_current_month=exclude_current_month,
+                                 exclude_dte_max=exclude_dte_max)
         if zz:
             return zz
         return {
             'vol_pcr': None, 'oi_pcr': None, 'date_range': '', 'smooth_days': 0,
-            'source': 'none', 'excluded': False, 'etfs': [], 'etf_label': 'MO主力系列',
-            'warning': '❌中证1000(MO主力)取数失败',
+            'source': 'none', 'excluded': exclude_current_month,
+            'exclude_dte_max': exclude_dte_max, 'etfs': ['MO'], 'etf_label': 'MO全合约',
+            'warning': '❌中证1000(MO全合约)取数失败',
         }
     
     # L0: 本地期权链库（零网络，最快）
@@ -977,7 +1014,8 @@ def _datahub_scripts_dir():
     return _root if os.path.isdir(os.path.join(_root, 'data_hub')) else None
 
 
-def get_zz1000_main_pcr(trading_date_compact, smooth_days=5, min_days=3):
+def get_zz1000_main_pcr(trading_date_compact, smooth_days=5, min_days=3,
+                        exclude_current_month=False, exclude_dte_max=5):
     """中证1000 PCR —— 中金所 MO 股指期权「主力系列」口径。
 
     主力系列 = 成交+持仓量最大的到期月（近月主力）；严禁用 ETF 期权替代、
@@ -986,9 +1024,21 @@ def get_zz1000_main_pcr(trading_date_compact, smooth_days=5, min_days=3):
 
     返回 dict（与 _compute_pcr_from_tushare 的逐指数结构一致），失败返回 None。
     """
+    # ── L0：本地期权链库（与 pcr_vol_daily / pcr_oi_daily 两张表同源同口径）──
+    try:
+        _l0 = _compute_pcr_from_chain_db(
+            trading_date_compact, smooth_days=smooth_days, min_days=min_days,
+            exclude_current_month=exclude_current_month,
+            exclude_dte_max=exclude_dte_max)
+        if _l0 and _l0.get(ZZ1000_INDEX_NAME) and _l0[ZZ1000_INDEX_NAME].get('vol_pcr') is not None:
+            print(f"    ✅ 中证1000(MO全合约/L0) PCR={_l0[ZZ1000_INDEX_NAME]['vol_pcr']:.3f}")
+            return _l0[ZZ1000_INDEX_NAME]
+    except Exception:                             # noqa: BLE001
+        pass
+
     dh = _datahub_scripts_dir()
     if not dh:
-        print("    ❌ 中证1000(MO主力): data_hub 路径不可用")
+        print("    ❌ 中证1000(MO全合约): data_hub 路径不可用")
         return None
     if dh not in sys.path:
         sys.path.insert(0, dh)
@@ -996,7 +1046,7 @@ def get_zz1000_main_pcr(trading_date_compact, smooth_days=5, min_days=3):
         from data_hub.collectors import option_intraday as _oi
         from data_hub.collectors.stock_daily import get_trade_dates
     except Exception as e:  # noqa: BLE001
-        print(f"    ❌ 中证1000(MO主力): data_hub 导入失败 {e}")
+        print(f"    ❌ 中证1000(MO全合约): data_hub 导入失败 {e}")
         return None
 
     end_dt = datetime.strptime(trading_date_compact, '%Y%m%d')
@@ -1007,7 +1057,7 @@ def get_zz1000_main_pcr(trading_date_compact, smooth_days=5, min_days=3):
         tds = []
     tds = [d for d in tds if d <= trading_date_compact]
     if not tds:
-        print("    ⚠️ 中证1000(MO主力): 交易日历为空")
+        print("    ⚠️ 中证1000(MO全合约): 交易日历为空")
         return None
     tds = tds[-smooth_days:]
 
@@ -1017,13 +1067,24 @@ def get_zz1000_main_pcr(trading_date_compact, smooth_days=5, min_days=3):
         chain = _oi.fetch_cffex_daily_chain(td)
         if not chain:
             continue
-        ms, mm = _oi.select_main_series(chain, 'cffex')
-        if not ms:
+        # 2026-11-18 口径统一：全合约 + 剔除 dte<=exclude_dte_max（不再取主力月单月）
+        cur_month = str(td)[:6]
+        pool = []
+        for c in chain:
+            _dte = c.get('dte')
+            if _dte is None or int(_dte) <= int(exclude_dte_max):
+                continue
+            _mat = str(c.get('maturity_date') or '')
+            if exclude_current_month and _mat[:6] == cur_month:
+                continue
+            pool.append(c)
+        if not pool:
             continue
         used.append(td)
-        if mm:
-            months.append(mm)
-        for c in ms:
+        _mats = sorted({str(c.get('maturity_date') or '')[:6] for c in pool if c.get('maturity_date')})
+        if _mats:
+            months.append('/'.join(_mats))
+        for c in pool:
             if str(c.get('call_put')).upper() == 'P':
                 put_vol += float(c.get('vol') or 0)
                 put_oi += float(c.get('oi') or 0)
@@ -1032,24 +1093,25 @@ def get_zz1000_main_pcr(trading_date_compact, smooth_days=5, min_days=3):
                 call_oi += float(c.get('oi') or 0)
 
     if len(used) < 1 or call_vol <= 0:
-        print(f"    ⚠️ 中证1000(MO主力): 有效交易日 {len(used)} 天，认购量为 0，返回空")
+        print(f"    ⚠️ 中证1000(MO全合约): 有效交易日 {len(used)} 天，认购量为 0，返回空")
         return None
     vol_pcr = round(put_vol / call_vol, 4)
     oi_pcr = round(put_oi / call_oi, 4) if call_oi > 0 else None
     warn = None
     if len(used) < min_days:
         warn = f"⚠️样本不足(仅{len(used)}天)"
-    print(f"    ✅ 中证1000(MO主力) PCR={vol_pcr:.3f} "
-          f"(主力月{months[-1] if months else '?'}, {len(used)}日平滑, 全主力系列)")
+    print(f"    ✅ 中证1000(MO全合约) PCR={vol_pcr:.3f} "
+          f"(月{months[-1] if months else '?'}, {len(used)}日平滑, dte>{exclude_dte_max})")
     return {
         'vol_pcr': vol_pcr,
         'oi_pcr': oi_pcr,
         'date_range': f"{used[0]}~{used[-1]}",
         'smooth_days': len(used),
-        'source': 'cffex_mo_main',
-        'excluded': False,
-        'etfs': [],
-        'etf_label': 'MO主力系列',
+        'source': 'cffex_mo_all',
+        'excluded': exclude_current_month,
+        'exclude_dte_max': exclude_dte_max,
+        'etfs': ['MO'],
+        'etf_label': 'MO全合约',
         'warning': warn,
     }
 
@@ -1067,14 +1129,17 @@ def get_all_index_pcr(trading_date, smooth_days=5, min_days=3,
         exclude_dte_max=exclude_dte_max)
     td_compact = trading_date.replace('-', '')
     try:
-        zz = get_zz1000_main_pcr(td_compact, smooth_days=smooth_days, min_days=min_days)
+        zz = get_zz1000_main_pcr(td_compact, smooth_days=smooth_days, min_days=min_days,
+                                 exclude_current_month=exclude_current_month,
+                                 exclude_dte_max=exclude_dte_max)
     except Exception as e:  # noqa: BLE001
-        print(f"    ❌ 中证1000(MO主力) 异常: {e}")
+        print(f"    ❌ 中证1000(MO全合约) 异常: {e}")
         zz = None
     result[ZZ1000_INDEX_NAME] = zz if zz else {
         'vol_pcr': None, 'oi_pcr': None, 'date_range': '', 'smooth_days': 0,
-        'source': 'none', 'excluded': False, 'etfs': [], 'etf_label': 'MO主力系列',
-        'warning': '❌中证1000(MO主力)取数失败',
+        'source': 'none', 'excluded': exclude_current_month,
+        'exclude_dte_max': exclude_dte_max, 'etfs': ['MO'], 'etf_label': 'MO全合约',
+        'warning': '❌中证1000(MO全合约)取数失败',
     }
     return result
 
@@ -1119,7 +1184,7 @@ def fetch_pcr_for_bottom_monitor(trading_date_compact):
         elif source == 'akshare_summary':
             info_parts.append("⚠️含当月(单日)")
         elif source == 'cffex_mo_main':
-            info_parts.append(f"MO主力系列×{smooth_days}日")
+            info_parts.append(f"MO全合约×{smooth_days}日")
         
         if etf_label and '+' in etf_label:
             info_parts.append(f"合并ETF({etf_label})")
