@@ -266,10 +266,28 @@ def _fetch_level0_datahub(symbol, cfg, start_date=None, end_date=None):
         for _, row in df_spot.iterrows():
             spot_data[str(row['trade_date']).replace('-', '')] = float(row['close'])
     elif cfg['category'] == '国债':
-        # ⚠️ data_hub 的 get_bond_yield 目前忽略 start_date/end_date（实测任意区间都只返回
-        #    最近约 10 个交易日），拿不到基差百分位需要的 400 天历史 → 国债走 L1 akshare 分批。
-        #    待 data_hub bond/interest_rate 修好窗口参数后，删掉这行 return 即可自动接管。
-        return None, None, 'data_hub 国债窗口参数未生效（待修），走 L1'
+        # 中债国债收益率曲线：spot_symbol 直接是期限列名（T→10年 / TF→5年 / TS→1年 / TL→30年）
+        # 2026-11-18：data_hub get_bond_yield 已修好 start_date/end_date 透传，国债基差正式走 L0。
+        term = spot_symbol
+        try:
+            df_bond = get_bond_yield(start_date=start_date, end_date=end_date)
+        except Exception as _e:                   # noqa: BLE001
+            return None, None, f'data_hub 国债异常: {str(_e)[:60]}'
+        if df_bond is None or len(df_bond) == 0:
+            return None, None, 'data_hub 国债返回空'
+        df_bond = df_bond[df_bond['曲线名称'].astype(str).str.contains('国债', na=False)]
+        if len(df_bond) == 0:
+            return None, None, 'data_hub 国债曲线为空'
+        df_bond = df_bond.drop_duplicates(subset=['日期'])
+        if term not in df_bond.columns:
+            return None, None, f'data_hub 国债无 {term} 列'
+        for _, row in df_bond.iterrows():
+            try:
+                val = float(row[term])
+                if val > 0:
+                    spot_data[str(row['日期']).replace('-', '')] = val
+            except (ValueError, TypeError):
+                pass
 
     if not spot_data:
         return None, None, 'data_hub 无现货数据'
