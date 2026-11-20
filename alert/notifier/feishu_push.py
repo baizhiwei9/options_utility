@@ -50,6 +50,82 @@ CHAT_ID = FEISHU_CHAT_ID
 MAX_LEN = 4000  # 飞书单条消息字符上限
 CARD_MD_MAX = 2800  # 飞书卡片单个Markdown元素字符上限（留buffer）
 
+# ==================== 元宝群镜像（2026-11-20 新增） ====================
+# 大佬要求：飞书推什么，元宝群也同步一份。全系统只有这一份实现。
+# 关闭：YUANBAO_MIRROR=0｜群可换：YUANBAO_TARGET=group:xxxx｜CLI 路径：YUANBAO_CLI
+# 依赖：本机 OpenClaw 的 yuanbao 渠道（openclaw message send --channel yuanbao）
+_YA_TARGET = os.environ.get('YUANBAO_TARGET', 'group:533820292')
+_YA_CLI = os.environ.get('YUANBAO_CLI', '/usr/bin/openclaw')
+_YA_CHUNK = 2400  # 元宝单条安全长度
+
+
+def _ya_split(text, max_len=_YA_CHUNK):
+    """按行切块，尽量不切断 markdown 表格/段落"""
+    text = str(text).strip()
+    if len(text) <= max_len:
+        return [text]
+    blocks, buf, cur = [], [], 0
+    for line in text.split('\n'):
+        if cur + len(line) + 1 > max_len and buf:
+            blocks.append('\n'.join(buf))
+            buf, cur = [], 0
+        buf.append(line)
+        cur += len(line) + 1
+    if buf:
+        blocks.append('\n'.join(buf))
+    out = []
+    for b in blocks:
+        while len(b) > max_len:
+            out.append(b[:max_len])
+            b = b[max_len:]
+        if b:
+            out.append(b)
+    return out
+
+
+def _ya_send_one(content, retries=2, wait=8):
+    """单段发送；撞网关会话锁时退避重试"""
+    cmd = [_YA_CLI, 'message', 'send', '--channel', 'yuanbao',
+           '--target', _YA_TARGET, '--message', content]
+    err = ''
+    for attempt in range(1, retries + 1):
+        try:
+            r = subprocess.run(cmd, capture_output=True, text=True, timeout=120)
+            if r.returncode == 0:
+                return True, ''
+            err = (r.stderr or r.stdout or '').strip()[-200:]
+        except Exception as e:
+            err = f'{type(e).__name__}: {e}'
+        if attempt < retries:
+            time.sleep(wait)
+    return False, err
+
+
+def _mirror_to_yuanbao(text):
+    """同一份内容镜像到元宝群；失败只告警，绝不影响飞书主链路"""
+    if os.environ.get('YUANBAO_MIRROR', '1') == '0':
+        return False
+    if not text or not str(text).strip():
+        return False
+    try:
+        chunks = _ya_split(text)
+        ok = 0
+        for i, c in enumerate(chunks, 1):
+            prefix = f'[{i}/{len(chunks)}]\n' if len(chunks) > 1 else ''
+            sent, err = _ya_send_one(prefix + c)
+            if sent:
+                ok += 1
+            else:
+                print(f"⚠️  元宝镜像第{i}/{len(chunks)}段失败: {err}")
+        if ok == len(chunks):
+            print(f"✅ 元宝群镜像完成 ({len(chunks)}段)")
+            return True
+        print(f"⚠️  元宝群镜像部分失败: {ok}/{len(chunks)}")
+        return False
+    except Exception as e:
+        print(f"⚠️  元宝镜像异常: {type(e).__name__}: {e}")
+        return False
+
 
 # ============================================================
 # 通用 Markdown 转卡片
@@ -173,7 +249,10 @@ def push_to_feishu(file_path=None, text=None, chat_id=None, as_file=False, as_ca
     if as_card:
         title = _extract_title_from_content(text)
         card = markdown_to_card(title, text)
-        return push_card_to_feishu(card_dict=card, chat_id=cid)
+        _ok = push_card_to_feishu(card_dict=card, chat_id=cid)
+        if _ok:
+            _mirror_to_yuanbao(text)
+        return _ok
 
     # 纯文本模式（原有逻辑）
     segments = _split_text(text, MAX_LEN)
@@ -191,6 +270,7 @@ def push_to_feishu(file_path=None, text=None, chat_id=None, as_file=False, as_ca
     total = len(segments)
     if success == total:
         print(f"✅ 飞书推送完成 ({total}段)")
+        _mirror_to_yuanbao(text)
         return True
     else:
         print(f"⚠️ 飞书推送部分失败: {success}/{total}")
@@ -585,4 +665,6 @@ def push_report_full_to_feishu(report_path, title=None, chat_id=None):
         }
         if not push_card_to_feishu(card_dict=card, chat_id=chat_id):
             ok_all = False
+    if ok_all:
+        _mirror_to_yuanbao(md)
     return ok_all
