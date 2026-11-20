@@ -53,8 +53,17 @@ from calc.cn.wing_danger import wing_stats, wing_reason   # noqa: E402
 from calc.cn.skew_dual import dual_skew                    # noqa: E402
 
 WS = os.path.dirname(os.path.dirname(_ROOT))          # workspace 根
-CHAIN_DB = os.path.join(_ROOT, 'outputs', 'option_chain.db')
-OUT_DIR = os.path.join(_ROOT, 'outputs')
+# 2026-11-19 修：原来写死 <_ROOT>/outputs/option_chain.db → 那是个 11-17 之后的
+#   陈旧本地副本；采集器(option_chain_db)实际写的是 calc/db/store.outputs_dir()
+#   （本机 = /opt/coze/.fuse_drive/期权风险监控/outputs）。两边不一致导致
+#   17:30 微笑图任务连续 11-18 / 11-19 全部「库中无该标的当日数据」。
+#   口径统一：一律走 store.outputs_dir()，解析失败才退回本地 outputs。
+try:
+    from calc.db.store import outputs_dir as _outputs_dir
+    OUT_DIR = _outputs_dir()
+except Exception:                                     # noqa: BLE001
+    OUT_DIR = os.path.join(_ROOT, 'outputs')
+CHAIN_DB = os.environ.get('OPTION_CHAIN_DB') or os.path.join(OUT_DIR, 'option_chain.db')
 IV_HIST = os.path.join(WS, '.cache', 'opt_iv_hist.json')
 
 # 5 宽基（**不含上证50 / 50ETF**）
@@ -76,12 +85,108 @@ COLORS = {
 }
 
 
+
+# ============ 飞书直推（HTTP API，绕开 lark-cli）============
+# 2026-11-19：原 push 走 alert.trigger → lark-cli，本机没装 lark-cli 直接
+# FileNotFoundError。改成直接调飞书开放接口（和 bin/option_daily.py 同一套），
+# 这样 17:30 的微笑图能真正发到群里，22:00 日报再抓这张原图。
+
+def _feishu_cred():
+    import json as _j
+    for p in ('/root/.openclaw/openclaw.json', os.path.expanduser('~/.openclaw/openclaw.json')):
+        try:
+            c = _j.load(open(p, encoding='utf-8'))
+            f = c['channels']['feishu']
+            return f['appId'], f['appSecret']
+        except Exception:
+            continue
+    return None, None
+
+
+def _feishu_token():
+    import json as _j, urllib.request as _u
+    aid, sec = _feishu_cred()
+    if not aid:
+        raise RuntimeError('找不到飞书 appId/appSecret')
+    req = _u.Request('https://open.feishu.cn/open-apis/auth/v3/tenant_access_token/internal',
+                     data=_j.dumps({'app_id': aid, 'app_secret': sec}).encode(),
+                     headers={'Content-Type': 'application/json'})
+    return _j.loads(_u.urlopen(req, timeout=20).read())['tenant_access_token']
+
+
+def _feishu_chat_id():
+    """推送到哪个群：环境变量 > config/credentials.py 的 FEISHU_CHAT_ID"""
+    v = os.environ.get('FEISHU_CHAT_ID')
+    if v:
+        return v
+    try:
+        from credentials import FEISHU_CHAT_ID  # noqa
+        if FEISHU_CHAT_ID:
+            return FEISHU_CHAT_ID
+    except Exception:
+        pass
+    # 2026-11-20：不再硬编码群 chat_id（会被 sync_github 密钥扫描拦下来）。
+    #   真实值放 config/private.py（已 .gitignore），仓库里只有空模板。
+    raise RuntimeError('未配置 FEISHU_CHAT_ID（环境变量 / config/private.py）')
+
+
+def push_direct(text, image_path=None, chat=None):
+    """直推飞书：先发文字帖（带「波动率微笑」关键词），再发图片。返回是否成功。"""
+    import json as _j, urllib.request as _u
+    chat = chat or _feishu_chat_id()
+    tok = _feishu_token()
+    ok = False
+    # 1) 文字帖（用 post 富文本，和群里别的任务形态一致）
+    try:
+        _rows = [[{'tag': 'text', 'text': ln}] for ln in text.splitlines() if ln.strip()]
+        post = {'zh_cn': {'title': '📊 波动率微笑图', 'content': _rows}}
+        body = _j.dumps({'receive_id': chat, 'msg_type': 'post',
+                         'content': _j.dumps(post, ensure_ascii=False)}).encode()
+        req = _u.Request('https://open.feishu.cn/open-apis/im/v1/messages?receive_id_type=chat_id',
+                         data=body, headers={'Authorization': 'Bearer ' + tok,
+                                             'Content-Type': 'application/json'})
+        r = _j.loads(_u.urlopen(req, timeout=60).read())
+        print('  文字帖: code=%s' % r.get('code'))
+    except Exception as ex:
+        print('  文字帖失败:', str(ex)[:150])
+    # 2) 图片
+    if image_path and os.path.exists(image_path):
+        try:
+            b = '----f' + os.urandom(10).hex()
+            raw = open(image_path, 'rb').read()
+            parts = [('--%s\r\n' % b).encode(),
+                     b'Content-Disposition: form-data; name="image_type"\r\n\r\nmessage\r\n',
+                     ('--%s\r\n' % b).encode(),
+                     b'Content-Disposition: form-data; name="image"; filename="smile.png"\r\nContent-Type: image/png\r\n\r\n',
+                     raw, ('\r\n--%s--\r\n' % b).encode()]
+            req = _u.Request('https://open.feishu.cn/open-apis/im/v1/images',
+                             data=b''.join(parts),
+                             headers={'Authorization': 'Bearer ' + tok,
+                                      'Content-Type': 'multipart/form-data; boundary=' + b})
+            up = _j.loads(_u.urlopen(req, timeout=120).read())
+            if up.get('code') != 0:
+                print('  图片上传失败:', _j.dumps(up, ensure_ascii=False)[:150])
+                return False
+            key = up['data']['image_key']
+            body = _j.dumps({'receive_id': chat, 'msg_type': 'image',
+                             'content': _j.dumps({'image_key': key})}).encode()
+            req = _u.Request('https://open.feishu.cn/open-apis/im/v1/messages?receive_id_type=chat_id',
+                             data=body, headers={'Authorization': 'Bearer ' + tok,
+                                                 'Content-Type': 'application/json'})
+            r = _j.loads(_u.urlopen(req, timeout=60).read())
+            print('  图片: code=%s' % r.get('code'))
+            ok = r.get('code') == 0
+        except Exception as ex:
+            print('  图片失败:', str(ex)[:150])
+    return ok
+
 def _load_iv_hist():
     try:
         with open(IV_HIST, encoding='utf-8') as f:
             return json.load(f)
     except Exception:
         return {}
+
 
 
 def load_day(date8: str):
@@ -339,7 +444,20 @@ def main():
                      p.get('skew25') if p.get('skew25') is not None else float('nan')))
     ok = [p for p in panels if not p.get('error')]
     if not ok:
-        print('无可用数据，退出')
+        miss = [p['name'] for p in panels if p.get('error')]
+        msg = ('⏳ 波动率微笑图 %s 还没算完：DataHub 里还没有当日快照（%s）。'
+               % (date8, '、'.join(miss)))
+        print(msg + ' 不重跑，等数据到了再出图。')
+        if a.push:
+            _lk = os.path.join(OUT_DIR, '.push_locks')
+            _flag = os.path.join(_lk, 'smile_%s.pending' % date8)
+            if not os.path.exists(_flag):
+                try:
+                    push_direct(msg, image_path=None)
+                    os.makedirs(_lk, exist_ok=True)
+                    open(_flag, 'w').write('pending')
+                except Exception as ex:
+                    print('  通知推送失败: %s' % str(ex)[:120])
         return 1
     out = a.out or os.path.join(OUT_DIR, '%s_smile.png' % date8)
     render(panels, date8, out)
@@ -351,8 +469,13 @@ def main():
         print('  ·', r)
 
     if a.push:
+        # 推送幂等：同一天已成功推过就跳过（补跑/手动重跑不会重复刷群）
+        _lk = os.path.join(OUT_DIR, '.push_locks')
+        _flag = os.path.join(_lk, 'smile_%s.ok' % date8)
+        if os.path.exists(_flag):
+            print('推送: 跳过（%s 已推过）' % date8)
+            return 0
         try:
-            from alert.trigger import trigger
             lines = ['📊 波动率微笑图 %s（5 宽基 · 不含上证50）' % date8]
             for p in ok:
                 b = p.get('band') or {}
@@ -367,9 +490,11 @@ def main():
                 lines.extend('  ' + r for r in risks[:8])
             else:
                 lines.append('✅ 无 IV 超限 / 期限倒挂 / 反向偏斜')
-            ok_push = trigger('波动率微笑图', content='\n'.join(lines),
-                              image=out, source='波动率微笑图')['ok']
+            ok_push = push_direct('\n'.join(lines), image_path=out)
             print('推送:', ok_push)
+            if ok_push:
+                os.makedirs(_lk, exist_ok=True)
+                open(_flag, 'w').write('ok')
         except Exception as ex:
             print('推送失败: %s' % str(ex)[:200])
             return 1
