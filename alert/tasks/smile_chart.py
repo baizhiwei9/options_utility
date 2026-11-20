@@ -130,25 +130,56 @@ def _feishu_chat_id():
     raise RuntimeError('未配置 FEISHU_CHAT_ID（环境变量 / config/private.py）')
 
 
-def push_direct(text, image_path=None, chat=None):
-    """直推飞书：先发文字帖（带「波动率微笑」关键词），再发图片。返回是否成功。"""
+def build_card(lines, date8=None, risks=None, title=None):
+    """构建飞书交互式卡片（v2）—— 2026-11-20 大佬要求改回卡片类型
+
+    之前（11-19 那版）为了绕开本机没装的 lark-cli，直接调 HTTP 时把
+    msg_type 从 interactive 降级成了 post 富文本，群里看着就是一条普通文字帖。
+    现在改回 interactive 卡片：header 标题 + markdown 正文，风险项单独染色。
+    """
+    risks = risks or []
+    head = title or ('📊 波动率微笑图 %s' % date8 if date8 else '📊 波动率微笑图')
+    # 有色风险 → 红头；全绿 → 绿头
+    tpl = 'red' if risks else 'green'
+    md = '\n'.join(lines) if isinstance(lines, (list, tuple)) else str(lines)
+    return {
+        'config': {'wide_screen_mode': True, 'update_multi': True},
+        'header': {
+            'template': tpl,
+            'title': {'tag': 'plain_text', 'content': head},
+        },
+        'elements': [
+            {'tag': 'div', 'text': {'tag': 'lark_md', 'content': md}},
+        ],
+    }
+
+
+def push_direct(text, image_path=None, chat=None, card=None, receive_id_type='chat_id',
+                quiet=False):
+    """直推飞书：先发**交互式卡片**（内含「波动率微笑」关键词），再发图片。
+
+    - card: 传 dict 则直接用它；不传则按 lines 自动拼一张卡片
+    - receive_id_type: chat_id（群，默认）/ open_id（私聊自测）
+    """
     import json as _j, urllib.request as _u
     chat = chat or _feishu_chat_id()
     tok = _feishu_token()
     ok = False
-    # 1) 文字帖（用 post 富文本，和群里别的任务形态一致）
+    # 1) 交互式卡片
     try:
-        _rows = [[{'tag': 'text', 'text': ln}] for ln in text.splitlines() if ln.strip()]
-        post = {'zh_cn': {'title': '📊 波动率微笑图', 'content': _rows}}
-        body = _j.dumps({'receive_id': chat, 'msg_type': 'post',
-                         'content': _j.dumps(post, ensure_ascii=False)}).encode()
-        req = _u.Request('https://open.feishu.cn/open-apis/im/v1/messages?receive_id_type=chat_id',
+        c = card if card is not None else build_card(text.splitlines())
+        body = _j.dumps({'receive_id': chat, 'msg_type': 'interactive',
+                         'content': _j.dumps(c, ensure_ascii=False)}).encode()
+        req = _u.Request('https://open.feishu.cn/open-apis/im/v1/messages?receive_id_type=' + receive_id_type,
                          data=body, headers={'Authorization': 'Bearer ' + tok,
                                              'Content-Type': 'application/json'})
         r = _j.loads(_u.urlopen(req, timeout=60).read())
-        print('  文字帖: code=%s' % r.get('code'))
+        if not quiet:
+            print('  卡片: code=%s' % r.get('code'))
+        ok = r.get('code') == 0
     except Exception as ex:
-        print('  文字帖失败:', str(ex)[:150])
+        if not quiet:
+            print('  卡片失败:', str(ex)[:150])
     # 2) 图片
     if image_path and os.path.exists(image_path):
         try:
@@ -170,11 +201,12 @@ def push_direct(text, image_path=None, chat=None):
             key = up['data']['image_key']
             body = _j.dumps({'receive_id': chat, 'msg_type': 'image',
                              'content': _j.dumps({'image_key': key})}).encode()
-            req = _u.Request('https://open.feishu.cn/open-apis/im/v1/messages?receive_id_type=chat_id',
+            req = _u.Request('https://open.feishu.cn/open-apis/im/v1/messages?receive_id_type=' + receive_id_type,
                              data=body, headers={'Authorization': 'Bearer ' + tok,
                                                  'Content-Type': 'application/json'})
             r = _j.loads(_u.urlopen(req, timeout=60).read())
-            print('  图片: code=%s' % r.get('code'))
+            if not quiet:
+                print('  图片: code=%s' % r.get('code'))
             ok = r.get('code') == 0
         except Exception as ex:
             print('  图片失败:', str(ex)[:150])
@@ -453,7 +485,8 @@ def main():
             _flag = os.path.join(_lk, 'smile_%s.pending' % date8)
             if not os.path.exists(_flag):
                 try:
-                    push_direct(msg, image_path=None)
+                    push_direct(msg, image_path=None,
+                                card=build_card([msg], title='⏳ 波动率微笑图 %s 待出' % date8))
                     os.makedirs(_lk, exist_ok=True)
                     open(_flag, 'w').write('pending')
                 except Exception as ex:
@@ -476,21 +509,24 @@ def main():
             print('推送: 跳过（%s 已推过）' % date8)
             return 0
         try:
-            lines = ['📊 波动率微笑图 %s（5 宽基 · 不含上证50）' % date8]
+            lines = ['**5 宽基 · 不含上证50**', '']
             for p in ok:
                 b = p.get('band') or {}
-                lines.append('· %s 近月ATM %.2f%%（DTE%d）｜分位 %s｜安全区间 %s~%s｜25Δ %+.2f%%'
+                lines.append('· **%s** 近月ATM **%.2f%%**（DTE%d）｜分位 %s｜安全区间 %s~%s｜25Δ %+.2f%%'
                              % (p['name'], p['near']['atm'], p['near_dte'],
                                 ('%.0f%%' % b['pct']) if b.get('pct') is not None else '—',
                                 ('%.1f' % b['lo']) if b.get('lo') else '—',
                                 ('%.1f' % b['hi']) if b.get('hi') else '—',
                                 p['skew25'] or 0.0))
             if risks:
-                lines.append('⚠️ 风险 %d 项：' % len(risks))
-                lines.extend('  ' + r for r in risks[:8])
+                lines.append('')
+                lines.append('⚠️ **风险 %d 项**' % len(risks))
+                lines.extend('· ' + r for r in risks[:8])
             else:
+                lines.append('')
                 lines.append('✅ 无 IV 超限 / 期限倒挂 / 反向偏斜')
-            ok_push = push_direct('\n'.join(lines), image_path=out)
+            card = build_card(lines, date8=date8, risks=risks)
+            ok_push = push_direct('\n'.join(lines), image_path=out, card=card)
             print('推送:', ok_push)
             if ok_push:
                 os.makedirs(_lk, exist_ok=True)
