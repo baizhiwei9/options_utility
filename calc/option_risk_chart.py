@@ -6,22 +6,24 @@
 用期权市场自带的指标判断某个指数的风险状态，画成一张多子图拆解图。
 子图从上到下：
 
-  ① 标的走势：期权标的（ETF/股指）归一化净值 + 回撤（右轴淡色填充）
-  ② VIX：vix30（OI 加权波动，与 Options Utility 同口径）+ VIX 因果分位（右轴）
-  ③ 偏度：skew_index（BKM 风险中性偏度 → 100 中轴，>110 危险红线）+ 偏度因果分位（右轴）
-  ④ PCR：成交量 PCR（vol_pcr）+ 持仓量 PCR（oi_pcr）双线，1.0 参考线
+  ① 指数走势：对应宽基指数（或 ETF 标的）收盘点位 + 回撤（右轴），用于对照
+  ② VIX：整体 vix30（OI 加权波动）+ VIX 因果分位（右轴）
+  ③ 偏度：SKEW（BKM 风险中性偏度 → 100 中轴，>110 危险）+ 偏度因果分位（右轴）
+  ④ PCR：成交量 PCR + 持仓量 PCR 双线，1.0 参考线
   ⑤ MACD(VIX30)：DIF/DEA + 柱，看波动率动能拐头
   ⑥ MACD(vol_pcr)：DIF/DEA + 柱，看 PCR 动能拐头
+  ⑦ 近月 vs 远月 VIX：期限结构对比（近月=最近到期月且 dte>5，远月=dte>180）
+  ⑧ 近月 vs 远月 OI-PCR：近月情绪 vs 远期情绪
 
 设计约束：
   - 只支持五轨标的，**不含上证50**（用户 2026-11-21 明确）。
-  - 数据源**优先读配置数据库**（代码根据配置引用数据库，不自己抓数）：
-      · VIX30 / SKEW / 持仓量 PCR  ← risk_history.db（daily_metrics 表）
-      · 成交量 PCR                  ← option_chain.db（chain_daily 表，pcr_series）
+  - 数据源**只读配置数据库**（代码按配置引用数据库，不重新抓数、不写库）：
+      · VIX / SKEW / 持仓量 PCR   ← risk_history.db（daily_metrics 表）
+      · 成交量 PCR / 近远月VIX·PCR ← option_chain.db（chain_daily 表，逐合约）
       数据库路径由既有模块按配置解析（RISK_HISTORY_DB / OPTIONS_DATA_DIR /
-      OPTION_CHAIN_DB 等）；库的填充由既有「风险层/期权指标」日更多路并行链路完成，
-      本脚本只读不写。
-      · 仅当配置数据库为空/不可达时，才回退 data_hub `get_option_metrics` 现算。
+      OPTION_CHAIN_DB 等）；库的填充由既有「风险层/期权指标」日更多路并行链路完成。
+  - 近月口径：dte>5 的最近到期月（5 天以内跳过、顺延下一月）；远月口径：dte>180。
+    近/远月 VIX = 平值区（|K-S|/S≤5%）合约的 OI 加权 IV；近/远月 PCR = 该档 put OI / call OI。
   - 分位用**扩张窗因果分位**（expanding，无未来函数，min_periods=60），
     与 max-ot 修复后的口径一致，不用全样本后验分位。
   - 状态识别，不是买卖信号；图底固定标注，不输出多空指令。
@@ -33,8 +35,7 @@
 
 环境：
     DATAHUB_ROOT=<含 data_hub 包的目录> 或 DATAHUB_PATH=<data_hub 包目录>
-    OPTIONS_DATA_DIR / RISK_HISTORY_DB / OPTION_CHAIN_DB=<数据库路径，可选，缺省走既有模块的配置解析>
-    OPTION_METRICS_CACHE=<缓存 parquet 目录>（仅回退现算时用）
+    RISK_HISTORY_DB / OPTIONS_DATA_DIR / OPTION_CHAIN_DB=<数据库路径，可选，缺省走既有模块的配置解析>
 """
 
 from __future__ import annotations
@@ -262,22 +263,89 @@ def load_metrics_db(underlying: str, start: str, end: str) -> pd.DataFrame:
 
 
 def load_metrics(underlying: str, start: str, end: str) -> pd.DataFrame:
-    """主取数入口：优先读配置数据库；数据库为空/不可达时才回退现算。"""
+    """主取数入口：**只读配置数据库**（代码按配置引用数据库，不重新抓数/不写库）。
+
+    数据库填充由既有「风险层 / 期权指标」日更多路并行链路负责，本脚本只读不写。
+    """
     df = load_metrics_db(underlying, start, end)
-    if df is not None and len(df) > 0:
-        print(f"[数据源] 读取配置数据库 risk_history.db + option_chain.db，共 {len(df)} 天")
-        return df
-
-    print("[数据源] 配置数据库为空/不可达，回退 data_hub.get_option_metrics 现算（本机无库时）")
-    _datahub()
-    from data_hub.collectors.misc.option_metrics_history import get_option_metrics
-
-    df = get_option_metrics(start, end, underlyings=[underlying], verbose=True)
     if df is None or len(df) == 0:
-        raise SystemExit(f"标的 {underlying} 在 {start}~{end} 无期权指标数据。")
-    df = df.sort_values("trade_date").reset_index(drop=True)
-    df["trade_date"] = pd.to_datetime(df["trade_date"])
+        raise SystemExit(
+            "配置数据库为空或不可达（risk_history.db / option_chain.db）。"
+            "请检查 RISK_HISTORY_DB / OPTIONS_DATA_DIR / OPTION_CHAIN_DB 等配置路径，"
+            "确认库已由日更链路填充；本脚本不负责取数。"
+        )
+    print(f"[数据源] 只读配置数据库 risk_history.db + option_chain.db，共 {len(df)} 天")
     return df
+
+
+def _oi_weighted_iv(sub: pd.DataFrame, spot: float) -> float | None:
+    """平值区（|K-S|/S ≤ 5%）合约的 OI 加权 IV；无 OI 时退化为简单平均。"""
+    if sub.empty or not spot or spot <= 0:
+        return None
+    atm = sub[sub["strike"].notna() & ((sub["strike"] - spot).abs() / spot <= 0.05)]
+    if atm.empty:
+        atm = sub
+    iv = atm["iv"].dropna()
+    if len(iv) == 0:
+        return None
+    oi = atm["oi"].reindex(iv.index).fillna(0)
+    if oi.sum() > 0:
+        return float((oi * iv).sum() / oi.sum())
+    return float(iv.mean())
+
+
+def _oi_pcr(sub: pd.DataFrame) -> float | None:
+    """OI PCR = 该档 put OI / call OI。"""
+    if sub.empty:
+        return None
+    c = sub[sub["call_put"] == "C"]["oi"].sum()
+    p = sub[sub["call_put"] == "P"]["oi"].sum()
+    return float(p / c) if c > 0 else None
+
+
+def load_chain_tenor(underlying: str, start: str, end: str) -> pd.DataFrame:
+    """近月 / 远月的 VIX 与 OI-PCR（读 option_chain.db 的 chain_daily，只读）。
+
+    近月 = 剩余天数 dte>5 的最近到期月（5 天以内的月份跳过、顺延下一月）；
+    远月 = dte>180（6 个月以外）的合约。
+    返回 DataFrame(index=trade_date, columns=[near_vix, far_vix, near_pcr, far_pcr])。
+    """
+    _datahub()
+    from data_hub.collectors.misc.option_chain_db import DB_PATH
+    if not os.path.exists(DB_PATH):
+        return pd.DataFrame()
+    con = sqlite3.connect(DB_PATH)
+    try:
+        df = pd.read_sql_query(
+            "SELECT trade_date, maturity, dte, call_put, strike, oi, iv, spot_price "
+            "FROM chain_daily WHERE underlying=? AND trade_date>=? AND trade_date<=?",
+            con, params=[underlying, start.replace("-", ""), end.replace("-", "")],
+        )
+    finally:
+        con.close()
+    if df.empty:
+        return pd.DataFrame()
+
+    for c in ("strike", "oi", "iv", "spot_price", "dte"):
+        df[c] = pd.to_numeric(df[c], errors="coerce")
+
+    rows = []
+    for td, g in df.groupby("trade_date"):
+        spot_s = g["spot_price"].dropna()
+        spot = float(spot_s.iloc[0]) if len(spot_s) else None
+        near_cand = g[g["dte"] > 5]
+        if near_cand.empty or spot is None:
+            rows.append((td, None, None, None, None))
+            continue
+        near = g[g["maturity"] == near_cand["maturity"].min()]
+        far = g[g["dte"] > 180]
+        rows.append((td, _oi_weighted_iv(near, spot), _oi_weighted_iv(far, spot),
+                     _oi_pcr(near), _oi_pcr(far)))
+
+    out = pd.DataFrame(rows, columns=["trade_date", "near_vix", "far_vix",
+                                      "near_pcr", "far_pcr"])
+    out["trade_date"] = pd.to_datetime(out["trade_date"])
+    return out.set_index("trade_date").sort_index()
 
 
 def load_index_close(underlying: str, start: str, end: str) -> tuple[pd.Series, str]:
@@ -303,7 +371,8 @@ def _time_axis(ax):
 
 def build_figure(df: pd.DataFrame, underlying: str, label: str, index_name: str,
                  start: str, end: str, index_close: pd.Series | None = None,
-                 idx_label: str = "", plot_start: pd.Timestamp | None = None) -> tuple:
+                 idx_label: str = "", tenor: pd.DataFrame | None = None,
+                 plot_start: pd.Timestamp | None = None) -> tuple:
     idx = df["trade_date"]
     # 主要风险序列
     vix = _series(df, "vix30", "trade_date")
@@ -330,7 +399,12 @@ def build_figure(df: pd.DataFrame, underlying: str, label: str, index_name: str,
     if index_close is not None and len(index_close):
         index_close = index_close.reindex(idx)
 
-    fig, axes = plt.subplots(6, 1, figsize=(14, 24), sharex=True)
+    if tenor is not None and len(tenor):
+        tenor = tenor.reindex(idx)
+    else:
+        tenor = pd.DataFrame(index=idx, columns=["near_vix", "far_vix", "near_pcr", "far_pcr"])
+
+    fig, axes = plt.subplots(8, 1, figsize=(14, 34), sharex=True)
     fg = "#222222"
 
     def _dual_legend(ax, axr, loc="upper left"):
@@ -427,6 +501,33 @@ def build_figure(df: pd.DataFrame, underlying: str, label: str, index_name: str,
                  fontsize=11, fontweight="bold")
     ax.legend(loc="upper left", fontsize=7.5, framealpha=0.3)
 
+    # ⑦ 近月 vs 远月 VIX（期限结构：近月恐慌 vs 远期定价）
+    ax = axes[6]
+    ax.plot(idx, tenor["near_vix"].values, color=COLORS["vix"], lw=1.4,
+            label="近月 VIX（dte>5 的最近月，平值OI加权IV）")
+    ax.plot(idx, tenor["far_vix"].values, color="#76b7b2", lw=1.4,
+            label="远月 VIX（dte>180，平值OI加权IV）")
+    spread = tenor["near_vix"] - tenor["far_vix"]
+    axr = ax.twinx()
+    axr.plot(idx, spread.values, color="#9aa0a6", lw=0.9, ls=":",
+             label="近-远价差（右轴，>0=近高远低/backwardation）")
+    axr.axhline(0, color="#9aa0a6", lw=0.6, alpha=0.5)
+    ax.set_ylabel("VIX")
+    axr.set_ylabel("价差", fontsize=8)
+    ax.set_title("⑦ 近月 vs 远月 VIX（期限结构对比）", fontsize=11, fontweight="bold")
+    _dual_legend(ax, axr)
+
+    # ⑧ 近月 vs 远月 OI-PCR
+    ax = axes[7]
+    ax.plot(idx, tenor["near_pcr"].values, color=COLORS["vol_pcr"], lw=1.4,
+            label="近月 OI-PCR（最近月 put/call 持仓量）")
+    ax.plot(idx, tenor["far_pcr"].values, color=COLORS["oi_pcr"], lw=1.4,
+            label="远月 OI-PCR（dte>180 put/call 持仓量）")
+    ax.axhline(PCR_REF, color=fg, lw=0.7, ls="--", alpha=0.5, label="参考线 1.0")
+    ax.set_ylabel("PCR")
+    ax.set_title("⑧ 近月 vs 远月 OI-PCR（近月情绪 vs 远期情绪）", fontsize=11, fontweight="bold")
+    ax.legend(loc="upper left", fontsize=7.5, framealpha=0.3)
+
     for ax in axes:
         _time_axis(ax)
         ax.grid(True, color="#d0d0d0", alpha=0.5, lw=0.6)
@@ -438,7 +539,7 @@ def build_figure(df: pd.DataFrame, underlying: str, label: str, index_name: str,
         fontsize=13, fontweight="bold",
     )
     fig.text(0.5, 0.005,
-             "状态识别，非买卖信号。VIX30/SKEW/PCR 均经 data_hub 统一口径；分位为扩张窗因果分位（无未来函数）。",
+             "状态识别，非买卖信号。数据只读配置数据库 risk_history.db / option_chain.db（不重新取数）；分位为扩张窗因果分位（无未来函数）。",
              ha="center", va="bottom", fontsize=8.5, color="#888888")
     fig.tight_layout(rect=(0, 0.015, 1, 1))
     return fig
@@ -499,6 +600,7 @@ def main(argv=None):
 
     df = load_metrics(underlying, start, end)
     index_close, idx_label = load_index_close(underlying, start, end)
+    tenor = load_chain_tenor(underlying, start, end)
     idx = df["trade_date"]
     vix = _series(df, "vix30", "trade_date")
     if vix.isna().all():
@@ -510,7 +612,8 @@ def main(argv=None):
     skew_pct = _causal_pct(skew)
 
     fig = build_figure(df, underlying, label, index_name, start, end,
-                       index_close=index_close, idx_label=idx_label, plot_start=plot_start)
+                       index_close=index_close, idx_label=idx_label,
+                       tenor=tenor, plot_start=plot_start)
 
     out_dir = args.out or os.path.join(
         os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "outputs")
@@ -521,6 +624,12 @@ def main(argv=None):
     print(f"\n[已保存] {out_png}")
 
     print("\n" + _summary_line(df, vix, vix_pct, skew, skew_pct, vol_pcr, oi_pcr))
+    if tenor is not None and len(tenor):
+        last = tenor.iloc[-1]
+        def _t(v):
+            return "NA" if pd.isna(v) else f"{v:.3f}"
+        print(f"近/远月：近月VIX={_t(last['near_vix'])} 远月VIX={_t(last['far_vix'])}"
+              f"｜近月OI-PCR={_t(last['near_pcr'])} 远月OI-PCR={_t(last['far_pcr'])}")
     print("（分位：扩张窗因果分位，样本<60 日为 NaN；SKEW<100 越低越恐慌，>110 危险）")
 
     if not args.no_show:
