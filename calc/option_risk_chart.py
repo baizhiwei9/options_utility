@@ -430,7 +430,8 @@ def build_figure(df: pd.DataFrame, underlying: str, label: str, index_name: str,
     axr.plot(idx, dd.values, color=COLORS["spot"], alpha=0.5, lw=0.8, label=dd_label)
     ax.set_ylabel("指数点位")
     axr.set_ylabel("回撤 (右轴)", fontsize=8, alpha=0.6)
-    ax.set_title("① 指数走势（用于对照：价格与下方期权恐慌指标的背离/共振）",
+    title_name = idx_label or index_name
+    ax.set_title(f"① {title_name}走势（收盘点位+回撤，与下方期权指标对照）",
                  fontsize=11, fontweight="bold")
     _dual_legend(ax, axr)
 
