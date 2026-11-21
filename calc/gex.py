@@ -518,6 +518,8 @@ def calc_gex_full(chain_data: dict, spot_price: float, multiplier: int,
         "expiry_months": valid_expiry_count,
         "min_T_years": round(min_T, 4) if min_T < 999 else None,
         "strike_count": len(gex_per_strike),
+        # 逐行权价净 GEX 曲线（向后兼容新增字段，供画图/下游直接取用）
+        "gex_per_strike": gex_per_strike,
         "warnings": warnings,
     }
     return result
