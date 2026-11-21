@@ -68,6 +68,15 @@ UNDERLYING_LABEL = {
     "MO": "中证1000股指期权(MO)",
 }
 
+# underlying -> 对应指数（第一个子图走指数本身走势，与期权指标对照看）
+UNDERLYING_INDEX = {
+    "510300": ("000300.SH", "沪深300指数"),
+    "510500": ("000905.SH", "中证500指数"),
+    "159915": ("399006.SZ", "创业板指"),
+    "588000": ("000688.SH", "科创50指数"),
+    "MO":      ("000852.SH", "中证1000指数"),
+}
+
 # ==================== 常量 ====================
 PCT_MIN_PERIODS = 60          # 因果分位最少样本，不足时该点分位记为 NaN
 MACD_FAST, MACD_SLOW, MACD_SIGNAL = 10, 20, 5     # 与 calc/pcr_macd.py 同口径
@@ -151,7 +160,7 @@ def _series(df: pd.DataFrame, col: str, idx) -> pd.Series:
 
 
 # ==================== 取数 ====================
-def load_metrics(underlying: str, start: str, end: str) -> pd.DataFrame:
+def _datahub():
     dh = _locate_datahub()
     if not dh:
         raise SystemExit(
@@ -160,6 +169,11 @@ def load_metrics(underlying: str, start: str, end: str) -> pd.DataFrame:
         )
     if dh not in sys.path:
         sys.path.insert(0, dh)
+    return dh
+
+
+def load_metrics(underlying: str, start: str, end: str) -> pd.DataFrame:
+    _datahub()
     from data_hub.collectors.misc.option_metrics_history import get_option_metrics
 
     df = get_option_metrics(start, end, underlyings=[underlying], verbose=True)
@@ -170,6 +184,21 @@ def load_metrics(underlying: str, start: str, end: str) -> pd.DataFrame:
     return df
 
 
+def load_index_close(underlying: str, start: str, end: str) -> tuple[pd.Series, str]:
+    """第一个子图的指数走势：取对应指数的收盘点位，与期权指标对照看。"""
+    ts_code, idx_label = UNDERLYING_INDEX[underlying]
+    _datahub()
+    import data_hub
+    df = data_hub.get_index_daily(ts_code=ts_code, start_date=start.replace("-", ""),
+                                  end_date=end.replace("-", ""))
+    if df is None or len(df) == 0:
+        return pd.Series(dtype=float), idx_label
+    d = df[["trade_date", "close"]].copy()
+    d["trade_date"] = pd.to_datetime(d["trade_date"])
+    s = d.set_index("trade_date")["close"].sort_index()
+    return pd.to_numeric(s, errors="coerce"), idx_label
+
+
 # ==================== 画图 ====================
 def _time_axis(ax):
     ax.xaxis.set_major_formatter(mdates.DateFormatter("%Y-%m"))
@@ -177,7 +206,8 @@ def _time_axis(ax):
 
 
 def build_figure(df: pd.DataFrame, underlying: str, label: str, index_name: str,
-                 start: str, end: str, plot_start: pd.Timestamp | None = None) -> tuple:
+                 start: str, end: str, index_close: pd.Series | None = None,
+                 idx_label: str = "", plot_start: pd.Timestamp | None = None) -> tuple:
     idx = df["trade_date"]
     # 主要风险序列
     vix = _series(df, "vix30", "trade_date")
@@ -201,80 +231,105 @@ def build_figure(df: pd.DataFrame, underlying: str, label: str, index_name: str,
         vol_pcr, oi_pcr = vol_pcr[m], oi_pcr[m]
         spot = spot[m]
 
-    nav = spot / spot.iloc[0] if spot.notna().any() else pd.Series(np.nan, index=idx)
-    dd = nav / nav.cummax() - 1.0
+    if index_close is not None and len(index_close):
+        index_close = index_close.reindex(idx)
 
-    fig, axes = plt.subplots(6, 1, figsize=(14, 22), sharex=True)
+    fig, axes = plt.subplots(6, 1, figsize=(14, 24), sharex=True)
     fg = "#222222"
 
-    # ① 标的走势 + 回撤
+    def _dual_legend(ax, axr, loc="upper left"):
+        """合并左轴 + 右轴的图例（twinx 的右轴默认不进 legend）。"""
+        lines = list(ax.get_lines()) + list(axr.get_lines())
+        labels = [ln.get_label() for ln in lines if ln.get_label() and not ln.get_label().startswith("_")]
+        ax.legend(lines, labels, loc=loc, fontsize=7.5, framealpha=0.3)
+
+    # ① 指数走势（点位，左轴）+ 回撤（右轴）—— 用于对照下方期权指标
     ax = axes[0]
-    ax.plot(idx, nav.values, color=COLORS["spot"], lw=1.4, label="归一化净值（起点=1）")
-    ax.axhline(1.0, color=fg, lw=0.6, alpha=0.4, ls="--")
+    if index_close is not None and index_close.notna().any():
+        ax.plot(idx, index_close.values, color=COLORS["spot"], lw=1.3,
+                label=f"{idx_label} 收盘点位")
+        dd = index_close / index_close.cummax() - 1.0
+        dd_label = "回撤（右轴，% 自区间高点回撤幅度）"
+    else:  # 指数取不到时退化为期权标的现货
+        nav = spot / spot.iloc[0] if spot.notna().any() else pd.Series(np.nan, index=idx)
+        dd = nav / nav.cummax() - 1.0
+        ax.plot(idx, nav.values, color=COLORS["spot"], lw=1.3, label="标的现货（归一化起点=1）")
+        dd_label = "回撤（右轴）"
     axr = ax.twinx()
-    axr.fill_between(idx, dd.values, 0, color=COLORS["spot"], alpha=0.12, lw=0)
-    axr.plot(idx, dd.values, color=COLORS["spot"], alpha=0.4, lw=0.7)
+    axr.fill_between(idx, dd.values, 0, color=COLORS["spot"], alpha=0.10, lw=0)
+    axr.plot(idx, dd.values, color=COLORS["spot"], alpha=0.5, lw=0.8, label=dd_label)
+    ax.set_ylabel("指数点位")
     axr.set_ylabel("回撤 (右轴)", fontsize=8, alpha=0.6)
-    ax.set_ylabel("净值")
-    ax.set_title(f"① 标的走势 {label}", fontsize=11, fontweight="bold")
-    ax.legend(loc="upper left", fontsize=8, framealpha=0.3)
+    ax.set_title("① 指数走势（用于对照：价格与下方期权恐慌指标的背离/共振）",
+                 fontsize=11, fontweight="bold")
+    _dual_legend(ax, axr)
 
     # ② VIX + 分位
     ax = axes[1]
-    ax.plot(idx, vix.values, color=COLORS["vix"], lw=1.4, label="VIX30（OI加权波动）")
+    ax.plot(idx, vix.values, color=COLORS["vix"], lw=1.4, label="VIX30（左轴：OI加权隐含波动，越高越恐慌）")
     axr = ax.twinx()
-    axr.plot(idx, vix_pct.values, color="#9aa0a6", lw=1.0, ls="--", label="VIX 因果分位")
+    axr.plot(idx, vix_pct.values, color="#9aa0a6", lw=1.0, ls="--",
+             label="VIX 因果分位（右轴 %：在近一年历史里的百分位）")
     for lv in PCT_BANDS:
         axr.axhline(lv, color="#9aa0a6", ls=":", lw=0.6, alpha=0.5)
     ax.set_ylabel("VIX30")
     axr.set_ylabel("分位 %", fontsize=8)
-    ax.set_title("② VIX 波动率 + 因果分位（分位高=恐慌偏高）", fontsize=11, fontweight="bold")
-    ax.legend(loc="upper left", fontsize=8, framealpha=0.3)
+    ax.set_title("② VIX 波动率 + 因果分位（分位高=恐慌偏高，虚线为 60/80 分位参考）",
+                 fontsize=11, fontweight="bold")
+    _dual_legend(ax, axr)
 
     # ③ 偏度 + 分位
     ax = axes[2]
-    ax.plot(idx, skew.values, color=COLORS["skew"], lw=1.4, label="SKEW 指数（BKM，100 中轴）")
-    ax.axhline(SKEW_AXIS, color=fg, lw=0.7, ls="--", alpha=0.5)
-    ax.axhline(SKEW_DANGER, color=COLORS["vix"], lw=1.0, ls="--", alpha=0.7, label="危险线 110")
+    ax.plot(idx, skew.values, color=COLORS["skew"], lw=1.4,
+            label="SKEW 指数（左轴：BKM 风险中性偏度，100 中轴）")
+    ax.axhline(SKEW_AXIS, color=fg, lw=0.7, ls="--", alpha=0.5, label="中轴 100")
+    ax.axhline(SKEW_DANGER, color=COLORS["vix"], lw=1.0, ls="--", alpha=0.7,
+               label="危险线 110（>110 尾部定价异常）")
     axr = ax.twinx()
-    axr.plot(idx, skew_pct.values, color="#9aa0a6", lw=1.0, ls="--", label="偏度 因果分位")
+    axr.plot(idx, skew_pct.values, color="#9aa0a6", lw=1.0, ls="--",
+             label="偏度因果分位（右轴 %：越低=看跌保护越贵/越恐慌）")
     for lv in PCT_BANDS:
         axr.axhline(lv, color="#9aa0a6", ls=":", lw=0.6, alpha=0.5)
     ax.set_ylabel("SKEW 指数")
     axr.set_ylabel("分位 %", fontsize=8)
-    ax.set_title("③ 偏度 SKEW + 因果分位（越低=看跌保护越贵/越恐慌）", fontsize=11, fontweight="bold")
-    ax.legend(loc="upper left", fontsize=8, framealpha=0.3)
+    ax.set_title("③ 偏度 SKEW + 因果分位（<100 越低越恐慌，>110 危险）",
+                 fontsize=11, fontweight="bold")
+    _dual_legend(ax, axr)
 
     # ④ PCR
     ax = axes[3]
-    ax.plot(idx, vol_pcr.values, color=COLORS["vol_pcr"], lw=1.2, label="成交量 PCR")
-    ax.plot(idx, oi_pcr.values, color=COLORS["oi_pcr"], lw=1.2, label="持仓量 PCR")
-    ax.axhline(PCR_REF, color=fg, lw=0.7, ls="--", alpha=0.5)
+    ax.plot(idx, vol_pcr.values, color=COLORS["vol_pcr"], lw=1.2,
+            label="成交量 PCR（Put/Call 成交量之比）")
+    ax.plot(idx, oi_pcr.values, color=COLORS["oi_pcr"], lw=1.2,
+            label="持仓量 PCR（Put/Call 持仓量之比）")
+    ax.axhline(PCR_REF, color=fg, lw=0.7, ls="--", alpha=0.5, label="参考线 1.0")
     ax.set_ylabel("PCR")
-    ax.set_title("④ Put/Call 比率（>1 认沽相对更活跃）", fontsize=11, fontweight="bold")
-    ax.legend(loc="upper left", fontsize=8, framealpha=0.3)
+    ax.set_title("④ Put/Call 比率（>1 认沽相对更活跃=偏谨慎）", fontsize=11, fontweight="bold")
+    ax.legend(loc="upper left", fontsize=7.5, framealpha=0.3)
 
     # ⑤ MACD(VIX30)
     ax = axes[4]
     dif, dea, hist = _macd(vix)
     ax.bar(idx, hist.values, color=np.where(hist.values >= 0, "#e15759", "#59a14f"),
-           width=0.8, alpha=0.55, label="MACD 柱")
-    ax.plot(idx, dif.values, color=COLORS["dif"], lw=1.0, label="DIF")
-    ax.plot(idx, dea.values, color=COLORS["dea"], lw=1.0, ls="--", label="DEA")
+           width=0.8, alpha=0.55, label="MACD 柱（红=动能向上，绿=向下）")
+    ax.plot(idx, dif.values, color=COLORS["dif"], lw=1.0, label="DIF（快线）")
+    ax.plot(idx, dea.values, color=COLORS["dea"], lw=1.0, ls="--", label="DEA（慢线）")
     ax.axhline(0, color=fg, lw=0.6, alpha=0.4)
-    ax.set_title(f"⑤ MACD(VIX30)  ({MACD_FAST},{MACD_SLOW},{MACD_SIGNAL})", fontsize=11, fontweight="bold")
-    ax.legend(loc="upper left", fontsize=8, framealpha=0.3)
+    ax.set_title(f"⑤ MACD(VIX30)（{MACD_FAST},{MACD_SLOW},{MACD_SIGNAL}）—— 看波动率动能拐头",
+                 fontsize=11, fontweight="bold")
+    ax.legend(loc="upper left", fontsize=7.5, framealpha=0.3)
 
     # ⑥ MACD(vol_pcr)
     ax = axes[5]
     dif, dea, hist = _macd(vol_pcr)
     ax.bar(idx, hist.values, color=np.where(hist.values >= 0, "#e15759", "#59a14f"),
-           width=0.8, alpha=0.55, label="MACD 柱")
-    ax.plot(idx, dif.values, color=COLORS["dif"], lw=1.0, label="DIF")
-    ax.plot(idx, dea.values, color=COLORS["dea"], lw=1.0, ls="--", label="DEA")
+           width=0.8, alpha=0.55, label="MACD 柱（红=动能向上，绿=向下）")
+    ax.plot(idx, dif.values, color=COLORS["dif"], lw=1.0, label="DIF（快线）")
+    ax.plot(idx, dea.values, color=COLORS["dea"], lw=1.0, ls="--", label="DEA（慢线）")
     ax.axhline(0, color=fg, lw=0.6, alpha=0.4)
-    ax.set_title(f"⑥ MACD(成交量PCR)  ({MACD_FAST},{MACD_SLOW},{MACD_SIGNAL})", fontsize=11, fontweight="bold")
-    ax.legend(loc="upper left", fontsize=8, framealpha=0.3)
+    ax.set_title(f"⑥ MACD(成交量PCR)（{MACD_FAST},{MACD_SLOW},{MACD_SIGNAL}）—— 看 PCR 动能拐头",
+                 fontsize=11, fontweight="bold")
+    ax.legend(loc="upper left", fontsize=7.5, framealpha=0.3)
 
     for ax in axes:
         _time_axis(ax)
@@ -347,6 +402,7 @@ def main(argv=None):
     print("=" * 72)
 
     df = load_metrics(underlying, start, end)
+    index_close, idx_label = load_index_close(underlying, start, end)
     idx = df["trade_date"]
     vix = _series(df, "vix30", "trade_date")
     if vix.isna().all():
@@ -357,7 +413,8 @@ def main(argv=None):
     vix_pct = _causal_pct(vix)
     skew_pct = _causal_pct(skew)
 
-    fig = build_figure(df, underlying, label, index_name, start, end, plot_start=plot_start)
+    fig = build_figure(df, underlying, label, index_name, start, end,
+                       index_close=index_close, idx_label=idx_label, plot_start=plot_start)
 
     out_dir = args.out or os.path.join(
         os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "outputs")
