@@ -482,6 +482,16 @@ def build_figure(df, underlying, label, index_name, start, end,
         tenor = pd.DataFrame(index=idx, columns=["near_vix", "far_vix", "near_pcr", "far_pcr"])
 
     has_gex = gex is not None and len(gex) > 0
+    # ── 子图顺序（GEX 置顶）──
+    # 有 GEX：① GEX → ② 指数 → ③ VIX → ④ SKEW → ⑤ PCR → ⑥ MACD(VIX) → ⑦ MACD(PCR)
+    # 无 GEX：① 指数 → ② VIX → ③ SKEW → ④ PCR → ⑤ MACD(VIX) → ⑥ MACD(PCR)
+    N = "①②③④⑤⑥⑦"
+    if has_gex:
+        AX = {"gex": 0, "index": 1, "vix": 2, "skew": 3, "pcr": 4, "macd_vix": 5, "macd_pcr": 6}
+    else:
+        AX = {"index": 0, "vix": 1, "skew": 2, "pcr": 3, "macd_vix": 4, "macd_pcr": 5}
+    NUM = {k: N[v] for k, v in AX.items()}
+
     nrows = 7 if has_gex else 6
     fig, axes = plt.subplots(nrows, 1, figsize=(14, 4.1 * nrows), sharex=True)
     fg = "#222222"
@@ -492,8 +502,8 @@ def build_figure(df, underlying, label, index_name, start, end,
                   if ln.get_label() and not ln.get_label().startswith("_")]
         ax.legend(lines, labels, loc=loc, fontsize=7.5, framealpha=0.35, ncol=2)
 
-    # ① 指数走势 + 回撤
-    ax = axes[0]
+    # 指数走势 + 回撤
+    ax = axes[AX["index"]]
     if index_close is not None and index_close.notna().any():
         ax.plot(idx, index_close.values, color=COLORS["spot"], lw=1.3,
                 label=f"{idx_label} 收盘点位（左轴）")
@@ -510,12 +520,12 @@ def build_figure(df, underlying, label, index_name, start, end,
     axr.plot(idx, dd.values, color=COLORS["spot"], alpha=0.55, lw=0.8, label=dd_label)
     ax.set_ylabel("点位")
     axr.set_ylabel("回撤 %", fontsize=8, alpha=0.7)
-    ax.set_title(f"① {idx_label or index_name}走势（收盘点位 + 回撤）—— 与下方期权指标对照看",
+    ax.set_title(f"{NUM['index']} {idx_label or index_name}走势（收盘点位 + 回撤）—— 与下方期权指标对照看",
                  fontsize=11, fontweight="bold")
     _dual_legend(ax, axr)
 
-    # ② VIX + 分位 + 近月/远月 VIX（混合，不再单独占子图）
-    ax = axes[1]
+    # VIX + 分位 + 近月/远月 VIX（混合）
+    ax = axes[AX["vix"]]
     ax.plot(idx, vix.values, color=COLORS["vix"], lw=1.6,
             label="VIX30（全月 OI 加权隐含波动，越高越恐慌）")
     if tenor["near_vix"].notna().any():
@@ -533,12 +543,12 @@ def build_figure(df, underlying, label, index_name, start, end,
         axr.axhline(lv, color="#9aa0a6", ls=":", lw=0.6, alpha=0.5)
     ax.set_ylabel("VIX")
     axr.set_ylabel("分位 %", fontsize=8)
-    ax.set_title("② VIX 波动率（含近月/远月期限结构）+ 因果分位（虚线 60/80 分位参考）",
+    ax.set_title(f"{NUM['vix']} VIX 波动率（含近月/远月期限结构）+ 因果分位（虚线 60/80 分位参考）",
                  fontsize=11, fontweight="bold")
     _dual_legend(ax, axr)
 
-    # ③ 偏度 + 分位
-    ax = axes[2]
+    # 偏度 + 分位
+    ax = axes[AX["skew"]]
     ax.plot(idx, skew.values, color=COLORS["skew"], lw=1.4,
             label="SKEW 指数（BKM 风险中性偏度，100 中轴）")
     ax.axhline(SKEW_AXIS, color=fg, lw=0.7, ls="--", alpha=0.5, label="中轴 100")
@@ -551,12 +561,12 @@ def build_figure(df, underlying, label, index_name, start, end,
         axr.axhline(lv, color="#9aa0a6", ls=":", lw=0.6, alpha=0.5)
     ax.set_ylabel("SKEW")
     axr.set_ylabel("分位 %", fontsize=8)
-    ax.set_title("③ 偏度 SKEW + 因果分位（<100 越低越恐慌，>110 危险）",
+    ax.set_title(f"{NUM['skew']} 偏度 SKEW + 因果分位（<100 越低越恐慌，>110 危险）",
                  fontsize=11, fontweight="bold")
     _dual_legend(ax, axr)
 
-    # ④ PCR：成交量 / 持仓量 + 近月/远月 OI-PCR（混合）
-    ax = axes[3]
+    # PCR：成交量 / 持仓量 + 近月/远月 OI-PCR（混合）
+    ax = axes[AX["pcr"]]
     ax.plot(idx, vol_pcr.values, color=COLORS["vol_pcr"], lw=1.2,
             label="成交量 PCR（Put/Call 成交量）")
     ax.plot(idx, oi_pcr.values, color=COLORS["oi_pcr"], lw=1.2,
@@ -569,37 +579,37 @@ def build_figure(df, underlying, label, index_name, start, end,
                 ls="-", alpha=0.9, label="远月 OI-PCR（dte>180）")
     ax.axhline(PCR_REF, color=fg, lw=0.7, ls="--", alpha=0.5, label="参考线 1.0")
     ax.set_ylabel("PCR")
-    ax.set_title("④ Put/Call 比率（>1 认沽相对更活跃=偏谨慎；含近月/远月对比）",
+    ax.set_title(f"{NUM['pcr']} Put/Call 比率（>1 认沽相对更活跃=偏谨慎；含近月/远月对比）",
                  fontsize=11, fontweight="bold")
     ax.legend(loc="upper left", fontsize=7.5, framealpha=0.35, ncol=2)
 
-    # ⑤ MACD(VIX30)
-    ax = axes[4]
+    # MACD(VIX30)
+    ax = axes[AX["macd_vix"]]
     dif, dea, hist = _macd(vix)
     ax.bar(idx, hist.values, color=np.where(hist.values >= 0, "#e15759", "#59a14f"),
            width=0.8, alpha=0.55, label="MACD 柱（红=动能向上，绿=向下）")
     ax.plot(idx, dif.values, color=COLORS["dif"], lw=1.0, label="DIF（快线）")
     ax.plot(idx, dea.values, color=COLORS["dea"], lw=1.0, ls="--", label="DEA（慢线）")
     ax.axhline(0, color=fg, lw=0.6, alpha=0.4)
-    ax.set_title(f"⑤ MACD(VIX30)（{MACD_FAST},{MACD_SLOW},{MACD_SIGNAL}）—— 看波动率动能拐头",
+    ax.set_title(f"{NUM['macd_vix']} MACD(VIX30)（{MACD_FAST},{MACD_SLOW},{MACD_SIGNAL}）—— 看波动率动能拐头",
                  fontsize=11, fontweight="bold")
     ax.legend(loc="upper left", fontsize=7.5, framealpha=0.35, ncol=2)
 
-    # ⑥ MACD(vol_pcr)
-    ax = axes[5]
+    # MACD(vol_pcr)
+    ax = axes[AX["macd_pcr"]]
     dif, dea, hist = _macd(vol_pcr)
     ax.bar(idx, hist.values, color=np.where(hist.values >= 0, "#e15759", "#59a14f"),
            width=0.8, alpha=0.55, label="MACD 柱（红=动能向上，绿=向下）")
     ax.plot(idx, dif.values, color=COLORS["dif"], lw=1.0, label="DIF（快线）")
     ax.plot(idx, dea.values, color=COLORS["dea"], lw=1.0, ls="--", label="DEA（慢线）")
     ax.axhline(0, color=fg, lw=0.6, alpha=0.4)
-    ax.set_title(f"⑥ MACD(成交量PCR)（{MACD_FAST},{MACD_SLOW},{MACD_SIGNAL}）—— 看 PCR 动能拐头",
+    ax.set_title(f"{NUM['macd_pcr']} MACD(成交量PCR)（{MACD_FAST},{MACD_SLOW},{MACD_SIGNAL}）—— 看 PCR 动能拐头",
                  fontsize=11, fontweight="bold")
     ax.legend(loc="upper left", fontsize=7.5, framealpha=0.35, ncol=2)
 
-    # ⑦ GEX / Gamma Flip
+    # GEX / Gamma Flip（置顶为①）
     if has_gex:
-        ax = axes[6]
+        ax = axes[AX["gex"]]
         gi = pd.to_datetime(gex["trade_date"])
         ax.plot(gi, gex["total_gex_yi"].values, color=COLORS["gex"], lw=1.5,
                 label="全曲线净 GEX（左轴，亿元；Call + / Put −，正=做市商压波动）")
@@ -633,7 +643,7 @@ def build_figure(df, underlying, label, index_name, start, end,
                 f"Put墙 {_n(last['put_wall'], '{:.3f}')}，强度 {_n(last['intensity'])}，"
                 f"{last['regime'] or ''}")
         ax.set_ylabel("GEX（亿元）")
-        ax.set_title("⑦ GEX / Gamma Flip（做市商 gamma 敞口）" + tail,
+        ax.set_title(f"{NUM['gex']} GEX / Gamma Flip（做市商 gamma 敞口，右轴含 ETF 价格）" + tail,
                      fontsize=10.5, fontweight="bold")
         _dual_legend(ax, axr)
 
