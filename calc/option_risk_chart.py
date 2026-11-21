@@ -96,16 +96,13 @@ UNDERLYING_ETF = {
 }
 
 # underlying -> 合约乘数（GEX 用）
-# 口径与 calc/gex.py::MULTIPLIER_MAP 一致：三个 ETF 期权（510300/510500/159915）
+# 唯一事实来源在 calc/multipliers.py：三个 ETF 期权（510300/510500/159915）
 # 与科创50ETF 均为 10000 份，中金所 MO 为 100 元/点。510500、159915 原误写 1000，
 # 会让 GEX 数值整体缩小 10 倍（GEX 对乘数是线性的），见 issue 记录。
-UNDERLYING_MULTIPLIER = {
-    "510300": 10000,
-    "510500": 10000,
-    "159915": 10000,
-    "588000": 10000,
-    "MO": 100,
-}
+try:
+    from .multipliers import CODE_MULTIPLIER as UNDERLYING_MULTIPLIER
+except ImportError:  # 以脚本 / 顶层模块方式运行（calc 已在 sys.path）
+    from multipliers import CODE_MULTIPLIER as UNDERLYING_MULTIPLIER
 
 # ==================== 常量 ====================
 PCT_MIN_PERIODS = 60          # 因果分位最少样本
@@ -401,7 +398,6 @@ def load_gex_series(underlying: str, dates, use_cache: bool = True) -> pd.DataFr
             res = calc_gex_full(cd, spot, mult, str(underlying), trade_date=td)
         except Exception:                            # noqa: BLE001
             continue
-        gps = res.get("gex_per_strike") or []
         rows.append({
             "trade_date": td,
             "multiplier": mult,          # 记录口径，下次读缓存时校验
@@ -414,9 +410,6 @@ def load_gex_series(underlying: str, dates, use_cache: bool = True) -> pd.DataFr
             "put_wall": (res.get("put_wall") or {}).get("strike"),
             "regime": res.get("regime"),
             "intensity": res.get("intensity"),
-            # 最新一天的逐档曲线序列化，供画柱状图
-            "gex_curve": "" if td != want[-1] else
-                         ";".join(f"{x.get('K')}:{x.get('single_gex')}" for x in gps),
         })
         if i % 20 == 0:
             print(f"  [GEX] {i}/{len(todo)} 天已算")

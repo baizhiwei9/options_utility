@@ -53,6 +53,18 @@ def _imported_names(src):
     return out
 
 
+def _imported_modules(src):
+    """模块里 import 过的模块全名（from-import 取 module，保留相对层级）"""
+    out = set()
+    for n in ast.walk(ast.parse(src)):
+        if isinstance(n, ast.Import):
+            for a in n.names:
+                out.add(a.name)
+        elif isinstance(n, ast.ImportFrom) and n.module:
+            out.add(('.' * n.level) + n.module)
+    return out
+
+
 class TestNameErrorsWereFixed(unittest.TestCase):
     """#1 / #2 / #3 / #4：四个 NameError 型 bug"""
 
@@ -370,13 +382,36 @@ class TestOptionRiskGuards(unittest.TestCase):
         self.assertIsInstance(s.index, pd.DatetimeIndex)
 
     def test_multiplier_consistent_across_modules(self):
-        """图表 / gex.MULTIPLIER_MAP / iv_term 三处乘数必须一致（ETF=10000，MO=100）。"""
-        import option_risk_chart as m
-        from gex import MULTIPLIER_MAP
-        name = {"510300": "300ETF", "510500": "500ETF", "159915": "创业板ETF",
-                "588000": "科创50ETF", "MO": "中证1000"}
-        for code, mult in m.UNDERLYING_MULTIPLIER.items():
-            self.assertEqual(mult, MULTIPLIER_MAP[name[code]], code)
-        import iv_term
-        for t in iv_term.VOL_TARGETS:
-            self.assertEqual(t["multiplier"], m.UNDERLYING_MULTIPLIER[t["code"]], t["code"])
+        """乘数只剩唯一事实来源 calc/multipliers.py，三个使用方都必须引用它。
+
+        这里只 import 零依赖的 multipliers，再对源码做 AST 检查——不能 import gex：
+        gex → calc/fetch.py → option_monitor → tushare，会把纯常量校验绑到
+        网络/数据库环境上（issue #6 复核时在缺 tushare/data_hub 的机器误报）。
+        """
+        from multipliers import CODE_MULTIPLIER, CODE_TO_GEX_NAME, MULTIPLIER_MAP
+        self.assertEqual(MULTIPLIER_MAP["300ETF"], 10000)
+        self.assertEqual(MULTIPLIER_MAP["中证1000"], 100)
+        for code, name in CODE_TO_GEX_NAME.items():
+            self.assertEqual(CODE_MULTIPLIER[code], MULTIPLIER_MAP[name], code)
+
+        users = ("calc/gex.py", "calc/option_risk_chart.py", "calc/iv_term.py")
+        for rel in users:
+            mods = _imported_modules(_src(rel))
+            self.assertTrue(
+                any(m == "multipliers" or m.endswith(".multipliers") for m in mods),
+                "%s 应引用 calc/multipliers.py 的乘数（当前 import: %s）"
+                % (rel, sorted(mods)),
+            )
+
+        # 使用方不得再自带一份乘数字面表
+        for rel in ("calc/gex.py", "calc/option_risk_chart.py"):
+            for node in ast.parse(_src(rel)).body:
+                if not isinstance(node, ast.Assign):
+                    continue
+                for target in node.targets:
+                    if getattr(target, "id", "") in ("MULTIPLIER_MAP",
+                                                     "UNDERLYING_MULTIPLIER"):
+                        self.assertNotIsInstance(
+                            node.value, ast.Dict,
+                            "%s 不应再自带乘数字面表" % rel,
+                        )
