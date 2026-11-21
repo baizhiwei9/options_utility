@@ -57,15 +57,11 @@ import fetch as data_fetcher
 from fetch_eastmoney import get_spot_price
 from alert.trigger import trigger  # noqa: E402
 
-# 乘数配置（与TARGET_CONFIG一致）
-MULTIPLIER_MAP = {
-    "300ETF": 10000,
-    "500ETF": 10000,
-    "创业板ETF": 10000,
-    "科创50ETF": 10000,
-    "沪深300": 100,   # 股指期权乘数100
-    "中证1000": 100,
-}
+# 乘数配置：唯一事实来源在 calc/multipliers.py（与TARGET_CONFIG一致）
+try:
+    from .multipliers import MULTIPLIER_MAP
+except ImportError:  # 以脚本 / 顶层模块方式运行（calc 已在 sys.path）
+    from multipliers import MULTIPLIER_MAP
 
 # 标的名称与新浪现货代码的映射
 SPOT_CODE_MAP = {
