@@ -60,6 +60,7 @@ COMMANDS = {
     'ev-io':           ('ev_io', 'IO 分月 EV', 'A股计算'),
     'ev-skew':         ('ev_skew', '偏度视角 EV', 'A股计算'),
     'option-risk':     ('option_risk_chart', '期权风险判断图（VIX/偏度/PCR/MACD 多子图）', 'A股计算'),
+    'option-risk-card': ('option_risk_card', '期权风险判断汇总卡片（单图 5 标的）', 'A股计算'),
     'basis-daily':     ('basis_daily', '基差日更', 'A股计算'),
     'report-close':    ('close', 'A股收盘日报', 'A股日报'),
     'report-midday':   ('midday', 'A股午盘日报', 'A股日报'),

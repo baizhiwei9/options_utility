@@ -4,6 +4,7 @@
 
 布局用英寸锚定再折算成 figure 分数坐标，避免上下区域重叠。
 """
+import argparse
 import os
 import sys
 import warnings
@@ -96,7 +97,12 @@ def pct_color(p):
     return "#27ae60"
 
 
-def main():
+def main(argv=None):
+    global END, PS
+    args = parse_args(argv)
+    if args.end:
+        END = args.end
+    PS = pd.Timestamp(END) - pd.DateOffset(months=args.months)
     data = [collect(n, u) for n, u, _ in TARGETS]
 
     # ── 英寸布局（自上而下累加），最后折算成 0~1 分数坐标 ──
@@ -260,10 +266,25 @@ def main():
     ax.text(0.5, 0.010, "数据日 2026-11-20 收盘 · 分位按近一年历史 · 生成于 2026-11-21",
             fontsize=8.4, color="#9aa4b2", ha="center", va="center")
 
-    out = sys.argv[1] if len(sys.argv) > 1 else "/tmp/option_risk_summary_card.png"
+    out = args.out or "/tmp/option_risk_summary_card.png"
+    os.makedirs(os.path.dirname(os.path.abspath(out)), exist_ok=True)
     fig.savefig(out, dpi=150, facecolor=fig.get_facecolor(), bbox_inches=None)
-    print(f"[saved] {out}  ({W}x{H}in)")
+    print(f"[saved] {out}  ({W:.1f}x{H:.1f}in)")
+    if args.paths_only:
+        print("PATHS_ONLY_HINT")
     return out
+
+
+def parse_args(argv=None):
+    p = argparse.ArgumentParser(
+        description="期权风险判断汇总卡片（单图 5 标的，交互式简报版）")
+    p.add_argument("--out", default=None,
+                   help="PNG 输出路径（默认 /tmp/option_risk_summary_card.png）")
+    p.add_argument("--months", type=int, default=6, choices=[3, 6, 12],
+                   help="GEX 计算与统计窗口（月），默认 6")
+    p.add_argument("--end", default=None, help="数据截止日 YYYY-MM-DD（默认今天）")
+    p.add_argument("--paths-only", action="store_true", help=argparse.SUPPRESS)
+    return p.parse_args(argv)
 
 
 if __name__ == "__main__":
