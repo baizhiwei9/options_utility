@@ -162,7 +162,8 @@ def main(argv=None):
 
     X0, XW = 0.025, 0.95
     X1 = X0 + XW
-    data_date = data[0]["date"]
+    # 取第一个有数据的标的；data[0] 固定是沪深300，它缺数时会写出「数据日 — 收盘」
+    data_date = next((r["date"] for r in data if not r.get("empty")), "—")
 
     # ── ① 标题条 ──
     y, h = Y(top_m, h_header)

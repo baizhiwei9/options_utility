@@ -350,3 +350,33 @@ class TestLocalAbsorbedCapabilities(unittest.TestCase):
         src = _src('cli.py')
         for cmd in ('moments', 'skew-dual', 'gex-weighted', 'wing', 'iv-history'):
             self.assertIn("'%s'" % cmd, src, 'CLI 缺子命令 %s' % cmd)
+
+
+class TestOptionRiskGuards(unittest.TestCase):
+    """期权风险图/卡：缺列兜底与乘数口径（issue #6 评审后补）。"""
+
+    def test_series_missing_column_keeps_date_index(self):
+        """缺列（如 risk_history.db 兜底无 vol_pcr）应返回同日期索引的全 NaN，
+        而不是把列名当 Index 传入抛 TypeError。"""
+        import pandas as pd
+        import option_risk_chart as m
+        df = pd.DataFrame({
+            "trade_date": pd.to_datetime(["20261120", "20261121"], format="%Y%m%d"),
+            "vix30": [20.0, 21.0], "skew_index": [100.0, 101.0], "oi_pcr": [1.0, 1.1],
+        })
+        s = m._series(df, "vol_pcr", "trade_date")
+        self.assertEqual(len(s), 2)
+        self.assertTrue(s.isna().all())
+        self.assertIsInstance(s.index, pd.DatetimeIndex)
+
+    def test_multiplier_consistent_across_modules(self):
+        """图表 / gex.MULTIPLIER_MAP / iv_term 三处乘数必须一致（ETF=10000，MO=100）。"""
+        import option_risk_chart as m
+        from gex import MULTIPLIER_MAP
+        name = {"510300": "300ETF", "510500": "500ETF", "159915": "创业板ETF",
+                "588000": "科创50ETF", "MO": "中证1000"}
+        for code, mult in m.UNDERLYING_MULTIPLIER.items():
+            self.assertEqual(mult, MULTIPLIER_MAP[name[code]], code)
+        import iv_term
+        for t in iv_term.VOL_TARGETS:
+            self.assertEqual(t["multiplier"], m.UNDERLYING_MULTIPLIER[t["code"]], t["code"])
