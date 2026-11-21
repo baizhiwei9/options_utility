@@ -3,17 +3,30 @@
 """期权风险判断 —— 单图交互式卡片版（汇总 5 标的，一屏看完）
 
 布局用英寸锚定再折算成 figure 分数坐标，避免上下区域重叠。
+
+设计约束（2026-11-21 评审后修订）：
+  · 不再写死仓库路径 / DATAHUB_ROOT：一律从本文件位置推导。
+  · 不再写死数据日与结论文本：标题、结论、Gamma 说明、页脚全部由当日读数生成。
+  · 任一标的无数据时降级为「NA」行，不再整卡失败。
 """
 import argparse
+import datetime as _dt
 import os
 import sys
 import warnings
 
 warnings.filterwarnings("ignore")
-OU = "/root/.openclaw/workspace/optstack/options_utility"
-sys.path.insert(0, OU)
-sys.path.insert(0, os.path.join(OU, "calc"))
-os.environ.setdefault("DATAHUB_ROOT", "/root/.openclaw/workspace/optstack")
+
+_HERE = os.path.dirname(os.path.abspath(__file__))
+OU = os.path.dirname(_HERE)
+for _p in (OU, _HERE):
+    if _p not in sys.path:
+        sys.path.insert(0, _p)
+
+# 同仓 data_hub 若与本仓库并列，则自动指过去（不再硬编码 /root/... 路径）
+_PKG_PARENT = os.path.dirname(OU)
+if os.path.isdir(os.path.join(_PKG_PARENT, "data_hub")):
+    os.environ.setdefault("DATAHUB_ROOT", _PKG_PARENT)
 
 import matplotlib
 matplotlib.use("Agg")
@@ -27,7 +40,7 @@ import option_risk_chart as m
 plt.rcParams["font.sans-serif"] = ["WenQuanYi Zen Hei", "Noto Sans CJK SC", "SimHei", "DejaVu Sans"]
 plt.rcParams["axes.unicode_minus"] = False
 
-END = "2026-11-21"
+END = _dt.date.today().strftime("%Y-%m-%d")
 START = "2025-10-17"
 PS = pd.Timestamp(END) - pd.DateOffset(months=6)
 
@@ -40,8 +53,20 @@ TARGETS = [
 ]
 
 
+def _empty_row(name):
+    """该标的当日无数据时的占位行（全部 NA，不参与结论统计）。"""
+    return dict(name=name, date="—", empty=True,
+                vix=np.nan, vixp=np.nan, skew=np.nan, skew_na=True,
+                volp=np.nan, oip=np.nan, nvix=np.nan, fvix=np.nan,
+                npcr=np.nan, fpcr=np.nan, gtot=np.nan, gloc=np.nan,
+                flip=np.nan, svf=np.nan, regime="NA")
+
+
 def collect(name, ul):
     df = m.load_metrics(ul, START, END)
+    if df is None or df.empty:
+        print(f"[warn] {name}（{ul}）指标为空，按 NA 行出卡")
+        return _empty_row(name)
     idx = pd.to_datetime(df["trade_date"])
     vix = m._series(df, "vix30", "trade_date")
     if vix.isna().all():
@@ -59,8 +84,8 @@ def collect(name, ul):
         return float(x) if x is not None and pd.notna(x) else np.nan
 
     return dict(
-        name=name,
-        date=pd.Timestamp(df["trade_date"].iloc[-1]).strftime("%m-%d"),
+        name=name, empty=False,
+        date=pd.Timestamp(df["trade_date"].iloc[-1]).strftime("%Y-%m-%d"),
         vix=_f(vix.iloc[-1]),
         vixp=_f(vp.iloc[-1]),
         skew=_f(skew.dropna().iloc[-1]) if skew.notna().any() else np.nan,
@@ -98,11 +123,14 @@ def pct_color(p):
 
 
 def main(argv=None):
-    global END, PS
+    global END, START, PS
     args = parse_args(argv)
-    if args.end:
-        END = args.end
-    PS = pd.Timestamp(END) - pd.DateOffset(months=args.months)
+    end_ts = pd.Timestamp(args.end) if args.end else pd.Timestamp.today()
+    END = end_ts.strftime("%Y-%m-%d")
+    # 窗口越长，前段历史越要留够，否则因果分位（min_periods=60）在窗口开头是空的
+    span_days = max(400, int(30.5 * args.months) + 180)
+    START = (end_ts - pd.Timedelta(days=span_days)).strftime("%Y-%m-%d")
+    PS = end_ts - pd.DateOffset(months=args.months)
     data = [collect(n, u) for n, u, _ in TARGETS]
 
     # ── 英寸布局（自上而下累加），最后折算成 0~1 分数坐标 ──
@@ -134,6 +162,7 @@ def main(argv=None):
 
     X0, XW = 0.025, 0.95
     X1 = X0 + XW
+    data_date = data[0]["date"]
 
     # ── ① 标题条 ──
     y, h = Y(top_m, h_header)
@@ -141,23 +170,26 @@ def main(argv=None):
     ax.text(X0 + 0.023, y + h * 0.66, "期权风险判断日报", color="#ffffff",
             fontsize=21, fontweight="bold", va="center", zorder=3)
     ax.text(X0 + 0.023, y + h * 0.24,
-            f"数据日 {data[0]['date']}（2026-11-20 收盘）· 五轨：沪深300 / 中证500 / 中证1000 / 创业板指 / 科创50",
+            f"数据日 {data_date} 收盘 · 五轨：沪深300 / 中证500 / 中证1000 / 创业板指 / 科创50",
             color="#a8b4c8", fontsize=10.5, va="center", zorder=3)
     ax.text(X1 - 0.022, y + h * 0.52, "▲ 状态识别 · 非买卖信号", color="#f1c40f",
             fontsize=10.5, fontweight="bold", ha="right", va="center", zorder=3)
 
-    # ── ② 结论横幅 ──
+    # ── ② 结论横幅（全部由当日读数生成，不写死）──
     y, h = Y(top_m + h_header + g1, h_banner)
     box(X0, y, XW, h, fc="#fff5f5", ec="#f5b7b1")
     ax.add_patch(Rectangle((X0, y), 0.0055, h, fc="#e74c3c",
                            transform=ax.transAxes, zorder=2, lw=0))
     hi = [d for d in data if np.isfinite(d["vixp"]) and d["vixp"] >= 90]
     neg = [d for d in data if "负" in d["regime"]]
+    pos = [d for d in data if "正" in d["regime"]]
+    n_valid = len([d for d in data if not d.get("empty")])
+    pos_txt = ("，" + "、".join(d["name"] for d in pos) + " 在正γ区（压波动）") if pos else "，无标的在正γ区"
     ax.text(X0 + 0.020, y + h * 0.72, "一句话结论", fontsize=11.5, fontweight="bold",
             color="#c0392b", va="center", zorder=3)
     ax.text(X0 + 0.020, y + h * 0.30,
-            f"{len(hi)}/5 个标的 VIX 分位 ≥90%（近一年极高位）；"
-            f"{len(neg)} 个在负γ区（放大波动），仅沪深300 在正γ区（压波动）。",
+            f"{len(hi)}/{n_valid} 个标的 VIX 分位 ≥90%（近一年极高位）；"
+            f"{len(neg)} 个在负γ区（放大波动）{pos_txt}。",
             fontsize=11, color="#7b241c", va="center", zorder=3)
 
     # ── ③ 主表 ──
@@ -213,10 +245,10 @@ def main(argv=None):
                 va="center", color="#b6992d", zorder=4)
 
         reg = d["regime"]
-        pos = "正" in reg
-        ax.text(0.855, yc, "正γ 压波动" if pos else ("负γ 放波动" if "负" in reg else "NA"),
+        is_pos = "正" in reg
+        ax.text(0.855, yc, "正γ 压波动" if is_pos else ("负γ 放波动" if "负" in reg else "NA"),
                 fontsize=9.8, ha="center", va="center", fontweight="bold",
-                color="#1e8449" if pos else "#c0392b", zorder=4)
+                color="#1e8449" if is_pos else "#c0392b", zorder=4)
         svf = d["svf"]
         ax.text(0.935, yc, fmt(svf, 1, "%"), fontsize=10.5, ha="center",
                 va="center", color="#1e8449" if (np.isfinite(svf) and svf > 0) else "#c0392b",
@@ -228,7 +260,13 @@ def main(argv=None):
     bw = 0.3053
     gap = (XW - bw * 3) / 2
 
-    g300 = data[0]
+    g_pos = next((d for d in data if "正" in d["regime"]), None)
+    worst = None
+    cand = [d for d in data if np.isfinite(d["svf"])]
+    if cand:
+        worst = min(cand, key=lambda d: d["svf"])
+    gamma_head = (f"· {g_pos['name']} 正γ区：净GEX {fmt(g_pos['gtot'])} 亿，"
+                  f"Flip {fmt(g_pos['flip'], 3)}") if g_pos else "· 今日无标的在正γ区"
     blocks = [
         ("怎么看这张表", [
             "· VIX 分位：扩张窗因果分位，无未来函数",
@@ -238,10 +276,11 @@ def main(argv=None):
             "· PCR：Put/Call 持仓量比，>1 认沽更活跃",
         ]),
         ("Gamma 状态（今日）", [
-            f"· 沪深300 正γ区：净GEX {fmt(g300['gtot'])} 亿，Flip {fmt(g300['flip'], 3)}",
+            gamma_head,
             "· 正γ区：下跌有缓冲，上涨被压制",
-            "· 其余 4 个负γ区：做市商顺势对冲，双向放大波动",
-            "· 距 Flip 越远，破位后放大越猛（创业板指 −19.9%）",
+            f"· 其余 {len(neg)} 个负γ区：做市商顺势对冲，双向放大波动",
+            (f"· 距 Flip 越远，破位后放大越猛（{worst['name']} {fmt(worst['svf'], 1, '%')}）"
+             if worst is not None else "· 距 Flip 越远，破位后放大越猛"),
             "· 近/远月：近月 dte>5 最近月，远月 dte>180",
         ]),
         ("口径与边界", [
@@ -263,15 +302,14 @@ def main(argv=None):
             ax.text(x + 0.013, y_b + h_b * (0.685 - j * 0.128), ln, fontsize=8.5,
                     color="#5a6679", va="center", zorder=3)
 
-    ax.text(0.5, 0.010, "数据日 2026-11-20 收盘 · 分位按近一年历史 · 生成于 2026-11-21",
+    ax.text(0.5, 0.010,
+            f"数据日 {data_date} 收盘 · 分位按近一年历史 · 生成于 {pd.Timestamp.today():%Y-%m-%d}",
             fontsize=8.4, color="#9aa4b2", ha="center", va="center")
 
     out = args.out or "/tmp/option_risk_summary_card.png"
     os.makedirs(os.path.dirname(os.path.abspath(out)), exist_ok=True)
     fig.savefig(out, dpi=150, facecolor=fig.get_facecolor(), bbox_inches=None)
     print(f"[saved] {out}  ({W:.1f}x{H:.1f}in)")
-    if args.paths_only:
-        print("PATHS_ONLY_HINT")
     return out
 
 
@@ -283,7 +321,6 @@ def parse_args(argv=None):
     p.add_argument("--months", type=int, default=6, choices=[3, 6, 12],
                    help="GEX 计算与统计窗口（月），默认 6")
     p.add_argument("--end", default=None, help="数据截止日 YYYY-MM-DD（默认今天）")
-    p.add_argument("--paths-only", action="store_true", help=argparse.SUPPRESS)
     return p.parse_args(argv)
 
 

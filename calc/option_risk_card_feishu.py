@@ -45,7 +45,11 @@ TARGETS = [
 ]
 
 
-def collect(end: str, months: int = 6, span_days: int = 400) -> list[dict]:
+def collect(end: str, months: int = 6, span_days: int = 0) -> list[dict]:
+    # 窗口越长，前段历史越要留够：因果分位 min_periods=60，12 个月档位若只取 400 天
+    # 会在窗口开头出现分位空白，故按窗口长度自动放宽。
+    if not span_days:
+        span_days = max(400, int(30.5 * months) + 180)
     start = (pd.Timestamp(end) - pd.Timedelta(days=span_days)).strftime("%Y-%m-%d")
     plot_start = pd.Timestamp(end) - pd.DateOffset(months=months)
     out = []

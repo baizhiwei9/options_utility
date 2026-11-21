@@ -96,10 +96,13 @@ UNDERLYING_ETF = {
 }
 
 # underlying -> 合约乘数（GEX 用）
+# 口径与 calc/gex.py::MULTIPLIER_MAP 一致：三个 ETF 期权（510300/510500/159915）
+# 与科创50ETF 均为 10000 份，中金所 MO 为 100 元/点。510500、159915 原误写 1000，
+# 会让 GEX 数值整体缩小 10 倍（GEX 对乘数是线性的），见 issue 记录。
 UNDERLYING_MULTIPLIER = {
     "510300": 10000,
-    "510500": 1000,
-    "159915": 1000,
+    "510500": 10000,
+    "159915": 10000,
     "588000": 10000,
     "MO": 100,
 }
@@ -216,7 +219,7 @@ def load_metrics(underlying: str, start: str, end: str) -> pd.DataFrame:
             c["trade_date"] = c["trade_date"].astype(str)
             c = c[(c["trade_date"] >= s) & (c["trade_date"] <= e)]
             if len(c):
-                keep = [col for col in ("trade_date", "vix30", "skew_index",
+                keep = [col for col in ("trade_date", "vix30", "vix", "skew_index",
                                         "vol_pcr", "oi_pcr", "spot_price")
                         if col in c.columns]
                 out = c[keep].copy()
@@ -322,9 +325,13 @@ def load_gex_series(underlying: str, dates, use_cache: bool = True) -> pd.DataFr
     结果缓存到 outputs/gex_series_<underlying>.csv，增量补齐，避免每次重算。
     """
     _ensure_datahub()
-    from data_hub.collectors.misc.option_chain_db import read_chain
     sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-    from gex import calc_gex_full                    # noqa: E402
+    try:
+        from data_hub.collectors.misc.option_chain_db import read_chain
+        from gex import calc_gex_full                    # noqa: E402
+    except Exception as exc:                             # noqa: BLE001
+        print(f"[warn] GEX 链路不可用（该类图退化为 6 子图，不影响其它子图）：{exc}")
+        return pd.DataFrame()
 
     want = sorted({pd.Timestamp(d).strftime("%Y%m%d") for d in dates})
     if not want:
@@ -482,6 +489,10 @@ def build_figure(df, underlying, label, index_name, start, end,
         tenor = pd.DataFrame(index=idx, columns=["near_vix", "far_vix", "near_pcr", "far_pcr"])
 
     has_gex = gex is not None and len(gex) > 0
+    if has_gex and plot_start is not None:
+        # 传入的 GEX 序列可能比画图窗口长，先按窗口裁剪，避免共享 x 轴被撑宽
+        gex = gex[pd.to_datetime(gex["trade_date"]) >= plot_start].reset_index(drop=True)
+        has_gex = len(gex) > 0
     # ── 子图顺序（GEX 置顶）──
     # 有 GEX：① GEX → ② 指数 → ③ VIX → ④ SKEW → ⑤ PCR → ⑥ MACD(VIX) → ⑦ MACD(PCR)
     # 无 GEX：① 指数 → ② VIX → ③ SKEW → ④ PCR → ⑤ MACD(VIX) → ⑥ MACD(PCR)
@@ -635,7 +646,7 @@ def build_figure(df, underlying, label, index_name, start, end,
         last = gex.iloc[-1]
         def _n(v, fmt="{:.2f}"):
             return "NA" if pd.isna(v) else fmt.format(v)
-        tail = (f"｜最新 {pd.Timestamp(last['trade_date']):%m-%d}："
+        tail = (f"最新 {pd.Timestamp(last['trade_date']):%m-%d}："
                 f"净GEX {_n(last['total_gex_yi'])} 亿，局部 {_n(last['local_gex_yi'])} 亿，"
                 f"Flip {_n(last['flip_price'], '{:.3f}')}，现价距 Flip "
                 f"{_n(last['spot_vs_flip_pct'], '{:.1f}')}%，"
@@ -643,8 +654,9 @@ def build_figure(df, underlying, label, index_name, start, end,
                 f"Put墙 {_n(last['put_wall'], '{:.3f}')}，强度 {_n(last['intensity'])}，"
                 f"{last['regime'] or ''}")
         ax.set_ylabel("GEX（亿元）")
-        ax.set_title(f"{NUM['gex']} GEX / Gamma Flip（做市商 gamma 敞口，右轴含 ETF 价格）" + tail,
-                     fontsize=10.5, fontweight="bold")
+        # 说明放第一行、读数放第二行：单行拼太长会越界并压到 fig.suptitle
+        ax.set_title(f"{NUM['gex']} GEX / Gamma Flip（做市商 gamma 敞口，右轴含 ETF 价格）\n"
+                     f"{tail}", fontsize=9.8, fontweight="bold")
         _dual_legend(ax, axr)
 
     gaps = _mark_gaps(axes, idx, min_days=20)
@@ -714,7 +726,10 @@ def main(argv=None):
     args = parse_args(argv)
     today = pd.Timestamp.today()
     end = args.end or today.strftime("%Y-%m-%d")
-    start = args.start or (today - pd.Timedelta(days=400)).strftime("%Y-%m-%d")
+    # 窗口越长，前段历史越要留够：因果分位 min_periods=60，12 个月档位若只取 400 天
+    # 会在窗口开头出现分位空白（右轴线断），故按窗口长度自动放宽取数区间。
+    span_days = max(400, int(30.5 * args.months) + 180)
+    start = args.start or (pd.Timestamp(end) - pd.Timedelta(days=span_days)).strftime("%Y-%m-%d")
 
     if args.underlying:
         underlying = args.underlying
