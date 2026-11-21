@@ -15,8 +15,13 @@
 
 设计约束：
   - 只支持五轨标的，**不含上证50**（用户 2026-11-21 明确）。
-  - 数据源统一走 data_hub `get_option_metrics`（带 parquet 缓存，一次返回
-    vix/vix30/iv_skew/skew_index/vol_pcr/oi_pcr/amt_pcr/atm_iv/spot_price）。
+  - 数据源**优先读配置数据库**（代码根据配置引用数据库，不自己抓数）：
+      · VIX30 / SKEW / 持仓量 PCR  ← risk_history.db（daily_metrics 表）
+      · 成交量 PCR                  ← option_chain.db（chain_daily 表，pcr_series）
+      数据库路径由既有模块按配置解析（RISK_HISTORY_DB / OPTIONS_DATA_DIR /
+      OPTION_CHAIN_DB 等）；库的填充由既有「风险层/期权指标」日更多路并行链路完成，
+      本脚本只读不写。
+      · 仅当配置数据库为空/不可达时，才回退 data_hub `get_option_metrics` 现算。
   - 分位用**扩张窗因果分位**（expanding，无未来函数，min_periods=60），
     与 max-ot 修复后的口径一致，不用全样本后验分位。
   - 状态识别，不是买卖信号；图底固定标注，不输出多空指令。
@@ -28,13 +33,15 @@
 
 环境：
     DATAHUB_ROOT=<含 data_hub 包的目录> 或 DATAHUB_PATH=<data_hub 包目录>
-    OPTION_METRICS_CACHE=<缓存 parquet 目录>（可选）
+    OPTIONS_DATA_DIR / RISK_HISTORY_DB / OPTION_CHAIN_DB=<数据库路径，可选，缺省走既有模块的配置解析>
+    OPTION_METRICS_CACHE=<缓存 parquet 目录>（仅回退现算时用）
 """
 
 from __future__ import annotations
 
 import argparse
 import os
+import sqlite3
 import sys
 
 import numpy as np
@@ -76,6 +83,18 @@ UNDERLYING_INDEX = {
     "588000": ("000688.SH", "科创50指数"),
     "MO":      ("000852.SH", "中证1000指数"),
 }
+
+# underlying -> risk_history.db 的 target_key（与 risk_layer TARGETS 的 key 一致）
+UNDERLYING_KEY = {
+    "510300": "300ETF",
+    "510500": "500ETF",
+    "588000": "KC50",
+    "159915": "CYB",
+    "MO":      "ZZ1000",
+}
+
+# risk_history.db 里本图用到的字段（daily_metrics 表），读列名白名单
+_RISK_FIELDS = ("vix", "skew", "oi_pcr")
 
 # ==================== 常量 ====================
 PCT_MIN_PERIODS = 60          # 因果分位最少样本，不足时该点分位记为 NaN
@@ -159,7 +178,7 @@ def _series(df: pd.DataFrame, col: str, idx) -> pd.Series:
     return pd.to_numeric(df.set_index(idx)[col], errors="coerce")
 
 
-# ==================== 取数 ====================
+# ==================== 取数（数据库优先，配置引用） ====================
 def _datahub():
     dh = _locate_datahub()
     if not dh:
@@ -172,7 +191,84 @@ def _datahub():
     return dh
 
 
+def _risk_db_module():
+    """import 既有模块 calc/db/risk_history（其 DB_PATH 已按配置解析，只读不写）。"""
+    db_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)), "db")
+    if db_dir not in sys.path:
+        sys.path.insert(0, db_dir)
+    import risk_history
+    return risk_history
+
+
+def _read_risk_db(key: str, field: str, days: int = 400) -> pd.Series:
+    """从 risk_history.db 读某标的某字段近 days 个有值交易日（升序，按日期索引）。
+
+    数据库路径完全由 risk_history 模块按配置解析（RISK_HISTORY_DB / LOCAL_DB_DIR /
+    OPTIONS_DATA_DIR / legacy 候选），本函数只读。
+    """
+    if field not in _RISK_FIELDS:
+        raise ValueError(f"不允许读的字段: {field}")
+    rh = _risk_db_module()
+    dbp = getattr(rh, "DB_PATH", "")
+    if not dbp or not os.path.exists(dbp):
+        return pd.Series(dtype=float)
+    con = sqlite3.connect(dbp)
+    try:
+        rows = con.execute(
+            f"SELECT trade_date, {field} FROM daily_metrics "
+            f"WHERE target_key=? AND {field} IS NOT NULL "
+            f"ORDER BY trade_date DESC LIMIT ?",
+            (key, days),
+        ).fetchall()
+    finally:
+        con.close()
+    idx = pd.to_datetime([r[0] for r in rows], errors="coerce")
+    return pd.Series([r[1] for r in rows], index=idx).dropna().sort_index()
+
+
+def _read_chain_vol_pcr(underlying: str, start: str, end: str) -> pd.Series:
+    """从 option_chain.db 算成交量 PCR（剔除 dte<=5，与库内 pcr_series 同口径）。"""
+    _datahub()
+    from data_hub.collectors.misc.option_chain_db import pcr_series, DB_PATH
+    if not os.path.exists(DB_PATH):
+        return pd.Series(dtype=float)
+    df = pcr_series(underlying, start=start.replace("-", ""), end=end.replace("-", ""),
+                    kind="vol")
+    if df is None or df.empty or "pcr" not in df.columns:
+        return pd.Series(dtype=float)
+    s = pd.to_numeric(df["pcr"], errors="coerce")
+    s.index = pd.to_datetime(s.index, errors="coerce")
+    return s.dropna().sort_index()
+
+
+def load_metrics_db(underlying: str, start: str, end: str) -> pd.DataFrame:
+    """从配置数据库读指标（只读）：risk_history.db + option_chain.db。"""
+    key = UNDERLYING_KEY[underlying]
+    vix = _read_risk_db(key, "vix")
+    skew = _read_risk_db(key, "skew")
+    oi = _read_risk_db(key, "oi_pcr")
+    vol = _read_chain_vol_pcr(underlying, start, end)
+
+    data = {}
+    for col, s in (("vix30", vix), ("skew_index", skew), ("oi_pcr", oi), ("vol_pcr", vol)):
+        if len(s) > 0:
+            data[col] = s
+    if not data:
+        return pd.DataFrame()
+    df = pd.DataFrame(data).reset_index().rename(columns={"index": "trade_date"})
+    df = df.sort_values("trade_date").reset_index(drop=True)
+    df["trade_date"] = pd.to_datetime(df["trade_date"])
+    return df
+
+
 def load_metrics(underlying: str, start: str, end: str) -> pd.DataFrame:
+    """主取数入口：优先读配置数据库；数据库为空/不可达时才回退现算。"""
+    df = load_metrics_db(underlying, start, end)
+    if df is not None and len(df) > 0:
+        print(f"[数据源] 读取配置数据库 risk_history.db + option_chain.db，共 {len(df)} 天")
+        return df
+
+    print("[数据源] 配置数据库为空/不可达，回退 data_hub.get_option_metrics 现算（本机无库时）")
     _datahub()
     from data_hub.collectors.misc.option_metrics_history import get_option_metrics
 
