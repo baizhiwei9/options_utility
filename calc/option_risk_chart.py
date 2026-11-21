@@ -177,7 +177,7 @@ def _time_axis(ax):
 
 
 def build_figure(df: pd.DataFrame, underlying: str, label: str, index_name: str,
-                 start: str, end: str) -> tuple:
+                 start: str, end: str, plot_start: pd.Timestamp | None = None) -> tuple:
     idx = df["trade_date"]
     # 主要风险序列
     vix = _series(df, "vix30", "trade_date")
@@ -188,8 +188,18 @@ def build_figure(df: pd.DataFrame, underlying: str, label: str, index_name: str,
     oi_pcr = _series(df, "oi_pcr", "trade_date")
     spot = _series(df, "spot_price", "trade_date")
 
+    # 分位：**在全年历史上**算扩张窗因果分位，再按画图窗口切片，
+    # 保证图上显示 3~6 个月、分位口径仍是一年的。
     vix_pct = _causal_pct(vix)
     skew_pct = _causal_pct(skew)
+
+    if plot_start is not None:
+        m = (idx >= plot_start).to_numpy()
+        idx = idx[m]
+        vix, vix_pct = vix[m], vix_pct[m]
+        skew, skew_pct = skew[m], skew_pct[m]
+        vol_pcr, oi_pcr = vol_pcr[m], oi_pcr[m]
+        spot = spot[m]
 
     nav = spot / spot.iloc[0] if spot.notna().any() else pd.Series(np.nan, index=idx)
     dd = nav / nav.cummax() - 1.0
@@ -273,7 +283,7 @@ def build_figure(df: pd.DataFrame, underlying: str, label: str, index_name: str,
             sp.set_color("#d0d0d0")
 
     fig.suptitle(
-        f"期权风险判断 · {index_name}（{label}）\n{start} ~ {end}",
+        f"期权风险判断 · {index_name}（{label}）\n{start} ~ {end}（分位按近一年历史）",
         fontsize=13, fontweight="bold",
     )
     fig.text(0.5, 0.005,
@@ -302,8 +312,10 @@ def parse_args(argv=None):
     p.add_argument("--index", default=None, choices=sorted(INDEX_TO_UNDERLYING),
                    help="指数名（沪深300/中证500/中证1000/创业板指/科创50，无上证50）")
     p.add_argument("--underlying", default=None, help="直接指定期权标的 key（510300/510500/159915/588000/MO）")
-    p.add_argument("--start", default=None, help="起始日期 YYYY-MM-DD（默认近 400 自然日）")
+    p.add_argument("--start", default=None, help="起始日期 YYYY-MM-DD（默认近 400 自然日，用于一年分位）")
     p.add_argument("--end", default=None, help="结束日期 YYYY-MM-DD（默认今天）")
+    p.add_argument("--months", type=int, default=6, choices=[3, 6, 12],
+                   help="画图窗口（月），默认 6；分位仍按近一年历史算")
     p.add_argument("--out", default=None, help="PNG 输出目录（默认 options_utility/outputs）")
     p.add_argument("--no-show", action="store_true", help="不调用 plt.show()")
     return p.parse_args(argv)
@@ -326,9 +338,12 @@ def main(argv=None):
     else:
         raise SystemExit("请给 --index 或 --underlying（例如 --index 沪深300）。")
 
+    end_ts = pd.Timestamp(end)
+    plot_start = end_ts - pd.DateOffset(months=args.months)
+
     print("=" * 72)
     print(f"期权风险判断 · {index_name}（{label}，underlying={underlying}）")
-    print(f"时间范围: {start} ~ {end}")
+    print(f"数据范围: {start} ~ {end}（一年分位）   画图窗口: 近 {args.months} 个月")
     print("=" * 72)
 
     df = load_metrics(underlying, start, end)
@@ -342,7 +357,7 @@ def main(argv=None):
     vix_pct = _causal_pct(vix)
     skew_pct = _causal_pct(skew)
 
-    fig = build_figure(df, underlying, label, index_name, start, end)
+    fig = build_figure(df, underlying, label, index_name, start, end, plot_start=plot_start)
 
     out_dir = args.out or os.path.join(
         os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "outputs")
