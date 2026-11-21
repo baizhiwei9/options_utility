@@ -36,10 +36,10 @@ from option_monitor import bs_iv, bs_call, bs_put, delta_to_strike, calc_skew
 # 五品种配置（2026-10-23 剔除上证50ETF 510050）
 VOL_TARGETS = [
     {'name': '沪深300ETF', 'code': '510300', 'type': 'etf', 'multiplier': 10000, 'index_proxy': '000300'},
-    {'name': '中证500ETF', 'code': '510500', 'type': 'etf', 'multiplier': 1000, 'index_proxy': '000905'},
+    {'name': '中证500ETF', 'code': '510500', 'type': 'etf', 'multiplier': 10000, 'index_proxy': '000905'},
     {'name': '中证1000指数', 'code': 'MO', 'type': 'index', 'multiplier': 100, 'index_proxy': '000852'},
-    {'name': '科创50ETF', 'code': '588000', 'type': 'etf', 'multiplier': 1000, 'index_proxy': '000688'},
-    {'name': '创业板ETF', 'code': '159915', 'type': 'etf', 'multiplier': 1000, 'index_proxy': '399006'},
+    {'name': '科创50ETF', 'code': '588000', 'type': 'etf', 'multiplier': 10000, 'index_proxy': '000688'},
+    {'name': '创业板ETF', 'code': '159915', 'type': 'etf', 'multiplier': 10000, 'index_proxy': '399006'},
 ]
 
 # 近月最小剩余天数：临近到期(尤其最后一周)的合约ATM IV受时间价值急速衰减干扰严重，

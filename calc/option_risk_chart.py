@@ -200,7 +200,14 @@ def _macd(s: pd.Series, fast: int = MACD_FAST, slow: int = MACD_SLOW,
 
 def _series(df: pd.DataFrame, col: str, idx) -> pd.Series:
     if col not in df.columns:
-        return pd.Series(np.nan, index=idx)
+        # 缺列时按真实日期索引返回全 NaN。不能把列名当 Index 传进去——risk_history.db
+        # 兜底只有 trade_date/vix30/skew_index/oi_pcr 四列，缺 vol_pcr 时会抛 TypeError，
+        # 把整张图/整张卡拖垮（见 issue #6）。
+        if idx in df.columns:
+            index = pd.to_datetime(df[idx], errors="coerce")
+        else:
+            index = pd.RangeIndex(len(df))
+        return pd.Series(np.nan, index=index, dtype=float)
     return pd.to_numeric(df.set_index(idx)[col], errors="coerce")
 
 
@@ -319,10 +326,16 @@ def load_etf_close(underlying: str, start: str, end: str):
     return s, label
 
 
+# GEX 缓存口径版本：乘数修正等影响数值口径的改动必须 +1，旧缓存自然失效
+GEX_CACHE_VERSION = 2
+
+
 def load_gex_series(underlying: str, dates, use_cache: bool = True) -> pd.DataFrame:
     """逐日 GEX / Gamma Flip 序列（数据取自 DataHub read_chain，算法走 calc/gex.py）。
 
-    结果缓存到 outputs/gex_series_<underlying>.csv，增量补齐，避免每次重算。
+    结果缓存到 outputs/gex_series_<underlying>_v<GEX_CACHE_VERSION>.csv，增量补齐。
+    文件名带版本、且每行写入 multiplier：乘数口径变化时旧行自动作废重算，
+    避免存量缓存把 10 倍错值原样带回来（见 issue #6）。
     """
     _ensure_datahub()
     sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
@@ -340,7 +353,8 @@ def load_gex_series(underlying: str, dates, use_cache: bool = True) -> pd.DataFr
     out_dir = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
                            "outputs")
     os.makedirs(out_dir, exist_ok=True)
-    cache_fp = os.path.join(out_dir, f"gex_series_{underlying}.csv")
+    cache_fp = os.path.join(out_dir,
+                            f"gex_series_{underlying}_v{GEX_CACHE_VERSION}.csv")
     cache = pd.DataFrame()
     if use_cache and os.path.exists(cache_fp):
         try:
@@ -348,10 +362,21 @@ def load_gex_series(underlying: str, dates, use_cache: bool = True) -> pd.DataFr
         except Exception:                            # noqa: BLE001
             cache = pd.DataFrame()
 
+    mult = UNDERLYING_MULTIPLIER.get(underlying, 10000)
+    # 乘数口径对不上（旧缓存没有 multiplier 列，或值不同）→ 该行作废重算
+    if len(cache):
+        if "multiplier" in cache.columns:
+            m = pd.to_numeric(cache["multiplier"], errors="coerce")
+        else:
+            m = pd.Series(np.nan, index=cache.index)
+        stale = m.fillna(-1) != mult
+        if stale.any():
+            print(f"[warn] GEX 缓存乘数口径不一致，丢弃重算 {int(stale.sum())} 天"
+                  f"（{underlying}，当前乘数 {mult}）")
+            cache = cache[~stale].copy()
+
     have = set(cache["trade_date"]) if len(cache) and "trade_date" in cache.columns else set()
     todo = [d for d in want if d not in have]
-
-    mult = UNDERLYING_MULTIPLIER.get(underlying, 10000)
     rows = []
     for i, td in enumerate(todo, 1):
         try:
@@ -379,6 +404,7 @@ def load_gex_series(underlying: str, dates, use_cache: bool = True) -> pd.DataFr
         gps = res.get("gex_per_strike") or []
         rows.append({
             "trade_date": td,
+            "multiplier": mult,          # 记录口径，下次读缓存时校验
             "spot": res.get("spot"),
             "total_gex_yi": res.get("total_gex_yi"),
             "local_gex_yi": res.get("local_gex_yi"),
@@ -654,7 +680,7 @@ def build_figure(df, underlying, label, index_name, start, end,
                 f"Put墙 {_n(last['put_wall'], '{:.3f}')}，强度 {_n(last['intensity'])}，"
                 f"{last['regime'] or ''}")
         ax.set_ylabel("GEX（亿元）")
-        # 说明放第一行、读数放第二行：单行拼太长会越界并压到 fig.suptitle
+        # 说明放第一行、读数放第二行（单行拼太长会越界）；上方留白见 tight_layout rect
         ax.set_title(f"{NUM['gex']} GEX / Gamma Flip（做市商 gamma 敞口，右轴含 ETF 价格）\n"
                      f"{tail}", fontsize=9.8, fontweight="bold")
         _dual_legend(ax, axr)
@@ -675,7 +701,8 @@ def build_figure(df, underlying, label, index_name, start, end,
              "状态识别，非买卖信号。取数走 DataHub（期权指标缓存 / option_chain.db 只读），"
              "算法与画图在 Options Utility；分位为扩张窗因果分位（无未来函数）。",
              ha="center", va="bottom", fontsize=8.2, color="#888888")
-    fig.tight_layout(rect=(0, 0.012, 1, 1))
+    # 顶部预留 suptitle 两行 + ① 子图两行标题的高度，否则两者会叠在一起
+    fig.tight_layout(rect=(0, 0.012, 1, 0.985))
     return fig
 
 
