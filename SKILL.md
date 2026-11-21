@@ -16,18 +16,18 @@
 
 ## 子图（每个都有图例说明）
 
-① 指数走势（收盘点位 + 回撤）—— 用于对照价格与期权指标的背离/共振
+① 指数走势（对应宽基指数收盘点位 + 回撤）—— 对照价格与期权指标的背离/共振
 ② VIX30 + 一年因果分位 —— 分位高=恐慌偏高
 ③ SKEW 偏度 + 一年因果分位 —— <100 越低越恐慌，>110 危险
 ④ 成交量/持仓量 PCR —— >1 认沽相对更活跃
 ⑤ MACD(VIX30) —— 波动率动能拐头
 ⑥ MACD(成交量PCR) —— PCR 动能拐头
+⑦ 近月 vs 远月 VIX —— 期限结构（近月=dte>5 最近月，远月=dte>180）
+⑧ 近月 vs 远月 OI-PCR —— 近月情绪 vs 远期情绪
 
 ## 运行
 
 ```bash
-export DATAHUB_ROOT=<含 data_hub 包的目录>
-export OPTION_METRICS_CACHE=/tmp/option_metrics_cache     # 一年历史缓存，可复用
 cd options_utility
 /opt/data/venv/bin/python calc/option_risk_chart.py --index 科创50 --months 6 --no-show
 # 或统一入口：/opt/data/venv/bin/python cli.py option-risk --index 科创50 --months 6
@@ -35,13 +35,21 @@ cd options_utility
 
 - `--months 3/6/12` 控制画图窗口（默认 6）；**分位始终按近一年历史**算扩张窗因果分位后再切片（图看半年、分位看一年）。
 - 输出：`outputs/option_risk_<指数>_<日期>.png`
-- 首跑每标的一年历史要从 tushare 逐合约反解（约 10 分钟）；之后走 parquet 缓存秒出。
 
-## 数据源
+## 数据源（只读配置数据库，不重新取数）
 
-`data_hub.collectors.misc.option_metrics_history.get_option_metrics`（parquet 缓存），一年 IV 全量覆盖
-（atm_iv / iv_skew / skew_index / vix / vix30 / vol_pcr / oi_pcr / amt_pcr）。
-生产云盘的 risk_history.db / skew_history.db / option_chain.db 在部分机器无挂载，故由 data_hub 现算同口径历史。
+代码按配置引用数据库，**只读不写**；数据库填充由既有「风险层 / 期权指标」日更多路并行链路负责。
+
+- VIX / SKEW / 持仓量 PCR ← `risk_history.db`（daily_metrics 表）
+- 成交量 PCR / 近远月 VIX·PCR ← `option_chain.db`（chain_daily 表，逐合约）
+
+数据库路径由既有模块按配置解析：`RISK_HISTORY_DB` / `OPTIONS_DATA_DIR` / `OPTION_CHAIN_DB`（缺省走 store.py outputs_dir 与 legacy 候选）。库为空/不可达时脚本报错提示，**不抓数、不写库**。
+
+## 近月 / 远月口径
+
+- 近月 = dte>5 的最近到期月（5 天以内跳过、顺延下一月）；远月 = dte>180（6 个月以外）
+- 近/远月 VIX = 平值区（|K−S|/S ≤ 5%）合约的 OI 加权 IV
+- 近/远月 PCR = 该档 put OI / call OI
 
 ## 分位口径
 
