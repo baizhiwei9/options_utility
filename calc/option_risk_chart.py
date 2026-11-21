@@ -86,6 +86,15 @@ UNDERLYING_INDEX = {
     "MO":      ("000852.SH", "中证1000指数"),
 }
 
+# underlying -> ETF 代码（第七子图叠 ETF 价格；MO 为股指期权，用 512100 中证1000ETF 对照）
+UNDERLYING_ETF = {
+    "510300": ("510300.SH", "300ETF"),
+    "510500": ("510500.SH", "500ETF"),
+    "159915": ("159915.SZ", "创业板ETF"),
+    "588000": ("588000.SH", "科创50ETF"),
+    "MO":     ("512100.SH", "中证1000ETF"),
+}
+
 # underlying -> 合约乘数（GEX 用）
 UNDERLYING_MULTIPLIER = {
     "510300": 10000,
@@ -281,6 +290,32 @@ def load_index_close(underlying: str, start: str, end: str):
     return pd.to_numeric(d.set_index("trade_date")["close"], errors="coerce").sort_index(), idx_label
 
 
+def load_etf_close(underlying: str, start: str, end: str):
+    """第七子图用：取对应 ETF 的收盘价（DataHub get_etf_daily）。
+
+    MO（中证1000股指期权）没有直接对应 ETF 期权，用 512100 中证1000ETF 做价格参照。
+    """
+    pair = UNDERLYING_ETF.get(underlying)
+    if not pair:
+        return pd.Series(dtype=float), ""
+    ts_code, label = pair
+    _ensure_datahub()
+    try:
+        import data_hub
+        df = data_hub.get_etf_daily(ts_code=ts_code,
+                                    start_date=start.replace("-", ""),
+                                    end_date=end.replace("-", ""))
+    except Exception as exc:                            # noqa: BLE001
+        print(f"[warn] ETF 日线取数失败（{ts_code}）：{exc}")
+        return pd.Series(dtype=float), label
+    if df is None or len(df) == 0:
+        return pd.Series(dtype=float), label
+    d = df[["trade_date", "close"]].copy()
+    d["trade_date"] = pd.to_datetime(d["trade_date"], format="%Y%m%d", errors="coerce")
+    s = pd.to_numeric(d.set_index("trade_date")["close"], errors="coerce").sort_index()
+    return s, label
+
+
 def load_gex_series(underlying: str, dates, use_cache: bool = True) -> pd.DataFrame:
     """逐日 GEX / Gamma Flip 序列（数据取自 DataHub read_chain，算法走 calc/gex.py）。
 
@@ -381,9 +416,43 @@ def _time_axis(ax):
     ax.xaxis.set_major_locator(mdates.MonthLocator(interval=2))
 
 
+def _gap_spans(idx, min_days: int = 20):
+    """找出画图窗口里「相邻数据点间隔 > min_days 天」的缺口（真缺数据，非周末）。
+
+    节假日休市一般 ≤11 天，故阈值取 20 天，只圈真缺口。
+    """
+    if idx is None or len(idx) < 2:
+        return []
+    d = pd.Series(pd.to_datetime(idx)).sort_values().reset_index(drop=True)
+    spans = []
+    for i in range(1, len(d)):
+        gap = (d[i] - d[i - 1]).days
+        if gap > min_days:
+            spans.append((d[i - 1], d[i], gap))
+    return spans
+
+
+def _mark_gaps(axes, idx, min_days: int = 20):
+    """在所有子图上把数据缺口涂成灰底 + 写「缺 N 天」，让空白自己说明原因。"""
+    spans = _gap_spans(idx, min_days)
+    if not spans:
+        return spans
+    for ax in axes:
+        for a, b, n in spans:
+            ax.axvspan(a, b, color="#bdc3c7", alpha=0.35, lw=0, zorder=0)
+        # 只在最上面那个子图写文字，避免重复遮挡
+    top = axes[0]
+    for a, b, n in spans:
+        mid = a + (b - a) / 2
+        top.annotate(f"缺 {n} 天数据", xy=(mid, 0.5), xycoords=("data", "axes fraction"),
+                     ha="center", va="center", fontsize=8.5, color="#7f8c8d",
+                     fontweight="bold", rotation=0)
+    return spans
+
+
 def build_figure(df, underlying, label, index_name, start, end,
                  index_close=None, idx_label="", tenor=None, gex=None,
-                 plot_start=None):
+                 plot_start=None, etf_close=None, etf_label=""):
     idx = pd.to_datetime(df["trade_date"])
     vix = _series(df, "vix30", "trade_date")
     if vix.isna().all() and "vix" in df.columns:
@@ -546,6 +615,12 @@ def build_figure(df, underlying, label, index_name, start, end,
         if gex["put_wall"].notna().any():
             axr.plot(gi, gex["put_wall"].values, color="#59a14f", lw=1.0, ls=":",
                      alpha=0.9, label="Put Wall 行权价（右轴，下方支撑参考）")
+        # ETF 价格叠加（与 Flip / γ墙 同轴，便于直接对照"现价 vs Flip"）
+        if etf_close is not None and len(etf_close):
+            etf_on_idx = etf_close.reindex(idx)
+            if etf_on_idx.notna().any():
+                axr.plot(idx, etf_on_idx.values, color=COLORS["spot"], lw=1.6, alpha=0.95,
+                         label=f"{etf_label} 收盘价（右轴，期权标的现价）")
         axr.set_ylabel("价格", fontsize=8)
         last = gex.iloc[-1]
         def _n(v, fmt="{:.2f}"):
@@ -561,6 +636,8 @@ def build_figure(df, underlying, label, index_name, start, end,
         ax.set_title("⑦ GEX / Gamma Flip（做市商 gamma 敞口）" + tail,
                      fontsize=10.5, fontweight="bold")
         _dual_legend(ax, axr)
+
+    gaps = _mark_gaps(axes, idx, min_days=20)
 
     for ax in axes:
         _time_axis(ax)
@@ -653,6 +730,7 @@ def main(argv=None):
                          "请确认日更链路已填充。")
     index_close, idx_label = load_index_close(underlying, start, end)
     tenor = load_tenor(underlying, start, end)
+    etf_close, etf_label = load_etf_close(underlying, start, end)
 
     idx = pd.to_datetime(df["trade_date"])
     vix = _series(df, "vix30", "trade_date")
@@ -672,7 +750,8 @@ def main(argv=None):
 
     fig = build_figure(df, underlying, label, index_name, start, end,
                        index_close=index_close, idx_label=idx_label,
-                       tenor=tenor, gex=gex_df, plot_start=plot_start)
+                       tenor=tenor, gex=gex_df, plot_start=plot_start,
+                       etf_close=etf_close, etf_label=etf_label)
 
     out_dir = args.out or os.path.join(
         os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "outputs")
