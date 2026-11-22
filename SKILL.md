@@ -14,36 +14,42 @@
 | 创业板指 | 159915 | 399006.SZ |
 | 科创50 | 588000 | 000688.SH |
 
-## 子图（每个都有图例说明）
+## 子图（**7 个子图**，无独立近远月子图；2026-11-21 改版）
 
 ① 指数走势（对应宽基指数收盘点位 + 回撤）—— 对照价格与期权指标的背离/共振
-② VIX30 + 一年因果分位 —— 分位高=恐慌偏高
-③ SKEW 偏度 + 一年因果分位 —— <100 越低越恐慌，>110 危险
-④ 成交量/持仓量 PCR —— >1 认沽相对更活跃
+② VIX30 + 一年因果分位（右轴）—— 混入近月 / 远月 VIX 两条曲线看期限结构
+③ SKEW 偏度 + 一年因果分位（右轴）—— <100 越低越恐慌，>110 危险
+④ 成交量 PCR + 持仓量 PCR + 1.0 参考线 —— 混入近月 / 远月 OI-PCR
 ⑤ MACD(VIX30) —— 波动率动能拐头
 ⑥ MACD(成交量PCR) —— PCR 动能拐头
-⑦ 近月 vs 远月 VIX —— 期限结构（近月=dte>5 最近月，远月=dte>180）
-⑧ 近月 vs 远月 OI-PCR —— 近月情绪 vs 远期情绪
+⑦ GEX / Gamma Flip —— 逐行权价净 GEX 曲线 + Flip 翻转点 + Gamma Wall + Put Wall
 
 ## 运行
 
 ```bash
 cd options_utility
-/opt/data/venv/bin/python calc/option_risk_chart.py --index 科创50 --months 6 --no-show
-# 或统一入口：/opt/data/venv/bin/python cli.py option-risk --index 科创50 --months 6
+DATAHUB_ROOT=<含 data_hub 包的目录> python3 calc/option_risk_chart.py \
+    --index 科创50 --months 6 --no-show
+# 或统一入口：python3 cli.py option-risk --index 科创50 --months 6
+# 5 标的汇总卡片：python3 cli.py option-risk-card --months 6
 ```
 
 - `--months 3/6/12` 控制画图窗口（默认 6）；**分位始终按近一年历史**算扩张窗因果分位后再切片（图看半年、分位看一年）。
+- `--no-gex` 可跳过 GEX 子图（只出 6 子图，快很多）。
 - 输出：`outputs/option_risk_<指数>_<日期>.png`
+- 耗时：单标的约 1~2 分钟（GEX 逐日现算，`outputs/gex_series_*.csv` 有缓存则增量）；5 个串行约 5~8 分钟。
 
 ## 数据源（只读配置数据库，不重新取数）
 
 代码按配置引用数据库，**只读不写**；数据库填充由既有「风险层 / 期权指标」日更多路并行链路负责。
 
-- VIX / SKEW / 持仓量 PCR ← `risk_history.db`（daily_metrics 表）
-- 成交量 PCR / 近远月 VIX·PCR ← `option_chain.db`（chain_daily 表，逐合约）
+- VIX / SKEW / 持仓量 PCR ← DataHub `option_metrics_history.load_metrics_cache()`
+  （`option_metrics.parquet`；兜底 `risk_history.db` daily_metrics 表）
+- 成交量 PCR / 近远月 VIX·PCR / 逐合约链 ← DataHub `option_chain_db`（`option_chain.db` chain_daily 表）
+- 指数 / ETF 日线 ← DataHub `get_index_daily` / `get_etf_daily`
+- 库为空/不可达时脚本报错提示，**不抓数、不写库**。
 
-数据库路径由既有模块按配置解析：`RISK_HISTORY_DB` / `OPTIONS_DATA_DIR` / `OPTION_CHAIN_DB`（缺省走 store.py outputs_dir 与 legacy 候选）。库为空/不可达时脚本报错提示，**不抓数、不写库**。
+数据库路径由既有模块按配置解析：`RISK_HISTORY_DB` / `OPTIONS_DATA_DIR` / `OPTION_CHAIN_DB`（缺省走 store.py outputs_dir 与 legacy 候选）。
 
 ## 近月 / 远月口径
 
@@ -55,7 +61,14 @@ cd options_utility
 
 扩张窗因果分位（无未来函数），样本 <60 日为 NaN；SKEW<100 越低越恐慌，>110 危险。
 
+## 乘数（唯一事实来源）
+
+`calc/multipliers.py` 是合约乘数的唯一事实来源：三个 ETF 期权（510300/510500/159915）与
+科创50ETF（588000）均为 10000 份，中金所 MO 为 100 元/点。GEX 对乘数线性敏感，
+`calc/gex.py`、`calc/option_risk_chart.py`、`calc/iv_term.py` 三处必须引用它，不得自带副本。
+
 ## 发图
 
 - Coze 群：`~/.coze/bridge/bin/coze-bridge send image <png> --agent-id <id> --session-id <id>`
 - 飞书私聊/群：`lark-cli im +messages-send --user-id ou_xxx 或 --chat-id oc_xxx --image './<文件名>' --as bot`（图片目录下执行，路径须 cwd 相对）
+- QQ 直聊：`message send --media` 会返回 rc=0 但发不出，须先复制到 `~/.openclaw/media/qqbot/`（文件名转 ASCII）再发，判定标准是返回的 `messageId` 非空。
