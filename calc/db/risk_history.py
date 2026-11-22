@@ -232,9 +232,11 @@ def _locked(write: bool = False):
     if _db_lock is not None:
         attempt = 0
         while True:
+            acquired = False
             try:
                 with _db_lock.locked_sqlite(DB_PATH, write=write, timeout=_DB_TIMEOUT,
                                             wal=True) as c:
+                    acquired = True          # 拿到锁之后的异常不属于「等锁失败」
                     if write:
                         _ensure_schema(c)
                     else:
@@ -242,6 +244,11 @@ def _locked(write: bool = False):
                     yield c
                 return
             except _db_lock.LockTimeout:
+                # ⚠️ 2026-11-22 复核修复：只重试「取锁阶段」的超时。
+                # 原实现把整个 body 包在 try 里，body 内部（如嵌套 _locked）
+                # 抛 LockTimeout 会把整段写体重跑一遍 —— 语义上是重复写。
+                if acquired:
+                    raise
                 attempt += 1
                 if attempt > _DB_RETRIES:
                     raise
@@ -269,11 +276,25 @@ def _locked(write: bool = False):
 
 
 def _ensure_schema_readonly(c):
-    """读路径专用：只建表（表已存在时是空操作），**绝不 ALTER**。
+    """读路径专用：表不存在时才建表，**绝不 ALTER**。
 
     表已存在时 `CREATE TABLE IF NOT EXISTS` 不写库；但 `ALTER TABLE ADD COLUMN`
     一定会写，所以读路径跳过补列 —— 补列交给写路径（risk_layer 每轮都会走写锁）。
+
+    ⚠️ 2026-11-22 复核修复：
+      · 先查 sqlite_master，表在就直接返回（不再每次读都跑一遍 DDL）；
+      · 建表失败**不再静默吞掉**：否则并发首读时建表失败、紧跟着的 SELECT 报
+        「no such table」，错误被推到调用方但根因丢失。这里给出明确的
+        RuntimeError，并提示重试（SQLite 自己的 busy_timeout 会串行化 DDL）。
     """
+    try:
+        row = c.execute(
+            "SELECT 1 FROM sqlite_master WHERE type='table' AND name='daily_metrics'"
+        ).fetchone()
+        if row:
+            return
+    except sqlite3.Error:
+        return                                   # 连 sqlite_master 都读不了 → 交给调用方
     try:
         c.execute('''CREATE TABLE IF NOT EXISTS daily_metrics(
             trade_date TEXT NOT NULL,
@@ -286,20 +307,40 @@ def _ensure_schema_readonly(c):
             rec_json TEXT,
             updated_at TEXT,
             PRIMARY KEY(trade_date, target_key))''')
-    except sqlite3.OperationalError:
-        pass                                     # 读锁下建不了也不影响「读到空」
+    except sqlite3.OperationalError as e:
+        raise RuntimeError(
+            "daily_metrics 建表失败（读锁下被其他进程占用？）：%s；重试即可" % e)
+
+
+def _jsonable(obj):
+    """递归把 numpy 标量 / NaN / Inf 转成 JSON 原生类型。
+
+    ⚠️ 2026-11-22 复核修复：原实现只处理**顶层** float 的 NaN，嵌套值走
+    `default=str`。numpy.int64 / numpy.bool_ 不是 JSON 原生类型，会被转成
+    字符串 "3" / "True"；复用到下游做数值比较时直接 TypeError 或静默算错。
+    """
+    if isinstance(obj, dict):
+        return {str(k): _jsonable(v) for k, v in obj.items()}
+    if isinstance(obj, (list, tuple)):
+        return [_jsonable(v) for v in obj]
+    if isinstance(obj, float):
+        return None if (obj != obj or obj in (float("inf"), float("-inf"))) else obj
+    if isinstance(obj, bool) or obj is None or isinstance(obj, str):
+        return obj
+    if isinstance(obj, int):
+        return obj
+    if hasattr(obj, "item"):                     # numpy 标量（int64/float64/bool_…）
+        try:
+            return _jsonable(obj.item())
+        except Exception:                        # noqa: BLE001
+            return str(obj)
+    return str(obj)
 
 
 def _pack_rec(rec):
-    """把整条 analyze_target 记录压成 JSON 存库（NaN 一律转 None，保证可反序列化）。"""
+    """把整条 analyze_target 记录压成 JSON 存库（NaN/Inf → null，numpy → 原生）。"""
     try:
-        payload = {}
-        for k, v in rec.items():
-            if isinstance(v, float) and (v != v or v in (float("inf"), float("-inf"))):
-                payload[k] = None
-            else:
-                payload[k] = v
-        return json.dumps(payload, ensure_ascii=False, default=str)
+        return json.dumps(_jsonable(rec), ensure_ascii=False)
     except Exception:                                  # noqa: BLE001
         return None
 

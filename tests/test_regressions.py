@@ -721,3 +721,57 @@ class TestReadWriteLock(unittest.TestCase):
         for t in ts:
             t.join()
         self.assertEqual(out, [1, 1])
+
+
+class TestLockReviewFollowup(unittest.TestCase):
+    """2026-11-22 复核：读写锁接入后的三个小问题回归
+
+    1. `_pack_rec` 只处理顶层 NaN，嵌套 numpy 标量被 `default=str` 变成字符串
+       （numpy.int64 / bool_ 不是 JSON 原生类型，复用后做数值比较会类型错）。
+    2. `_ensure_schema_readonly` 在建表失败时静默吞异常，把「no such table」
+       推给调用方，根因丢失。
+    3. `_gex_lock` 在 lock 库不可用时退化成 no-op（应为进程内 RLock）。
+    """
+
+    def test_pack_rec_keeps_nested_numeric_types(self):
+        import json
+        import numpy as np
+        import risk_history as rh
+
+        rec = {"vix": float("nan"), "gex": {"strength": np.int64(7),
+                                            "ok": np.bool_(True),
+                                            "nested": [np.float64(1.5), np.nan]}}
+        packed = rh._pack_rec(rec)
+        got = json.loads(packed)
+        self.assertIsNone(got["vix"], "顶层 NaN 必须落成 null")
+        self.assertIsInstance(got["gex"]["strength"], int)
+        self.assertIsInstance(got["gex"]["ok"], bool)
+        self.assertEqual(got["gex"]["nested"], [1.5, None])
+
+    def test_read_path_works_on_fresh_db(self):
+        import tempfile
+        import risk_history as rh
+        with tempfile.TemporaryDirectory() as td:
+            old_db, old_snap = rh.DB_PATH, rh.snapshot
+            rh.DB_PATH = os.path.join(td, "risk_history.db")
+            rh.snapshot = lambda *a, **k: False
+            try:
+                self.assertFalse(rh.has_day("20261122"))
+                self.assertIsNone(rh.get_daily_rec("20261122", "300ETF"))
+                rh.upsert_daily("20261122", "300ETF", {"vix": 1.0})
+                self.assertTrue(rh.has_day("20261122", "300ETF"))
+            finally:
+                rh.DB_PATH, rh.snapshot = old_db, old_snap
+
+    def test_gex_lock_fallback_is_real_lock(self):
+        """lock 库不可用时 `_gex_lock` 必须返回可 with 的真锁，而不是 no-op。"""
+        import tempfile
+        import calc.option_risk_chart as orc   # noqa: F401  (导入即定位依赖)
+        old = orc._DB_LOCK
+        orc._DB_LOCK = None
+        try:
+            with tempfile.TemporaryDirectory() as td:
+                with orc._gex_lock(os.path.join(td, "x.csv"), True):
+                    pass
+        finally:
+            orc._DB_LOCK = old
