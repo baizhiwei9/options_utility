@@ -46,6 +46,7 @@ from __future__ import annotations
 import argparse
 import os
 import sys
+import threading
 
 import numpy as np
 import pandas as pd
@@ -135,6 +136,17 @@ COLORS = {
 # 统一引用 **DataHub 的读写锁库**（data_hub/core/lock.py）；本仓不自建锁实现。
 # 大佬 2026-11-22：「你就引用 data Hub 的读写锁的库就行了」。
 def _lock_module():
+    """优先按正常 import 取 DataHub 的锁；只有取不到时才动 sys.path。
+
+    ⚠️ 2026-11-22 复核修复：原实现无论能否 import 都先往全局 `sys.path` **插入**
+    候选目录，可能让同进程里其他模块反而加载到另一份 data_hub（两套
+    `_RW_LOCKS`，进程内 RWLock 不再共享）。现在顺序是：先 import → 再插路径。
+    """
+    try:
+        from data_hub.core import lock as _m
+        return _m
+    except Exception:                                # noqa: BLE001
+        pass
     try:
         import sys as _sys_lock
         here = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
@@ -151,14 +163,18 @@ def _lock_module():
 
 
 _DB_LOCK = _lock_module()
+_FALLBACK_LOCK = threading.RLock()      # lock 库不可用时：至少进程内不自己抢自己
 
 
 def _gex_lock(fp, write):
-    """GEX 缓存文件锁（DataHub Lock；不可用时退化 no-op，不阻断出图）。"""
+    """GEX 缓存文件锁（DataHub Lock）。
+
+    lock 库不可用时退化为**进程内 RLock**（不是 no-op）：同一进程里
+    chart / card / card_feishu 连着跑时仍能串行写同一份 csv。
+    """
     if _DB_LOCK is not None:
         return _DB_LOCK.rw_lock(fp, exclusive=write)
-    import contextlib as _cl
-    return _cl.nullcontext()
+    return _FALLBACK_LOCK
 
 
 def _gex_atomic(fp, mode):
