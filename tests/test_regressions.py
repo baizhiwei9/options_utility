@@ -456,3 +456,135 @@ class TestRiskHistorySchemaConstants(unittest.TestCase):
                 self.assertEqual(pct, 50.0)
             finally:
                 rh.DB_PATH, rh.snapshot = old_db, old_snap
+
+
+class TestDblockConcurrencyPrimitives(unittest.TestCase):
+    """#9：并发保护原语（data_hub/core/dblock.py）
+
+    起因（2026-11-22 排查）：这套链路的表会被多条路径同时读写，但原来是裸的 ——
+      · risk_history：sqlite3.connect() 无 timeout、无 WAL，
+        且 `with _conn()` 只提交不关闭（实测 30 次调用泄漏 30 个 fd）
+      · option_metrics.parquet / gex_series_*.csv：非原子写，中途被杀留半截文件
+
+    这里只验原语本身（纯本地临时目录，不联网、不碰真实库）。
+    """
+
+    @classmethod
+    def setUpClass(cls):
+        sys.path.insert(0, PARENT)
+        from data_hub.core import dblock
+        cls.dbl = dblock
+
+    def test_nested_lock_is_reentrant(self):
+        """同线程嵌套加锁不能自死锁（flock 是按 open file description 的）。"""
+        import tempfile
+        with tempfile.TemporaryDirectory() as td:
+            p = os.path.join(td, "x.db")
+            with self.dbl.locked_sqlite(p, write=True, migrate="create table if not exists t(a)"):
+                with self.dbl.file_lock(p):
+                    with self.dbl.atomic_write(p + ".dat", "wb") as f:
+                        f.write(b"ok")
+            self.assertTrue(os.path.exists(p + ".dat"))
+
+    def test_atomic_write_leaves_no_partial_file(self):
+        """写一半抛异常 → 目标文件不出现、tmp 不残留。"""
+        import tempfile
+        with tempfile.TemporaryDirectory() as td:
+            p = os.path.join(td, "y.dat")
+            with self.assertRaises(RuntimeError):
+                with self.dbl.atomic_write(p, "wb") as f:
+                    f.write(b"partial")
+                    raise RuntimeError("boom")
+            self.assertFalse(os.path.exists(p), "异常后不应留下目标文件")
+            self.assertEqual([x for x in os.listdir(td) if ".tmp." in x], [])
+
+    def test_concurrent_writers_do_not_lose_rows(self):
+        """12 线程 × 30 次写同一个 sqlite → 0 报错、行数精确。"""
+        import tempfile
+        import threading
+        with tempfile.TemporaryDirectory() as td:
+            p = os.path.join(td, "c.db")
+            errs = []
+
+            def _w(k):
+                try:
+                    for i in range(30):
+                        with self.dbl.locked_sqlite(
+                                p, write=True,
+                                migrate="create table if not exists t(a)") as c:
+                            c.execute("insert into t values(?)", (k * 1000 + i,))
+                except Exception as exc:             # noqa: BLE001
+                    errs.append("%s: %s" % (type(exc).__name__, exc))
+
+            ts = [threading.Thread(target=_w, args=(k,)) for k in range(12)]
+            for t in ts:
+                t.start()
+            for t in ts:
+                t.join()
+            self.assertEqual(errs, [], "并发写不应报错")
+            import sqlite3
+            conn = sqlite3.connect(p)
+            try:
+                n = conn.execute("select count(*) from t").fetchone()[0]
+            finally:
+                conn.close()
+            self.assertEqual(n, 360)
+
+
+class TestRiskHistoryReuseTableFirst(unittest.TestCase):
+    """#10：表优先 —— 当日已落库就必须原样复用，不联网重算
+
+    起因（大佬 2026-11-22）：「表里边有就直接用它，没有的话再用数据获取，然后再存」。
+    实现：daily_metrics 增加 rec_json 整条记录快照 + get_daily_rec() 读回。
+    """
+
+    def test_full_rec_roundtrip_keeps_nested_fields(self):
+        """整条 rec 存/取必须逐字段一致（judge_light 依赖 gex 里的嵌套键）。"""
+        import tempfile
+        import risk_history as rh
+        rec = {
+            "key": "300ETF", "name": "沪深300ETF", "ok": True,
+            "vix": 24.4, "R": 1.051, "skew": 96.1, "oi_pcr": 0.701,
+            "gex": {"strength": 681000000.0, "regime": "正Gamma区(压波动)",
+                    "_consistency": "一致", "flip_dist_pct": 2.1},
+            "im": {"Z": None}, "mo_iv": None,
+            "nan_field": float("nan"),
+        }
+        with tempfile.TemporaryDirectory() as td:
+            old_db, old_snap = rh.DB_PATH, rh.snapshot
+            rh.DB_PATH = os.path.join(td, "risk_history.db")
+            rh.snapshot = lambda *a, **k: False
+            try:
+                rh.upsert_daily("20261122", "300ETF", rec)
+                got = rh.get_daily_rec("20261122", "300ETF")
+                self.assertIsNotNone(got)
+                self.assertEqual(got["vix"], 24.4)
+                self.assertEqual(got["gex"]["regime"], "正Gamma区(压波动)")
+                self.assertEqual(got["gex"]["_consistency"], "一致")
+                self.assertIsNone(got["nan_field"], "NaN 必须落成 null（否则 JSON 非法）")
+                self.assertTrue(rh.has_day("20261122", "300ETF"))
+                self.assertFalse(rh.has_day("20261121", "300ETF"))
+                self.assertIsNone(rh.get_daily_rec("20261121", "300ETF"))
+            finally:
+                rh.DB_PATH, rh.snapshot = old_db, old_snap
+
+    def test_no_fd_leak_on_repeated_upsert(self):
+        """反复 upsert 不能泄漏文件描述符（原 `with _conn()` 的病灶）。"""
+        import tempfile
+        import risk_history as rh
+        with tempfile.TemporaryDirectory() as td:
+            old_db, old_snap = rh.DB_PATH, rh.snapshot
+            rh.DB_PATH = os.path.join(td, "risk_history.db")
+            rh.snapshot = lambda *a, **k: False
+            try:
+                rh.upsert_daily("20260101", "300ETF", {"vix": 1.0})   # 预热
+                fd_dir = "/proc/self/fd"
+                if not os.path.isdir(fd_dir):
+                    self.skipTest("无 /proc/self/fd，跳过 fd 泄漏检查")
+                before = len(os.listdir(fd_dir))
+                for i in range(30):
+                    rh.upsert_daily("20260101", "300ETF", {"vix": float(i)})
+                after = len(os.listdir(fd_dir))
+                self.assertLessEqual(after - before, 1, "反复 upsert 不应泄漏 fd")
+            finally:
+                rh.DB_PATH, rh.snapshot = old_db, old_snap
