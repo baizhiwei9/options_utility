@@ -91,16 +91,19 @@ _DB_TIMEOUT = float(os.environ.get("RISK_HISTORY_TIMEOUT", "30"))
 _DB_RETRIES = int(os.environ.get("RISK_HISTORY_LOCK_RETRIES", "3"))
 _fallback_lock = threading.RLock()
 
-try:                                                  # 统一锁模块（data_hub/core/dblock.py）
-    from data_hub.core import dblock as _dblock
+# 统一锁：**直接引用 DataHub 的读写锁库**（data_hub/core/lock.py）。
+# 本仓不再自建任何锁实现 —— 大佬 2026-11-22：「你就引用 data Hub 的读写锁的库就行了」。
+# （`data_hub.core.dblock` 只是向后兼容薄壳，这里统一走 lock。）
+try:
+    from data_hub.core import lock as _db_lock
 except Exception:                                     # noqa: BLE001
     try:
         import sys as _sys
         _sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.dirname(
             os.path.dirname(os.path.abspath(__file__))))))
-        from data_hub.core import dblock as _dblock
+        from data_hub.core import lock as _db_lock
     except Exception:                                 # noqa: BLE001
-        _dblock = None
+        _db_lock = None
 
 # 2026-11-18 修复（disk I/O error 根因 + 路径可配置）：
 # 云盘（FilteredFS/FUSE）**不支持 SQLite 随机写**，直接写 OUTPUT_DIR 下的库会间歇性抛
@@ -216,7 +219,7 @@ def _conn():
 # 大佬 2026-11-22：「读的话用读锁，写的话用写锁，而且有锁的超时处理」
 #   · write=False → 读锁（LOCK_SH），多进程/多线程可同时读
 #   · write=True  → 写锁（LOCK_EX），独占
-#   · 等锁超时抛 LockTimeout（dblock），这里按 _DB_RETRIES 退避重试，
+#   · 等锁超时抛 LockTimeout（data_hub.core.lock），按 _DB_RETRIES 退避重试，
 #     重试仍失败才上抛 —— 多进程场景宁可明确失败，也不要无声永久阻塞。
 @contextlib.contextmanager
 def _locked(write: bool = False):
@@ -226,25 +229,25 @@ def _locked(write: bool = False):
        读锁下执行 ALTER TABLE 等于「持共享锁还去改结构」，多进程必冲突。
        读时表不存在就返回空结果（has_day/get_daily_rec/series 都天然容忍空）。
     """
-    if _dblock is not None:
+    if _db_lock is not None:
         attempt = 0
         while True:
             try:
-                with _dblock.locked_sqlite(DB_PATH, write=write, timeout=_DB_TIMEOUT,
-                                           wal=True) as c:
+                with _db_lock.locked_sqlite(DB_PATH, write=write, timeout=_DB_TIMEOUT,
+                                            wal=True) as c:
                     if write:
                         _ensure_schema(c)
                     else:
                         _ensure_schema_readonly(c)
                     yield c
                 return
-            except _dblock.LockTimeout:
+            except _db_lock.LockTimeout:
                 attempt += 1
                 if attempt > _DB_RETRIES:
                     raise
                 time.sleep(min(0.2 * (2 ** (attempt - 1)), 2.0))
                 continue
-    # dblock 不可用（老部署）→ 退化为进程内串行，至少不会自己和自己抢
+    # DataHub 的 lock 库不可用（老部署）→ 退化为进程内串行，至少不会自己和自己抢
     with _fallback_lock:
         c = _conn()
         try:

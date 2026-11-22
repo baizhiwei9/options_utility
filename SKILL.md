@@ -39,6 +39,20 @@ DATAHUB_ROOT=<含 data_hub 包的目录> python3 calc/option_risk_chart.py \
 - 输出：`outputs/option_risk_<指数>_<日期>.png`
 - 耗时：单标的约 1~2 分钟（GEX 逐日现算，`outputs/gex_series_*.csv` 有缓存则增量）；5 个串行约 5~8 分钟。
 
+## 并发锁：引用 DataHub 的读写锁库（本仓不实现）
+
+本仓**不自建任何锁实现**，统一引用 `data_hub/core/lock.py`（模块里就叫 `Lock`）：
+
+```python
+from data_hub.core.lock import Lock, locked_sqlite, atomic_write, LockTimeout
+```
+
+- 读用**读锁**（`LOCK_SH`，多进程并行）、写用**写锁**（`LOCK_EX`，独占）
+- 等锁**超时**抛 `LockTimeout`（继承 `TimeoutError`），绝无声永久阻塞
+- 锁文件落本地盘 `~/.local/share/cozedb`，不放云盘 FUSE
+- 依赖仓库：`github.com/baizhiwei9/datahub-three-tier` → `data_hub/core/lock.py`
+- 取不到该模块时降级为进程内 `RLock`，不阻断出图
+
 ## 数据源（只读配置数据库，不重新取数）
 
 代码按配置引用数据库，**只读不写**；数据库填充由既有「风险层 / 期权指标」日更多路并行链路负责。

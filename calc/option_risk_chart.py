@@ -132,8 +132,9 @@ COLORS = {
 # ==================== 并发保护（2026-11-22）====================
 # GEX 缓存 csv 要上锁：三个入口（chart / card / card_feishu）都会
 # 「增量补齐后回写整份 csv」，不加锁会内容交错，非原子写被杀则留半截文件。
-# 优先用 data_hub/core/dblock.py 的跨进程锁，取不到时降级为无锁（不阻断出图）。
-def _dblock_module():
+# 统一引用 **DataHub 的读写锁库**（data_hub/core/lock.py）；本仓不自建锁实现。
+# 大佬 2026-11-22：「你就引用 data Hub 的读写锁的库就行了」。
+def _lock_module():
     try:
         import sys as _sys_lock
         here = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
@@ -143,27 +144,27 @@ def _dblock_module():
                 if cand not in _sys_lock.path:
                     _sys_lock.path.insert(0, cand)
                 break
-        from data_hub.core import dblock as _m
+        from data_hub.core import lock as _m
         return _m
     except Exception:                                # noqa: BLE001
         return None
 
 
-_DBLOCK = _dblock_module()
+_DB_LOCK = _lock_module()
 
 
 def _gex_lock(fp, write):
-    """GEX 缓存文件锁（优先 dblock 跨进程锁，否则退化 no-op）。"""
-    if _DBLOCK is not None:
-        return _DBLOCK.file_lock(fp, exclusive=write)
+    """GEX 缓存文件锁（DataHub Lock；不可用时退化 no-op，不阻断出图）。"""
+    if _DB_LOCK is not None:
+        return _DB_LOCK.rw_lock(fp, exclusive=write)
     import contextlib as _cl
     return _cl.nullcontext()
 
 
 def _gex_atomic(fp, mode):
-    """GEX 缓存原子写（优先 dblock.atomic_write）。"""
-    if _DBLOCK is not None:
-        return _DBLOCK.atomic_write(fp, mode)
+    """GEX 缓存原子写（DataHub atomic_write）。"""
+    if _DB_LOCK is not None:
+        return _DB_LOCK.atomic_write(fp, mode)
     return open(fp, mode)
 
 

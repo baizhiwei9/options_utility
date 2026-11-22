@@ -459,7 +459,7 @@ class TestRiskHistorySchemaConstants(unittest.TestCase):
 
 
 class TestDblockConcurrencyPrimitives(unittest.TestCase):
-    """#9：并发保护原语（data_hub/core/dblock.py）
+    """#9：并发保护原语（data_hub/core/lock.py —— DataHub 读写锁库）
 
     起因（2026-11-22 排查）：这套链路的表会被多条路径同时读写，但原来是裸的 ——
       · risk_history：sqlite3.connect() 无 timeout、无 WAL，
@@ -472,8 +472,9 @@ class TestDblockConcurrencyPrimitives(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
         sys.path.insert(0, PARENT)
-        from data_hub.core import dblock
-        cls.dbl = dblock
+        # 统一引用 DataHub 的读写锁库（唯一实现）
+        from data_hub.core import lock
+        cls.dbl = lock
 
     def test_nested_lock_is_reentrant(self):
         """同线程嵌套加锁不能自死锁（flock 是按 open file description 的）。"""
@@ -593,7 +594,8 @@ class TestRiskHistoryReuseTableFirst(unittest.TestCase):
 class TestReadWriteLock(unittest.TestCase):
     """#11：读写锁语义（大佬 2026-11-22：读用读锁、写用写锁，且要有超时）
 
-    之前 dblock 只有「排他锁」，读也当写锁用 —— 多进程读同一张表时会互相排队。
+    锁实现统一来自 DataHub 的 data_hub.core.lock；
+    之前只有「排他锁」，读也当写锁用 —— 多进程读同一张表时会互相排队。
     这里把 RWLock 的四条关键语义固化住：
       1. 多读并行（两个读者同时持锁，总耗时≈单次，而不是 2 倍）
       2. 写独占（写者必须等所有读者退出）
@@ -604,8 +606,9 @@ class TestReadWriteLock(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
         sys.path.insert(0, PARENT)
-        from data_hub.core import dblock
-        cls.dbl = dblock
+        # 统一引用 DataHub 的读写锁库（唯一实现）
+        from data_hub.core import lock
+        cls.dbl = lock
 
     def setUp(self):
         import tempfile
