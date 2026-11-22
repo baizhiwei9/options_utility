@@ -31,8 +31,11 @@ import os
 import csv
 import shutil
 import time
+import contextlib
+import json
 import sqlite3
 import datetime
+import threading
 
 # ==================== 数据目录解析（单一真源）====================
 # 代码搬到了 options/ 项目，但**历史数据不能跟着分裂成两份**。
@@ -76,6 +79,31 @@ else:
         _LEGACY_CANDIDATES[1],
     )
 _CLOUD_DB = os.path.join(OUTPUT_DIR, 'risk_history.db')
+
+# ==================== 并发保护（2026-11-22）====================
+# 为什么必须加：这张 daily_metrics 表被多条链路同时读写 ——
+#   · risk_layer 五轨判灯：每轮 upsert 5 个标的 + 读 252 日分位（写+读）
+#   · option_risk_chart / card：兜底读
+#   · 手工回补 / 重算脚本：批量写
+# 原实现 sqlite3.connect() 无 timeout、无 WAL，且 `with _conn() as c:` 只提交不关闭
+# （实测 30 次调用泄漏 30 个 fd）；并发时随时可能 `database is locked`。
+_DB_TIMEOUT = float(os.environ.get("RISK_HISTORY_TIMEOUT", "30"))
+_DB_RETRIES = int(os.environ.get("RISK_HISTORY_LOCK_RETRIES", "3"))
+_fallback_lock = threading.RLock()
+
+# 统一锁：**直接引用 DataHub 的读写锁库**（data_hub/core/lock.py）。
+# 本仓不再自建任何锁实现 —— 大佬 2026-11-22：「你就引用 data Hub 的读写锁的库就行了」。
+# （`data_hub.core.dblock` 只是向后兼容薄壳，这里统一走 lock。）
+try:
+    from data_hub.core import lock as _db_lock
+except Exception:                                     # noqa: BLE001
+    try:
+        import sys as _sys
+        _sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.dirname(
+            os.path.dirname(os.path.abspath(__file__))))))
+        from data_hub.core import lock as _db_lock
+    except Exception:                                 # noqa: BLE001
+        _db_lock = None
 
 # 2026-11-18 修复（disk I/O error 根因 + 路径可配置）：
 # 云盘（FilteredFS/FUSE）**不支持 SQLite 随机写**，直接写 OUTPUT_DIR 下的库会间歇性抛
@@ -137,7 +165,8 @@ FIELDS = ['vix', 'r_ratio', 'skew', 'oi_pcr', 'iv_hv',
           # skew10_cum5= 偏度5日变化量（今日−5交易日前，>12红灯）
           # skew10_pct = skew10 近252日分位
           # pcr_oi20   = 近月(DTE>20)持仓量PCR（>1.5红灯）
-          'skew10', 'skew10_cum5', 'skew10_pct', 'pcr_oi20']
+          'skew10', 'skew10_cum5', 'skew10_pct', 'pcr_oi20',
+          'rec_json']
 
 # 历史库新增列迁移（旧库自动 ALTER，不丢数据）
 _MIGRATION_COLS = {
@@ -145,12 +174,28 @@ _MIGRATION_COLS = {
     'skew10_cum5': 'REAL',
     'skew10_pct': 'REAL',
     'pcr_oi20': 'REAL',
+    # 2026-11-22：整条 rec 的 JSON 快照。让「表里已有当日数据」时能**原样复用**，
+    # 不必重新联网取一遍期权链（大佬要求：优先用表，没有才取数，取完回存）。
+    # 存 JSON 而不是拆成列，是为了保证缓存复用与当次计算**逐字段一致**
+    # （judge_light 依赖 gex.regime / _consistency 这类嵌套字段，拆列会丢）。
+    'rec_json': 'TEXT',
 }
 
 
 def _conn():
+    """裸连接（保留给外部兼容调用）。
+
+    ⚠️ 2026-11-22：**不要**再用 `with _conn() as c:` —— sqlite3 的上下文管理器
+    只提交事务、不关闭连接（实测 30 次调用泄漏 30 个文件描述符）。
+    内部一律走 `_locked()` / `_locked_write()`，它们必然 close。
+    """
     os.makedirs(OUTPUT_DIR, exist_ok=True)
-    c = sqlite3.connect(DB_PATH)
+    c = sqlite3.connect(DB_PATH, timeout=_DB_TIMEOUT)
+    try:
+        c.execute("PRAGMA journal_mode=WAL")
+        c.execute("PRAGMA synchronous=NORMAL")
+    except sqlite3.OperationalError:
+        pass                                    # 云盘/FUSE 上建不起 WAL，退回默认
     c.execute('''CREATE TABLE IF NOT EXISTS daily_metrics(
         trade_date TEXT NOT NULL,
         target_key TEXT NOT NULL,
@@ -159,6 +204,7 @@ def _conn():
         gex_intensity REAL, gamma_wall REAL, put_wall REAL,
         im_z REAL, mo_iv_main REAL,
         skew10 REAL, skew10_cum5 REAL, skew10_pct REAL, pcr_oi20 REAL,
+        rec_json TEXT,
         updated_at TEXT,
         PRIMARY KEY(trade_date, target_key))''')
     # 旧库补列（幂等）
@@ -167,6 +213,148 @@ def _conn():
         if col not in exist:
             c.execute(f'ALTER TABLE daily_metrics ADD COLUMN {col} {typ}')
     return c
+
+
+# ==================== 加锁读写（读写锁 + 超时重试）====================
+# 大佬 2026-11-22：「读的话用读锁，写的话用写锁，而且有锁的超时处理」
+#   · write=False → 读锁（LOCK_SH），多进程/多线程可同时读
+#   · write=True  → 写锁（LOCK_EX），独占
+#   · 等锁超时抛 LockTimeout（data_hub.core.lock），按 _DB_RETRIES 退避重试，
+#     重试仍失败才上抛 —— 多进程场景宁可明确失败，也不要无声永久阻塞。
+@contextlib.contextmanager
+def _locked(write: bool = False):
+    """带读写锁的库连接；退出时必然 close + 按需 commit/rollback。
+
+    ⚠️ 读路径**不跑 DDL**：建表/补列只在写锁下做。
+       读锁下执行 ALTER TABLE 等于「持共享锁还去改结构」，多进程必冲突。
+       读时表不存在就返回空结果（has_day/get_daily_rec/series 都天然容忍空）。
+    """
+    if _db_lock is not None:
+        attempt = 0
+        while True:
+            try:
+                with _db_lock.locked_sqlite(DB_PATH, write=write, timeout=_DB_TIMEOUT,
+                                            wal=True) as c:
+                    if write:
+                        _ensure_schema(c)
+                    else:
+                        _ensure_schema_readonly(c)
+                    yield c
+                return
+            except _db_lock.LockTimeout:
+                attempt += 1
+                if attempt > _DB_RETRIES:
+                    raise
+                time.sleep(min(0.2 * (2 ** (attempt - 1)), 2.0))
+                continue
+    # DataHub 的 lock 库不可用（老部署）→ 退化为进程内串行，至少不会自己和自己抢
+    with _fallback_lock:
+        c = _conn()
+        try:
+            yield c
+            if write:
+                c.commit()
+        except Exception:
+            if write:
+                try:
+                    c.rollback()
+                except Exception:                # noqa: BLE001
+                    pass
+            raise
+        finally:
+            try:
+                c.close()
+            except Exception:                    # noqa: BLE001
+                pass
+
+
+def _ensure_schema_readonly(c):
+    """读路径专用：只建表（表已存在时是空操作），**绝不 ALTER**。
+
+    表已存在时 `CREATE TABLE IF NOT EXISTS` 不写库；但 `ALTER TABLE ADD COLUMN`
+    一定会写，所以读路径跳过补列 —— 补列交给写路径（risk_layer 每轮都会走写锁）。
+    """
+    try:
+        c.execute('''CREATE TABLE IF NOT EXISTS daily_metrics(
+            trade_date TEXT NOT NULL,
+            target_key TEXT NOT NULL,
+            vix REAL, r_ratio REAL, skew REAL, oi_pcr REAL, iv_hv REAL,
+            gex_strength REAL, flip_dist REAL, flip_price REAL, local_gex_yi REAL,
+            gex_intensity REAL, gamma_wall REAL, put_wall REAL,
+            im_z REAL, mo_iv_main REAL,
+            skew10 REAL, skew10_cum5 REAL, skew10_pct REAL, pcr_oi20 REAL,
+            rec_json TEXT,
+            updated_at TEXT,
+            PRIMARY KEY(trade_date, target_key))''')
+    except sqlite3.OperationalError:
+        pass                                     # 读锁下建不了也不影响「读到空」
+
+
+def _pack_rec(rec):
+    """把整条 analyze_target 记录压成 JSON 存库（NaN 一律转 None，保证可反序列化）。"""
+    try:
+        payload = {}
+        for k, v in rec.items():
+            if isinstance(v, float) and (v != v or v in (float("inf"), float("-inf"))):
+                payload[k] = None
+            else:
+                payload[k] = v
+        return json.dumps(payload, ensure_ascii=False, default=str)
+    except Exception:                                  # noqa: BLE001
+        return None
+
+
+def get_daily_rec(trade_date, target_key):
+    """读某标的某日已落库的完整记录（JSON）。没有则返回 None。
+
+    用途（大佬 2026-11-22 要求）：**优先用表**。当天已经算过就把结果原样取回来，
+    不再联网重算期权链 —— 这就是「下次表里有就直接用」。
+    """
+    td = str(trade_date).replace("-", "")
+    with _locked(write=False) as c:
+        row = c.execute(
+            "SELECT rec_json FROM daily_metrics WHERE trade_date=? AND target_key=?",
+            (td, str(target_key))).fetchone()
+    if not row or not row[0]:
+        return None
+    try:
+        rec = json.loads(row[0])
+    except Exception:                                  # noqa: BLE001
+        return None
+    return rec if isinstance(rec, dict) else None
+
+
+def has_day(trade_date, target_key=None) -> bool:
+    """该交易日（可选：该标的）是否已有落库记录。"""
+    td = str(trade_date).replace("-", "")
+    with _locked(write=False) as c:
+        if target_key:
+            row = c.execute(
+                "SELECT 1 FROM daily_metrics WHERE trade_date=? AND target_key=? LIMIT 1",
+                (td, str(target_key))).fetchone()
+        else:
+            row = c.execute(
+                "SELECT 1 FROM daily_metrics WHERE trade_date=? LIMIT 1", (td,)).fetchone()
+    return bool(row)
+
+
+def _ensure_schema(c):
+    """幂等建表 + 补列（读路径也要能自愈，否则新机器读空库直接崩）。"""
+    c.execute('''CREATE TABLE IF NOT EXISTS daily_metrics(
+        trade_date TEXT NOT NULL,
+        target_key TEXT NOT NULL,
+        vix REAL, r_ratio REAL, skew REAL, oi_pcr REAL, iv_hv REAL,
+        gex_strength REAL, flip_dist REAL, flip_price REAL, local_gex_yi REAL,
+        gex_intensity REAL, gamma_wall REAL, put_wall REAL,
+        im_z REAL, mo_iv_main REAL,
+        skew10 REAL, skew10_cum5 REAL, skew10_pct REAL, pcr_oi20 REAL,
+        rec_json TEXT,
+        updated_at TEXT,
+        PRIMARY KEY(trade_date, target_key))''')
+    exist = {r[1] for r in c.execute('PRAGMA table_info(daily_metrics)')}
+    for col, typ in _MIGRATION_COLS.items():
+        if col not in exist:
+            c.execute(f'ALTER TABLE daily_metrics ADD COLUMN {col} {typ}')
 
 
 def upsert_daily(trade_date, target_key, rec):
@@ -194,9 +382,10 @@ def upsert_daily(trade_date, target_key, rec):
         'skew10_cum5': rec.get('skew10_cum5'),
         'skew10_pct': rec.get('skew10_pct'),
         'pcr_oi20': rec.get('pcr_oi20'),
+        'rec_json': _pack_rec(rec),
     }
     now = datetime.datetime.now().strftime('%Y-%m-%d %H:%M:%S')
-    with _conn() as c:
+    with _locked(write=True) as c:
         c.execute(f'''INSERT INTO daily_metrics
             (trade_date,target_key,{','.join(FIELDS)},updated_at)
             VALUES (?,?,{','.join('?'*len(FIELDS))},?)
@@ -210,7 +399,7 @@ def _series(key, field, window=252, include_date=None):
     """取某标的某字段最近 window 个有值交易日（升序）。include_date 确保当日已在库。"""
     if field not in FIELDS:
         return []
-    with _conn() as c:
+    with _locked(write=False) as c:
         rows = c.execute(
             f'''SELECT {field} FROM daily_metrics WHERE target_key=? AND {field} IS NOT NULL
             ORDER BY trade_date DESC LIMIT ?''', (key, window)).fetchall()
@@ -262,7 +451,7 @@ def backfill_seed_from_csv(verbose=False):
 
 def series(key, field, days=252):
     """返回最近 days 个交易日 (trade_date_str, value) 升序列表；跳过 None。"""
-    with _conn() as c:
+    with _locked(write=False) as c:
         rows = c.execute(
             f'''SELECT trade_date, {field} FROM daily_metrics
                 WHERE target_key=? AND {field} IS NOT NULL
@@ -273,7 +462,7 @@ def series(key, field, days=252):
 
 if __name__ == '__main__':
     n = backfill_seed_from_csv(verbose=True)
-    with _conn() as c:
+    with _locked(write=False) as c:
         for key in ('300ETF', '500ETF', 'KC50', 'CYB', 'ZZ1000'):
             cnt = c.execute('SELECT COUNT(*),MIN(trade_date),MAX(trade_date) FROM daily_metrics WHERE target_key=?',
                             (key,)).fetchone()

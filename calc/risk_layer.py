@@ -120,6 +120,12 @@ TARGETS = [
 
 TODAY = datetime.date.today()
 
+# 是否优先复用当日已落库记录（大佬 2026-11-22）：
+# 默认开。当日表里已有 → 直接取回，不联网重算；没有 → 正常取数并回存。
+# 想强制重算某天（例如盘中数据变了要刷新），设 RISK_LAYER_REUSE_TODAY=0。
+REUSE_TODAY = os.environ.get("RISK_LAYER_REUSE_TODAY", "1").strip().lower() not in (
+    "0", "false", "no", "off")
+
 
 # ============================================================
 # 数据降级：现货日K（HV20）—— AKShare → 新浪兜底
@@ -1136,12 +1142,26 @@ def run(verbose=True):
     # 冷启动：严格只锁头 CALIBRATION_DAYS(3) 个运行日，期间只校准不报警；
     # 3天后正式判灯，分位/SKEW/GEX等基线类指标按各自样本门槛逐字段生效(缺基线显示待基线)。
     cold = len(run_dates) < CALIBRATION_DAYS
+    today_str_pre = TODAY.strftime('%Y%m%d')
 
     recs = []
     for t in TARGETS:
         if verbose:
             print(f'[五轨] {t["name"]} ({t["code"]})')
-        r = analyze_target(t, state, cold)
+        # 2026-11-22 大佬要求「优先用表」：当日已落库就直接复用，不再联网重算期权链。
+        #   有了它，重复跑（手工复跑 / 卡片 + 图表连着跑 / 补救推送）都是零取数，
+        #   也不会因为两次取数时点不同导致同一交易日出现两套数值。
+        r = None
+        if REUSE_TODAY:
+            cached = hdb.get_daily_rec(today_str_pre, t['key'])
+            if cached and cached.get('ok'):
+                r = cached
+                r['_from_cache'] = True
+                if verbose:
+                    print('  ♻️ 命中历史库，直接复用（不联网）：'
+                          f'VIX={r.get("vix")} R={r.get("R")} 灯={r.get("light")}')
+        if r is None:
+            r = analyze_target(t, state, cold)
         if verbose:
             print('  ✅' if r['ok'] else '  ❌',
                   f'VIX={r.get("vix")} R={r.get("R")} SKEW={r.get("skew")} '

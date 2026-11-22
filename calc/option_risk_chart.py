@@ -129,6 +129,45 @@ COLORS = {
 }
 
 
+# ==================== 并发保护（2026-11-22）====================
+# GEX 缓存 csv 要上锁：三个入口（chart / card / card_feishu）都会
+# 「增量补齐后回写整份 csv」，不加锁会内容交错，非原子写被杀则留半截文件。
+# 统一引用 **DataHub 的读写锁库**（data_hub/core/lock.py）；本仓不自建锁实现。
+# 大佬 2026-11-22：「你就引用 data Hub 的读写锁的库就行了」。
+def _lock_module():
+    try:
+        import sys as _sys_lock
+        here = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+        root = os.environ.get("DATAHUB_ROOT") or os.path.dirname(here)
+        for cand in (root, os.path.dirname(root), here):
+            if cand and os.path.isdir(os.path.join(cand, "data_hub")):
+                if cand not in _sys_lock.path:
+                    _sys_lock.path.insert(0, cand)
+                break
+        from data_hub.core import lock as _m
+        return _m
+    except Exception:                                # noqa: BLE001
+        return None
+
+
+_DB_LOCK = _lock_module()
+
+
+def _gex_lock(fp, write):
+    """GEX 缓存文件锁（DataHub Lock；不可用时退化 no-op，不阻断出图）。"""
+    if _DB_LOCK is not None:
+        return _DB_LOCK.rw_lock(fp, exclusive=write)
+    import contextlib as _cl
+    return _cl.nullcontext()
+
+
+def _gex_atomic(fp, mode):
+    """GEX 缓存原子写（DataHub atomic_write）。"""
+    if _DB_LOCK is not None:
+        return _DB_LOCK.atomic_write(fp, mode)
+    return open(fp, mode)
+
+
 # ==================== data_hub 定位 ====================
 def _locate_datahub() -> str | None:
     """返回「包含 data_hub 包」的目录，找不到返回 None。"""
@@ -240,15 +279,13 @@ def load_metrics(underlying: str, start: str, end: str) -> pd.DataFrame:
             key = _risk_db_key(underlying)
             dbp = getattr(rh, "DB_PATH", "")
             if key and dbp and os.path.exists(dbp) and os.path.getsize(dbp) > 0:
-                import sqlite3
-                con = sqlite3.connect(dbp)
-                try:
-                    q = ("SELECT trade_date, vix, skew, oi_pcr FROM daily_metrics "
-                         "WHERE target_key=? AND trade_date>=? AND trade_date<=? "
-                         "ORDER BY trade_date")
+                # 2026-11-22：走 risk_history 的加锁读路径（读也上共享锁），
+                # 不再自己裸连 —— 否则撞上 risk_layer 正在写会读到迁移中途的库。
+                q = ("SELECT trade_date, vix, skew, oi_pcr FROM daily_metrics "
+                     "WHERE target_key=? AND trade_date>=? AND trade_date<=? "
+                     "ORDER BY trade_date")
+                with rh._locked(write=False) as con:
                     rows = con.execute(q, (key, s, e)).fetchall()
-                finally:
-                    con.close()
                 if rows:
                     out = pd.DataFrame(rows, columns=["trade_date", "vix30",
                                                       "skew_index", "oi_pcr"])
@@ -355,7 +392,10 @@ def load_gex_series(underlying: str, dates, use_cache: bool = True) -> pd.DataFr
     cache = pd.DataFrame()
     if use_cache and os.path.exists(cache_fp):
         try:
-            cache = pd.read_csv(cache_fp, dtype={"trade_date": str})
+            # 2026-11-22：三个入口（chart / card / card_feishu）会同时增量写同一个
+            # gex_series_*.csv；不加锁会内容交错，写到一半被杀则留下半截文件。
+            with _gex_lock(cache_fp, write=False):
+                cache = pd.read_csv(cache_fp, dtype={"trade_date": str})
         except Exception:                            # noqa: BLE001
             cache = pd.DataFrame()
 
@@ -421,7 +461,9 @@ def load_gex_series(underlying: str, dates, use_cache: bool = True) -> pd.DataFr
         cache = cache.sort_values("trade_date")
         if use_cache:
             try:
-                cache.to_csv(cache_fp, index=False)
+                with _gex_lock(cache_fp, write=True):
+                    with _gex_atomic(cache_fp, "w") as f:
+                        cache.to_csv(f, index=False)
             except Exception:                        # noqa: BLE001
                 pass
 

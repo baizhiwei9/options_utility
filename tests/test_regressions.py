@@ -456,3 +456,268 @@ class TestRiskHistorySchemaConstants(unittest.TestCase):
                 self.assertEqual(pct, 50.0)
             finally:
                 rh.DB_PATH, rh.snapshot = old_db, old_snap
+
+
+class TestDblockConcurrencyPrimitives(unittest.TestCase):
+    """#9：并发保护原语（data_hub/core/lock.py —— DataHub 读写锁库）
+
+    起因（2026-11-22 排查）：这套链路的表会被多条路径同时读写，但原来是裸的 ——
+      · risk_history：sqlite3.connect() 无 timeout、无 WAL，
+        且 `with _conn()` 只提交不关闭（实测 30 次调用泄漏 30 个 fd）
+      · option_metrics.parquet / gex_series_*.csv：非原子写，中途被杀留半截文件
+
+    这里只验原语本身（纯本地临时目录，不联网、不碰真实库）。
+    """
+
+    @classmethod
+    def setUpClass(cls):
+        sys.path.insert(0, PARENT)
+        # 统一引用 DataHub 的读写锁库（唯一实现）
+        from data_hub.core import lock
+        cls.dbl = lock
+
+    def test_nested_lock_is_reentrant(self):
+        """同线程嵌套加锁不能自死锁（flock 是按 open file description 的）。"""
+        import tempfile
+        with tempfile.TemporaryDirectory() as td:
+            p = os.path.join(td, "x.db")
+            with self.dbl.locked_sqlite(p, write=True, migrate="create table if not exists t(a)"):
+                with self.dbl.file_lock(p):
+                    with self.dbl.atomic_write(p + ".dat", "wb") as f:
+                        f.write(b"ok")
+            self.assertTrue(os.path.exists(p + ".dat"))
+
+    def test_atomic_write_leaves_no_partial_file(self):
+        """写一半抛异常 → 目标文件不出现、tmp 不残留。"""
+        import tempfile
+        with tempfile.TemporaryDirectory() as td:
+            p = os.path.join(td, "y.dat")
+            with self.assertRaises(RuntimeError):
+                with self.dbl.atomic_write(p, "wb") as f:
+                    f.write(b"partial")
+                    raise RuntimeError("boom")
+            self.assertFalse(os.path.exists(p), "异常后不应留下目标文件")
+            self.assertEqual([x for x in os.listdir(td) if ".tmp." in x], [])
+
+    def test_concurrent_writers_do_not_lose_rows(self):
+        """12 线程 × 30 次写同一个 sqlite → 0 报错、行数精确。"""
+        import tempfile
+        import threading
+        with tempfile.TemporaryDirectory() as td:
+            p = os.path.join(td, "c.db")
+            errs = []
+
+            def _w(k):
+                try:
+                    for i in range(30):
+                        with self.dbl.locked_sqlite(
+                                p, write=True,
+                                migrate="create table if not exists t(a)") as c:
+                            c.execute("insert into t values(?)", (k * 1000 + i,))
+                except Exception as exc:             # noqa: BLE001
+                    errs.append("%s: %s" % (type(exc).__name__, exc))
+
+            ts = [threading.Thread(target=_w, args=(k,)) for k in range(12)]
+            for t in ts:
+                t.start()
+            for t in ts:
+                t.join()
+            self.assertEqual(errs, [], "并发写不应报错")
+            import sqlite3
+            conn = sqlite3.connect(p)
+            try:
+                n = conn.execute("select count(*) from t").fetchone()[0]
+            finally:
+                conn.close()
+            self.assertEqual(n, 360)
+
+
+class TestRiskHistoryReuseTableFirst(unittest.TestCase):
+    """#10：表优先 —— 当日已落库就必须原样复用，不联网重算
+
+    起因（大佬 2026-11-22）：「表里边有就直接用它，没有的话再用数据获取，然后再存」。
+    实现：daily_metrics 增加 rec_json 整条记录快照 + get_daily_rec() 读回。
+    """
+
+    def test_full_rec_roundtrip_keeps_nested_fields(self):
+        """整条 rec 存/取必须逐字段一致（judge_light 依赖 gex 里的嵌套键）。"""
+        import tempfile
+        import risk_history as rh
+        rec = {
+            "key": "300ETF", "name": "沪深300ETF", "ok": True,
+            "vix": 24.4, "R": 1.051, "skew": 96.1, "oi_pcr": 0.701,
+            "gex": {"strength": 681000000.0, "regime": "正Gamma区(压波动)",
+                    "_consistency": "一致", "flip_dist_pct": 2.1},
+            "im": {"Z": None}, "mo_iv": None,
+            "nan_field": float("nan"),
+        }
+        with tempfile.TemporaryDirectory() as td:
+            old_db, old_snap = rh.DB_PATH, rh.snapshot
+            rh.DB_PATH = os.path.join(td, "risk_history.db")
+            rh.snapshot = lambda *a, **k: False
+            try:
+                rh.upsert_daily("20261122", "300ETF", rec)
+                got = rh.get_daily_rec("20261122", "300ETF")
+                self.assertIsNotNone(got)
+                self.assertEqual(got["vix"], 24.4)
+                self.assertEqual(got["gex"]["regime"], "正Gamma区(压波动)")
+                self.assertEqual(got["gex"]["_consistency"], "一致")
+                self.assertIsNone(got["nan_field"], "NaN 必须落成 null（否则 JSON 非法）")
+                self.assertTrue(rh.has_day("20261122", "300ETF"))
+                self.assertFalse(rh.has_day("20261121", "300ETF"))
+                self.assertIsNone(rh.get_daily_rec("20261121", "300ETF"))
+            finally:
+                rh.DB_PATH, rh.snapshot = old_db, old_snap
+
+    def test_no_fd_leak_on_repeated_upsert(self):
+        """反复 upsert 不能泄漏文件描述符（原 `with _conn()` 的病灶）。"""
+        import tempfile
+        import risk_history as rh
+        with tempfile.TemporaryDirectory() as td:
+            old_db, old_snap = rh.DB_PATH, rh.snapshot
+            rh.DB_PATH = os.path.join(td, "risk_history.db")
+            rh.snapshot = lambda *a, **k: False
+            try:
+                rh.upsert_daily("20260101", "300ETF", {"vix": 1.0})   # 预热
+                fd_dir = "/proc/self/fd"
+                if not os.path.isdir(fd_dir):
+                    self.skipTest("无 /proc/self/fd，跳过 fd 泄漏检查")
+                before = len(os.listdir(fd_dir))
+                for i in range(30):
+                    rh.upsert_daily("20260101", "300ETF", {"vix": float(i)})
+                after = len(os.listdir(fd_dir))
+                self.assertLessEqual(after - before, 1, "反复 upsert 不应泄漏 fd")
+            finally:
+                rh.DB_PATH, rh.snapshot = old_db, old_snap
+
+
+class TestReadWriteLock(unittest.TestCase):
+    """#11：读写锁语义（大佬 2026-11-22：读用读锁、写用写锁，且要有超时）
+
+    锁实现统一来自 DataHub 的 data_hub.core.lock；
+    之前只有「排他锁」，读也当写锁用 —— 多进程读同一张表时会互相排队。
+    这里把 RWLock 的四条关键语义固化住：
+      1. 多读并行（两个读者同时持锁，总耗时≈单次，而不是 2 倍）
+      2. 写独占（写者必须等所有读者退出）
+      3. 读升写 → 显式 LockTimeout，绝不自死锁
+      4. 等锁超时 → LockTimeout（且它是 TimeoutError 子类，调用方好兜）
+    """
+
+    @classmethod
+    def setUpClass(cls):
+        sys.path.insert(0, PARENT)
+        # 统一引用 DataHub 的读写锁库（唯一实现）
+        from data_hub.core import lock
+        cls.dbl = lock
+
+    def setUp(self):
+        import tempfile
+        self._td = tempfile.TemporaryDirectory()
+        self.p = os.path.join(self._td.name, "rw.db")
+
+    def tearDown(self):
+        self._td.cleanup()
+
+    def test_concurrent_readers_run_in_parallel(self):
+        import threading
+        import time
+        hold = 0.35
+        started, base = [], [time.monotonic()]
+
+        def _r():
+            with self.dbl.rw_lock(self.p, exclusive=False):
+                started.append(time.monotonic() - base[0])
+                time.sleep(hold)
+
+        ts = [threading.Thread(target=_r) for _ in range(3)]
+        t0 = time.monotonic()
+        for t in ts:
+            t.start()
+        for t in ts:
+            t.join()
+        elapsed = time.monotonic() - t0
+        self.assertLess(elapsed, hold * 2.2,
+                        "多读应并行（串行会接近 %.2fs）" % (hold * 3))
+        self.assertEqual(len(started), 3)
+
+    def test_writer_waits_for_readers(self):
+        import threading
+        import time
+        state = {"writer_in": False, "reader_out": None}
+        got = threading.Event()
+
+        def _reader():
+            with self.dbl.rw_lock(self.p, exclusive=False):
+                time.sleep(0.25)
+            state["reader_out"] = time.monotonic()
+
+        def _writer():
+            with self.dbl.rw_lock(self.p, exclusive=True, timeout=5):
+                state["writer_in"] = time.monotonic()
+            got.set()
+
+        tr = threading.Thread(target=_reader)
+        tr.start()
+        time.sleep(0.05)
+        tw = threading.Thread(target=_writer)
+        tw.start()
+        got.wait(5)
+        tr.join()
+        tw.join()
+        self.assertTrue(state["writer_in"] >= state["reader_out"] - 1e-6,
+                        "写者必须在读者退出后才进入")
+
+    def test_read_to_write_upgrade_raises_not_deadlocks(self):
+        with self.dbl.rw_lock(self.p, exclusive=False):
+            with self.assertRaises(self.dbl.LockTimeout):
+                with self.dbl.rw_lock(self.p, exclusive=True, timeout=1):
+                    self.fail("读锁升级写锁不应该成功")
+
+    def test_nested_read_is_reentrant(self):
+        with self.dbl.rw_lock(self.p, exclusive=False):
+            with self.dbl.rw_lock(self.p, exclusive=False):
+                pass
+
+    def test_lock_timeout_raises_and_is_timeouterror(self):
+        import threading
+        import time
+        self.assertTrue(issubclass(self.dbl.LockTimeout, TimeoutError))
+        marker = threading.Event()
+
+        def _hold():
+            with self.dbl.rw_lock(self.p, exclusive=True):
+                marker.set()
+                time.sleep(0.8)
+
+        t = threading.Thread(target=_hold)
+        t.start()
+        marker.wait(5)
+        try:
+            with self.assertRaises(self.dbl.LockTimeout):
+                with self.dbl.rw_lock(self.p, exclusive=True, timeout=0.2):
+                    self.fail("超时未触发")
+        finally:
+            t.join()
+
+    def test_locked_sqlite_uses_read_lock_for_queries(self):
+        """两个读连接必须能同时打开（读锁不互斥），写完能被读到。"""
+        import threading
+        import time
+        with self.dbl.locked_sqlite(self.p, write=True,
+                                    migrate="create table if not exists t(a)") as c:
+            c.execute("insert into t values(1)")
+        both = threading.Barrier(3, timeout=5)
+
+        def _r():
+            with self.dbl.locked_sqlite(self.p, write=False) as c:
+                both.wait()
+                return c.execute("select count(*) from t").fetchone()[0]
+
+        out = []
+        ts = [threading.Thread(target=lambda: out.append(_r())) for _ in range(2)]
+        for t in ts:
+            t.start()
+        both.wait()          # 两个读者能同时进临界区才不会被这里卡死
+        for t in ts:
+            t.join()
+        self.assertEqual(out, [1, 1])
