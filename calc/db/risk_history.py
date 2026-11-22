@@ -119,6 +119,34 @@ def snapshot(force=False, min_interval=30.0):
 
 _LAST_SNAP = [0.0]
 
+# ==================== 字段清单（upsert / percentile 的唯一定义处）====================
+# ⚠️ 2026-11-22 修复：这两个常量在 11-18 重构（0bf25c3「risk_history 走 localdb
+# 可配置路径」）时被连带删掉，但 upsert_daily() / _series() / _conn() 仍在引用，
+# 结果 risk_layer 五轨判灯：
+#   · 写库   → upsert_daily 抛 NameError(FIELDS)，被上层 try 捕获成
+#              「[WARN] 历史库写入失败 xxx: name '_MIGRATION_COLS' is not defined」
+#              → daily_metrics 当天一行都没写进去；
+#   · 读分位 → percentile → _series 抛 NameError(FIELDS) 直接冒到 main，
+#              整个 risk-layer 进程崩掉（rc=1），图/卡片都出不来。
+# 内容与重构前 654bbb2 版本逐字一致，此处恢复为「单一事实来源」。
+FIELDS = ['vix', 'r_ratio', 'skew', 'oi_pcr', 'iv_hv',
+          'gex_strength', 'flip_dist', 'flip_price', 'local_gex_yi',
+          'gex_intensity', 'gamma_wall', 'put_wall', 'im_z', 'mo_iv_main',
+          # 2026-10-25 新增「期权偏度预警轨」：
+          # skew10     = 0.1Δ偏度 PutIV-CallIV（百分数，近月DTE>20，delta空间线性插值）
+          # skew10_cum5= 偏度5日变化量（今日−5交易日前，>12红灯）
+          # skew10_pct = skew10 近252日分位
+          # pcr_oi20   = 近月(DTE>20)持仓量PCR（>1.5红灯）
+          'skew10', 'skew10_cum5', 'skew10_pct', 'pcr_oi20']
+
+# 历史库新增列迁移（旧库自动 ALTER，不丢数据）
+_MIGRATION_COLS = {
+    'skew10': 'REAL',
+    'skew10_cum5': 'REAL',
+    'skew10_pct': 'REAL',
+    'pcr_oi20': 'REAL',
+}
+
 
 def _conn():
     os.makedirs(OUTPUT_DIR, exist_ok=True)
