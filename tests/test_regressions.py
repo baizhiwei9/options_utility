@@ -588,3 +588,133 @@ class TestRiskHistoryReuseTableFirst(unittest.TestCase):
                 self.assertLessEqual(after - before, 1, "反复 upsert 不应泄漏 fd")
             finally:
                 rh.DB_PATH, rh.snapshot = old_db, old_snap
+
+
+class TestReadWriteLock(unittest.TestCase):
+    """#11：读写锁语义（大佬 2026-11-22：读用读锁、写用写锁，且要有超时）
+
+    之前 dblock 只有「排他锁」，读也当写锁用 —— 多进程读同一张表时会互相排队。
+    这里把 RWLock 的四条关键语义固化住：
+      1. 多读并行（两个读者同时持锁，总耗时≈单次，而不是 2 倍）
+      2. 写独占（写者必须等所有读者退出）
+      3. 读升写 → 显式 LockTimeout，绝不自死锁
+      4. 等锁超时 → LockTimeout（且它是 TimeoutError 子类，调用方好兜）
+    """
+
+    @classmethod
+    def setUpClass(cls):
+        sys.path.insert(0, PARENT)
+        from data_hub.core import dblock
+        cls.dbl = dblock
+
+    def setUp(self):
+        import tempfile
+        self._td = tempfile.TemporaryDirectory()
+        self.p = os.path.join(self._td.name, "rw.db")
+
+    def tearDown(self):
+        self._td.cleanup()
+
+    def test_concurrent_readers_run_in_parallel(self):
+        import threading
+        import time
+        hold = 0.35
+        started, base = [], [time.monotonic()]
+
+        def _r():
+            with self.dbl.rw_lock(self.p, exclusive=False):
+                started.append(time.monotonic() - base[0])
+                time.sleep(hold)
+
+        ts = [threading.Thread(target=_r) for _ in range(3)]
+        t0 = time.monotonic()
+        for t in ts:
+            t.start()
+        for t in ts:
+            t.join()
+        elapsed = time.monotonic() - t0
+        self.assertLess(elapsed, hold * 2.2,
+                        "多读应并行（串行会接近 %.2fs）" % (hold * 3))
+        self.assertEqual(len(started), 3)
+
+    def test_writer_waits_for_readers(self):
+        import threading
+        import time
+        state = {"writer_in": False, "reader_out": None}
+        got = threading.Event()
+
+        def _reader():
+            with self.dbl.rw_lock(self.p, exclusive=False):
+                time.sleep(0.25)
+            state["reader_out"] = time.monotonic()
+
+        def _writer():
+            with self.dbl.rw_lock(self.p, exclusive=True, timeout=5):
+                state["writer_in"] = time.monotonic()
+            got.set()
+
+        tr = threading.Thread(target=_reader)
+        tr.start()
+        time.sleep(0.05)
+        tw = threading.Thread(target=_writer)
+        tw.start()
+        got.wait(5)
+        tr.join()
+        tw.join()
+        self.assertTrue(state["writer_in"] >= state["reader_out"] - 1e-6,
+                        "写者必须在读者退出后才进入")
+
+    def test_read_to_write_upgrade_raises_not_deadlocks(self):
+        with self.dbl.rw_lock(self.p, exclusive=False):
+            with self.assertRaises(self.dbl.LockTimeout):
+                with self.dbl.rw_lock(self.p, exclusive=True, timeout=1):
+                    self.fail("读锁升级写锁不应该成功")
+
+    def test_nested_read_is_reentrant(self):
+        with self.dbl.rw_lock(self.p, exclusive=False):
+            with self.dbl.rw_lock(self.p, exclusive=False):
+                pass
+
+    def test_lock_timeout_raises_and_is_timeouterror(self):
+        import threading
+        import time
+        self.assertTrue(issubclass(self.dbl.LockTimeout, TimeoutError))
+        marker = threading.Event()
+
+        def _hold():
+            with self.dbl.rw_lock(self.p, exclusive=True):
+                marker.set()
+                time.sleep(0.8)
+
+        t = threading.Thread(target=_hold)
+        t.start()
+        marker.wait(5)
+        try:
+            with self.assertRaises(self.dbl.LockTimeout):
+                with self.dbl.rw_lock(self.p, exclusive=True, timeout=0.2):
+                    self.fail("超时未触发")
+        finally:
+            t.join()
+
+    def test_locked_sqlite_uses_read_lock_for_queries(self):
+        """两个读连接必须能同时打开（读锁不互斥），写完能被读到。"""
+        import threading
+        import time
+        with self.dbl.locked_sqlite(self.p, write=True,
+                                    migrate="create table if not exists t(a)") as c:
+            c.execute("insert into t values(1)")
+        both = threading.Barrier(3, timeout=5)
+
+        def _r():
+            with self.dbl.locked_sqlite(self.p, write=False) as c:
+                both.wait()
+                return c.execute("select count(*) from t").fetchone()[0]
+
+        out = []
+        ts = [threading.Thread(target=lambda: out.append(_r())) for _ in range(2)]
+        for t in ts:
+            t.start()
+        both.wait()          # 两个读者能同时进临界区才不会被这里卡死
+        for t in ts:
+            t.join()
+        self.assertEqual(out, [1, 1])

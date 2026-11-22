@@ -88,6 +88,7 @@ _CLOUD_DB = os.path.join(OUTPUT_DIR, 'risk_history.db')
 # 原实现 sqlite3.connect() 无 timeout、无 WAL，且 `with _conn() as c:` 只提交不关闭
 # （实测 30 次调用泄漏 30 个 fd）；并发时随时可能 `database is locked`。
 _DB_TIMEOUT = float(os.environ.get("RISK_HISTORY_TIMEOUT", "30"))
+_DB_RETRIES = int(os.environ.get("RISK_HISTORY_LOCK_RETRIES", "3"))
 _fallback_lock = threading.RLock()
 
 try:                                                  # 统一锁模块（data_hub/core/dblock.py）
@@ -211,17 +212,38 @@ def _conn():
     return c
 
 
-# ==================== 加锁读写（进程内 RLock + 跨进程 flock）====================
-# 读也上共享锁：写者正在 os.replace 快照/迁移时，读者不会读到半截库。
+# ==================== 加锁读写（读写锁 + 超时重试）====================
+# 大佬 2026-11-22：「读的话用读锁，写的话用写锁，而且有锁的超时处理」
+#   · write=False → 读锁（LOCK_SH），多进程/多线程可同时读
+#   · write=True  → 写锁（LOCK_EX），独占
+#   · 等锁超时抛 LockTimeout（dblock），这里按 _DB_RETRIES 退避重试，
+#     重试仍失败才上抛 —— 多进程场景宁可明确失败，也不要无声永久阻塞。
 @contextlib.contextmanager
 def _locked(write: bool = False):
-    """带锁的库连接；退出时必然 close + 按需 commit/rollback。"""
+    """带读写锁的库连接；退出时必然 close + 按需 commit/rollback。
+
+    ⚠️ 读路径**不跑 DDL**：建表/补列只在写锁下做。
+       读锁下执行 ALTER TABLE 等于「持共享锁还去改结构」，多进程必冲突。
+       读时表不存在就返回空结果（has_day/get_daily_rec/series 都天然容忍空）。
+    """
     if _dblock is not None:
-        with _dblock.locked_sqlite(DB_PATH, write=write, timeout=_DB_TIMEOUT,
-                                   wal=True) as c:
-            _ensure_schema(c)
-            yield c
-        return
+        attempt = 0
+        while True:
+            try:
+                with _dblock.locked_sqlite(DB_PATH, write=write, timeout=_DB_TIMEOUT,
+                                           wal=True) as c:
+                    if write:
+                        _ensure_schema(c)
+                    else:
+                        _ensure_schema_readonly(c)
+                    yield c
+                return
+            except _dblock.LockTimeout:
+                attempt += 1
+                if attempt > _DB_RETRIES:
+                    raise
+                time.sleep(min(0.2 * (2 ** (attempt - 1)), 2.0))
+                continue
     # dblock 不可用（老部署）→ 退化为进程内串行，至少不会自己和自己抢
     with _fallback_lock:
         c = _conn()
@@ -241,6 +263,28 @@ def _locked(write: bool = False):
                 c.close()
             except Exception:                    # noqa: BLE001
                 pass
+
+
+def _ensure_schema_readonly(c):
+    """读路径专用：只建表（表已存在时是空操作），**绝不 ALTER**。
+
+    表已存在时 `CREATE TABLE IF NOT EXISTS` 不写库；但 `ALTER TABLE ADD COLUMN`
+    一定会写，所以读路径跳过补列 —— 补列交给写路径（risk_layer 每轮都会走写锁）。
+    """
+    try:
+        c.execute('''CREATE TABLE IF NOT EXISTS daily_metrics(
+            trade_date TEXT NOT NULL,
+            target_key TEXT NOT NULL,
+            vix REAL, r_ratio REAL, skew REAL, oi_pcr REAL, iv_hv REAL,
+            gex_strength REAL, flip_dist REAL, flip_price REAL, local_gex_yi REAL,
+            gex_intensity REAL, gamma_wall REAL, put_wall REAL,
+            im_z REAL, mo_iv_main REAL,
+            skew10 REAL, skew10_cum5 REAL, skew10_pct REAL, pcr_oi20 REAL,
+            rec_json TEXT,
+            updated_at TEXT,
+            PRIMARY KEY(trade_date, target_key))''')
+    except sqlite3.OperationalError:
+        pass                                     # 读锁下建不了也不影响「读到空」
 
 
 def _pack_rec(rec):
