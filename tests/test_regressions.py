@@ -415,3 +415,44 @@ class TestOptionRiskGuards(unittest.TestCase):
                             node.value, ast.Dict,
                             "%s 不应再自带乘数字面表" % rel,
                         )
+
+
+class TestRiskHistorySchemaConstants(unittest.TestCase):
+    """#8：calc/db/risk_history.py 的 FIELDS / _MIGRATION_COLS 被误删 → risk_layer 全崩
+
+    2026-11-18 重构（0bf25c3「risk_history 走 localdb 可配置路径」）把两个常量连带删掉，
+    但 _conn() / upsert_daily() / _series() 仍在引用，实测后果：
+      · 五轨判灯写库全部失败（WARN 历史库写入失败 … name '_MIGRATION_COLS' is not defined）
+      · 读分位时 percentile → _series 抛 NameError(FIELDS) 直接把 risk_layer 进程打死（rc=1）
+
+    这里不联网、不碰云盘：只校验常量存在，并用临时库跑一遍 upsert → percentile 往返。
+    """
+
+    def test_fields_and_migration_cols_defined(self):
+        import risk_history as rh
+        self.assertTrue(isinstance(getattr(rh, "FIELDS", None), list), "FIELDS 必须存在且为 list")
+        self.assertTrue(len(rh.FIELDS) > 0)
+        self.assertTrue(isinstance(getattr(rh, "_MIGRATION_COLS", None), dict),
+                        "_MIGRATION_COLS 必须存在且为 dict")
+        # FIELDS 必须覆盖 daily_metrics 的核心列，否则 upsert 的 SQL 会指向不存在的列
+        for f in ("vix", "r_ratio", "skew", "oi_pcr", "gex_strength"):
+            self.assertIn(f, rh.FIELDS, f)
+
+    def test_upsert_then_percentile_roundtrip(self):
+        """临时库写入 + 读分位，跑通即证明 FIELDS 链路完好（不触云盘快照）。"""
+        import risk_history as rh
+        import tempfile
+        with tempfile.TemporaryDirectory() as td:
+            old_db, old_snap = rh.DB_PATH, rh.snapshot
+            rh.DB_PATH = os.path.join(td, "risk_history.db")
+            rh.snapshot = lambda *a, **k: False      # 不写云盘
+            try:
+                rh.upsert_daily("20260101", "300ETF", {"vix": 10.0, "R": 0.9, "skew": 98.0})
+                rh.upsert_daily("20260102", "300ETF", {"vix": 20.0, "R": 1.1, "skew": 101.0})
+                vals = rh.series("300ETF", "vix", 10)
+                self.assertEqual([v for _, v in vals], [10.0, 20.0])
+                pct, n = rh.percentile("300ETF", "vix", 20.0, window=10, min_n=2)
+                self.assertEqual(n, 2)
+                self.assertEqual(pct, 50.0)
+            finally:
+                rh.DB_PATH, rh.snapshot = old_db, old_snap
