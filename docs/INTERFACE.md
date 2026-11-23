@@ -9,6 +9,50 @@ sys.path.insert(0, '/Coze/Drive/dataHub_三级体系/options')
 
 ---
 
+## ⚠️ 偏度（Skew）口径边界 —— 动偏度前必读
+
+> **一句话：CBOE SKEW 只能用于美股（SPX）。境内（A股）一律不用 CBOE 式口径，境内只用 25Δ Risk Reversal。**
+
+CBOE SKEW 是为标普500 期权链设计的指数：它需要对**全部**虚值行权价按 `ΔK/K²` 加权求风险中性三阶矩，再把近月 / 次月插值到 30 天，并要求每一档都有可信报价。境内期权链行权价稀疏、到期月只有四个、远端虚值常无报价——这三个前提都不成立，硬算出来的数只是「长得像 SKEW」，既没有 100 中轴的可解释性，也没有可迁移的阈值。
+
+### 美股：直接用 CBOE 官方指数
+
+`calc/us/index_fetch.py` 拉的是 CBOE 官方历史，不是自算：
+
+```
+https://cdn.cboe.com/api/global/us_indices/daily_prices/SKEW_History.csv
+```
+
+只有标普（SPX）有官方 SKEW；`calc/us/index_options.py` 读入后输出 `skew = {val, date, pct, med, sd}`（252 日分位）。NDX / RUT 的 `skew_file` 为 `None`，即**没有官方偏度**——不要自己造一个补上。
+
+### 境内：只用 25Δ Risk Reversal
+
+库内唯一入口 `calc/cn/skew_unified.py::skew_25d`，算法真源 `data_hub.option_metrics.calc_25d_risk_reversal`（`dte>=10` 优先选月，避开临到期深虚值 IV 反推失真）。
+
+```
+rr = IV(Put25Δ) − IV(Call25Δ)
+```
+
+正 = 看跌期权更贵（避险 / 恐慌）；负 = 看涨期权更贵（追涨 / 贪婪）。它只依赖两个点、不要求全链覆盖，这是它能在境内成立的原因。
+
+### 三个偏度字段别搞混
+
+| 来源 | 字段 | 口径 | 单位 | 符号 | 能干什么 |
+|---|---|---|---|---|---|
+| `calc_skew()` | `iv_skew` | **25Δ RR**（统一真源） | 百分数 | put25 − call25 | ✅ 唯一可跨品种比较、可做方向判断 |
+| `calc_skew()` | `cboe_skew` | **自造 100 中轴刻度**：`100 + 30 × (put25 − atm) / atm` | 数值 | 正 = 看跌贵 | ⚠️ 仅配合 120/105/95/80 历史阈值；**不是标准 CBOE SKEW 指数，也不能拿去和美股 SKEW 比** |
+| `calc_skew()` | `direction` | 由 `cboe_skew` 判 120/105/95/80 | emoji | — | 跟着 `cboe_skew` 走，口径同上 |
+| `calc_risk_reversal()` | `rr` | 25Δ RR **取反** | 百分数 | **call25 − put25** | 历史符号，配合 −1/−3/−6 阈值；新代码优先用 `iv_skew` 或 `skew_25d` |
+| `calc.cn.skew_unified.skew_25d()` | `rr` / `skew` | 25Δ RR | **小数** | put25 − call25 | ✅ 库内偏度唯一入口 |
+
+### 三条禁令
+
+1. **不要给境内标的套 CBOE 公式**——`100 − 10×S`、BKM 三阶矩、任何「近似 SKEW 指数」都算。`risk_layer.bkm_skew_index()` 是历史遗留（五轨判灯里有一轨在用），**冻结沿用、禁止新代码调用**。
+2. **不要把 `cboe_skew`（中轴 100）和 `iv_skew`（中轴 0）混着比**——刻度不同、方向含义也不同，混比必然误判。
+3. **不要自己再写一套偏度公式**——库内曾有 3 套实现并存，2026-11-12 已收敛到 `skew_unified`；复制公式等于又开一套口径。
+
+---
+
 ## 一、`calc` —— 计算层
 
 `calc/__init__.py` 用 PEP 562 惰性加载，`from calc import xxx` 只加载用到的那一个模块。
@@ -53,8 +97,8 @@ bs_iv(3.85, 3.8, 30/365, 0.02, p)           # → 0.2  ✅ 反解回来
 
 | 函数 | 签名 | 说明 |
 |---|---|---|
-| `calc_skew` | `(contracts, spot_price, trade_date, r=0.03) -> dict` | 偏度：0.1Δ / 25Δ SKEW、ATM IV、期限结构 |
-| `calc_risk_reversal` | `(contracts, spot_price, trade_date, r=0.03, target_delta=0.25) -> dict` | 风险逆转（25Δ call IV − put IV） |
+| `calc_skew` | `(contracts, spot_price, trade_date, r=0.03) -> dict` | 偏度：`iv_skew`（25Δ RR，**唯一可做方向判断**）、`cboe_skew`（自造 100 中轴刻度，⚠️ 非标准 CBOE，仅供历史阈值）、ATM IV、期限结构 |
+| `calc_risk_reversal` | `(contracts, spot_price, trade_date, r=0.03, target_delta=0.25) -> dict` | 风险逆转（25Δ **call − put**，符号与统一口径相反，见文首口径边界） |
 | `calc_gex` | `(contracts, spot_price, trade_date, r=0.03, multiplier=10000) -> dict` | Gamma 敞口、Flip Point、Gamma Wall |
 | `calc_ev` | `(contracts, spot_price, trade_date, r=0.02) -> dict` | 期望收益分析 |
 | `calc_basis` | `(trade_date) -> dict` | 股指期货基差（IF / IH / IC / IM） |
@@ -76,7 +120,7 @@ bs_iv(3.85, 3.8, 30/365, 0.02, p)           # → 0.2  ✅ 反解回来
 | `iv_term` | `analyze_term_structure` `judge_vol_cycle_stage` `judge_direction` `run_all` |
 | `gex` | `calc_gex_full` `black76_gamma` `build_gex_card` `run_gex_monitor` |
 | `ev` / `ev_io` / `ev_skew` | `analyze_target` `build_bl_surface` `call_fair_value` `put_fair_value` |
-| `risk_layer` | `analyze_target` `skew10` `vix30` `near_month_oi_pcr` `bkm_skew_index` `im_monthly_basis` `run` |
+| `risk_layer` | `analyze_target` `skew10` `vix30` `near_month_oi_pcr` `bkm_skew_index`（⚠️ 近似 SKEW 指数，历史冻结，禁止新用） `im_monthly_basis` `run` |
 | `basis` | `calc_basis` `calc_percentiles` `get_realtime_basis` `check_basis_extreme` |
 | `oi` | `analyze_target` `analyze_all` `is_abnormal` `classify_strike_position` |
 | `pcr` | `get_index_pcr` `get_zz1000_main_pcr` `get_all_index_pcr` |

@@ -73,6 +73,7 @@ pct = rh.percentile("KC50", "gex_strength", recs[0]["gex"]["strength"])  # 252 �
 |---|---|
 | 合约乘数 | ETF 期权（510300/510500/159915/588000）**10000 份/张**；中金所 MO **100 元/点**。唯一来源 `calc/multipliers.py`，GEX/EV/期限结构三处必须引用，不得自带副本 |
 | 波动率 | 一律**百分数**：`25.3` 表示 25.3%，不是 0.253 |
+| **偏度** | **CBOE SKEW 只能美股用（SPX 官方指数），境内一律不用 CBOE 式口径，境内只用 25Δ Risk Reversal**。境内唯一入口 `calc/cn/skew_unified.py::skew_25d`，`rr = IV(Put25Δ) − IV(Call25Δ)`，正 = 看跌更贵；单位小数。`calc_skew()` 返回的 `iv_skew` 是 25Δ RR（百分数，可做方向判断），`cboe_skew` 是自造 100 中轴刻度（`100 + 30×(put25−atm)/atm`，**非标准 CBOE**，仅供 120/105/95/80 历史阈值）。`calc_risk_reversal()` 的 `rr` 是 **call − put（取反）**，配合 −1/−3/−6 阈值。详见 `docs/INTERFACE.md` 文首「偏度口径边界」 |
 | 近月/远月 | 近月 `DTE>20` 的最近月；远月 `DTE>180` |
 | GEX | `local_gex_yi` 单位**亿元**；`gex_strength` 为归一化强度；`flip_dist` 为现价相对 Gamma Flip 的**百分比距离**（负=现价在 Flip 下方） |
 | PCR | 成交量/持仓量之比，`>1` 表示认沽相对活跃；`pcr_oi20` 专指 DTE>20 的持仓量 PCR |
@@ -212,6 +213,7 @@ pct = rh.percentile("KC50", "gex_strength", recs[0]["gex"]["strength"])  # 252 �
 6. **推送目标优先级**：飞书 `user_id`（私聊）优先于 `chat_id`（群）；QQ 直聊需 `IBP_QQ_TARGET`/`QQ_*` 变量，返回 `messageId` 非空才算发出。
 7. **幂等**：同一 `rule.key` 当天只报一次（`cooldown_days`），补发要清 `IdempotentLock` 状态。
 8. **数据陈旧**：`max_stale_days`（默认 7）会自动跳过陈旧序列，序列缺失时不会拿十几天前的旧值报警。
+9. **偏度别套 CBOE**：CBOE SKEW 需要全行权价覆盖 + 近次月 30 天插值 + 每档有可信报价，境内期权链三条都不满足。境内只用 25Δ RR（`skew_unified.skew_25d`）。把 `cboe_skew`（中轴 100）和 `iv_skew`（中轴 0）混比、或拿 120/105/95/80 去判标准 SKEW，都会直接判反方向。
 
 ## 附录 A：模块级签名速查
 
