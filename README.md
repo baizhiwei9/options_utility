@@ -9,6 +9,9 @@ A 股五轨期权、美股三轨指数期权、美债 ETF 期权，全部共用�
 | `alert/` | **判 + 推** | 拿指标序列按统一规则判阈值，命中才推送邮件 / 飞书 |
 | `cli.py` | **入口** | 全工程唯一的命令行入口，子命令即原脚本，参数原样透传 |
 
+> ⚠️ **偏度口径铁律：CBOE SKEW 只能用于美股（SPX 官方指数）。境内（A股）一律不用 CBOE 式口径，只用 25Δ Risk Reversal**（`calc/cn/skew_unified.py::skew_25d`，`rr = IV(Put25Δ) − IV(Call25Δ)`）。
+> 境内的 `cboe_skew` 字段是自造的 100 中轴刻度（`100 + 30×(put25−atm)/atm`），**不是标准 CBOE SKEW**，只配合 120/105/95/80 历史阈值用；新代码请用 `iv_skew` 或 `skew_25d`。详见 [`docs/INTERFACE.md`](docs/INTERFACE.md) 文首「偏度口径边界」。
+
 **核心设计：报警判定只写一遍。** 合并前 13 个报警脚本各写一遍「取值 → 比阈值 → 拼卡片 → 推送 → 写幂等锁」，差别只是 5 天 / 20 天 / 252 天 / 850 天这些窗口；现在它们都是 `AlertRule`，判定统一走 `alert/engine.py` 的 `judge()`，推送统一走 `alert/trigger.py` 的 `trigger()`。
 
 ---
