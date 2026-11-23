@@ -478,17 +478,104 @@ def make_chart(results, date_str, strike_pct):
 DOWN_DOMINANT_GAP = 3.0   # 百分点
 
 
-def detect_signal(index_name, up_p, dn_p, atm_iv, history_df):
+# 偏度（25Δ RR）信号的判定门槛。
+# skew = σ(25Δ put) − σ(25Δ call)，单位 pp：
+#   <0  put 比 call 贵（避险需求，A股常态，实测 −1.8 ~ −10.5）
+#   >0  call 比 put 贵（市场给上涨尾部加价，罕见）
+# 「概率信号」说的是分布哪边面积大，「偏度信号」说的是两翼哪边更贵。
+# 两者可以同向，也可以背离（例如概率下行占优、但偏度在走平），所以分开判定、分开命名。
+SKEW_FLIP_EPS = 0.5      # |skew| 死区：贴着 0 视为中性，不参与符号翻转
+SKEW_SHIFT_GAP = 5.0     # 相对近 20 个交易日均值的偏离门槛（pp）
+SKEW_MIN_HIST = 8        # 走陡/走平至少要有几个历史点，不够就不判
+#
+# 门槛为什么是 5pp / 8 个点，而不是更敏感的 3pp / 5 个点：
+# 2026-11-19 取数收敛到本地期权链库（c6e33d8）之后，skew 的口径和之前不完全可比
+# —— 实测创业板指 11-20 是 +3.93，11-23 变成 −1.78，两天跳 5.7pp，其中既有真实
+# 避险，也有口径漂移。门槛压太低（3pp）会让 5 个指数天天全报「走陡」，
+# 等于没信号。宁可贵一点、少报一点，等同一口径攒够 10 个交易日再考虑下调。
+
+
+def detect_skew_signal(index_name, skew, history_df, date_str=None):
+    """25Δ RR 偏度信号 —— 与概率信号是两件事，不要混读。
+
+      🔄 偏度转正：skew 由负跨过死区转为正 → call 侧被加价，市场给上涨尾部付钱
+      🔄 偏度转负：skew 由正跨回负 → put 侧重新被加价，避险回归
+      📉 偏度走陡：skew 比近 20 日均值再低 ≥3pp → put 更贵了，避险加剧
+      📈 偏度走平：skew 比近 20 日均值高 ≥3pp → 保护需求下降
+
+    「翻转」在这里就是字面意思：符号换向。没有足够历史时只做绝对符号判定
+    （skew 明显为正 → 转正），不做翻转/走陡判定 —— 宁可不出信号，
+    也不拿一两天数据编一个「翻转」出来。
+
+    date_str 用来把当日行从历史里剔掉：重跑同一天时当日可能已经入库，
+    不剔的话就是自己跟自己比，翻转永远不会触发。
+    """
+    if skew is None:
+        return []
+    try:
+        sk = float(skew)
+    except (TypeError, ValueError):
+        return []
+
+    prev_skew = None
+    mean_recent = None
+    if history_df is not None and len(history_df) > 0:
+        try:
+            hist = history_df[history_df['index'] == index_name]
+            if date_str and 'date' in hist.columns:
+                hist = hist[hist['date'].astype(str) != str(date_str)]
+            if len(hist) > 0 and 'skew' in hist.columns:
+                h = hist.sort_values('date')['skew'].dropna()
+                if len(h) >= 1:
+                    prev_skew = float(h.iloc[-1])          # 上一交易日
+                if len(h) >= SKEW_MIN_HIST:
+                    mean_recent = float(h.iloc[-20:].mean())  # 近 20 日均值
+        except Exception:
+            prev_skew = None
+            mean_recent = None
+
+    out = []
+
+    # ① 符号翻转（字面意义的「翻转」）
+    if sk > SKEW_FLIP_EPS:
+        if prev_skew is None or prev_skew < -SKEW_FLIP_EPS:
+            out.append('🔄偏度转正')
+    elif sk < -SKEW_FLIP_EPS:
+        if prev_skew is not None and prev_skew > SKEW_FLIP_EPS:
+            out.append('🔄偏度转负')
+
+    # ② 走陡 / 走平（幅度变化，不是符号变化）
+    if mean_recent is not None:
+        d = sk - mean_recent
+        if d <= -SKEW_SHIFT_GAP:
+            out.append('📉偏度走陡')
+        elif d >= SKEW_SHIFT_GAP:
+            out.append('📈偏度走平')
+
+    return out
+
+
+def detect_signal(index_name, up_p, dn_p, atm_iv, history_df,
+                  skew=None, date_str=None):
     """
     信号检测（每个信号都自带方向与解读）:
 
+    【概率信号】来自 RND 密度在 ±2.5% 两端的积分面积
       🔴 下行占优：近月 ±2.5% 档位里，下行概率比上行高 ≥3 个百分点
                    → 市场隐含「跌的概率更大」，偏空。
                    （这是看空信号，不是「偏度修复」；两边概率拉回对称后自动消失）
       🟢 上行占优：上行概率比下行高 ≥3 个百分点 → 偏多。
+
+    【偏度信号】来自 25Δ RR，见 detect_skew_signal()
+      🔄 偏度转正 / 偏度转负：25Δ RR 符号换向（这才是字面的「翻转」）
+      📉 偏度走陡 / 📈 偏度走平：相对近 20 日均值的幅度变化
+      注意：偏度信号与概率信号是两套口径 —— 概率看面积，偏度看两翼贵贱。
+
+    【历史分位】需要 ≥10 个交易日同标的数据
       🟡 IV 异常：平值 IV 处于历史 95 分位以上 → 波动率太贵/尾部风险定价高。
       🟡 尾部跳升：下行概率突破历史 90 分位 → 下行尾部被明显加价。
-      ⚪ 正常：两边概率基本对称。
+
+      ⚪ 正常：以上都没有。
       ⚠️ 极端：上/下行单侧 >50%（近月 ±2.5% 区间已经一边倒）。
     """
     signals = []
@@ -515,6 +602,9 @@ def detect_signal(index_name, up_p, dn_p, atm_iv, history_df):
             p90 = hist['down_prob'].quantile(0.90)
             if dn_p > p90:
                 signals.append('🟡尾部跳升')
+
+    # 🔄/📉/📈 偏度信号（25Δ RR）—— 与上面的概率信号分开判定
+    signals.extend(detect_skew_signal(index_name, skew, history_df, date_str))
 
     signal_str = ''.join(signals) if signals else '⚪正常'
 
@@ -1039,7 +1129,7 @@ def main():
         sig, sigs, ext = detect_signal(
             INDEX_CFG[etf_code]['name'],
             nr['up_prob'], nr['down_prob'], nr['atm_iv'],
-            history_df)
+            history_df, skew=nr['skew'], date_str=date_str)
         res['signal'] = sig
         res['signal_list'] = sigs
         res['extreme'] = ext

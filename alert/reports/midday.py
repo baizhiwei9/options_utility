@@ -389,7 +389,12 @@ def build_midday_card(date_str, skew_data, ev_data, resonance_data,
         elements.append(build_note(
             "怎么读这张表：↑上行/↓下行 = 期权IV微笑反推的风险中性概率，档位±2.5%（近月）。"
             "🔴下行占优 = 跌的概率比涨的高≥3pp（看空）；🟢上行占优 = 涨的高≥3pp（看多）；"
-            "两边差<3pp 就是消噪，当正常。⚠️极端 = 单侧>50%。完整密度图见附件。",
+            "两边差<3pp 就是消噪，当正常。⚠️极端 = 单侧>50%。"
+            "偏度列是 25Δ RR（put IV−call IV，A股常态为负），另有两个独立信号："
+            "🔄偏度转正/转负 = 符号真的换向（极少见，才是字面意义的「翻转」）；"
+            "📉偏度走陡 = 比近20日均值再低≥3pp，避险加剧；📈偏度走平 = 保护需求下降。"
+            "概率信号看的是「分布哪边面积大」，偏度信号看的是「两翼哪边更贵」，两者可以背离。"
+            "完整密度图见附件。",
             tag="info"
         ))
     else:
@@ -650,7 +655,8 @@ def main():
                     nr = res['near']
                     sig, _, _ = rnd_module.detect_signal(
                         name, nr['up_prob'], nr['down_prob'],
-                        nr['atm_iv'], None)
+                        nr['atm_iv'], rnd_module.load_history(OUTPUT_DIR),
+                        skew=nr['skew'], date_str=trade_date)
                     rnd_data_for_card[name] = {
                         'expire': nr['expire_date'],
                         'days_left': nr['days_left'],
