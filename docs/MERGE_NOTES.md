@@ -213,7 +213,7 @@ OK                       ← 原 9 项 + 新增 14 项
 
 ```
 <任意目录>/
-├── data_hub/               ← 来自 baizhiwei9/datahub-three-tier
+├── data_hub/               ← 来自 baizhiwei9/datahub-multi-tier
 └── options_utility/        ← 本工程
     ├── cli.py
     ├── calc/ alert/ config/ docs/ tests/ run/

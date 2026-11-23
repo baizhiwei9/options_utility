@@ -471,20 +471,34 @@ def make_chart(results, date_str, strike_pct):
 
 # ============ 信号判定 ============
 
+# 下行占优的判定门槛（百分点）。
+# 2026-11-23 改：原来只要 dn_p > up_p（哪怕 0.1pp）就报「🔴偏度翻转」，
+# 既不是 SKEW 偏度、也不是「由负转正」，纯噪声误报（如创业板 23.3% vs 23.8%）。
+# 现在改为「下行概率 - 上行概率 ≥ DOWN_DOMINANT_GAP」才报，且改名叫「下行占优」。
+DOWN_DOMINANT_GAP = 3.0   # 百分点
+
+
 def detect_signal(index_name, up_p, dn_p, atm_iv, history_df):
     """
-    信号检测:
-      🔴 偏度翻转: 下行概率 > 上行概率
-      🟡 IV 异常:  平值IV 处于过去60日 95 分位以上
-      🟡 尾部跳升: 下行概率突破过去20日 90 分位
-      ⚪ 正常
-      ⚠️极端: 上行/下行 >50%
+    信号检测（每个信号都自带方向与解读）:
+
+      🔴 下行占优：近月 ±2.5% 档位里，下行概率比上行高 ≥3 个百分点
+                   → 市场隐含「跌的概率更大」，偏空。
+                   （这是看空信号，不是「偏度修复」；两边概率拉回对称后自动消失）
+      🟢 上行占优：上行概率比下行高 ≥3 个百分点 → 偏多。
+      🟡 IV 异常：平值 IV 处于历史 95 分位以上 → 波动率太贵/尾部风险定价高。
+      🟡 尾部跳升：下行概率突破历史 90 分位 → 下行尾部被明显加价。
+      ⚪ 正常：两边概率基本对称。
+      ⚠️ 极端：上/下行单侧 >50%（近月 ±2.5% 区间已经一边倒）。
     """
     signals = []
+    gap = float(dn_p) - float(up_p)
 
-    # 🔴 偏度翻转
-    if dn_p > up_p:
-        signals.append('🔴偏度翻转')
+    # 🔴 下行占优 / 🟢 上行占优（带门槛，避免 0.x pp 噪声）
+    if gap >= DOWN_DOMINANT_GAP:
+        signals.append('🔴下行占优')
+    elif gap <= -DOWN_DOMINANT_GAP:
+        signals.append('🟢上行占优')
 
     # 🟡 历史分位检查 (需积累足够数据)
     if history_df is not None and len(history_df) > 0:
@@ -588,8 +602,12 @@ def generate_alert(results, date_str):
             lines.append(f'  上行: {nr["up_prob"]:.1f}%  下行: {nr["down_prob"]:.1f}%')
             lines.append(f'  ATM IV: {nr["atm_iv"]*100:.1f}%  Skew: {nr["skew"]:+.1f}pp')
             lines.append(f'  近月到期: {nr["expire_date"]} (剩余{nr["days_left"]}天)')
-            if '偏度翻转' in sig:
-                lines.append('  → 下行概率 > 上行概率，市场隐含偏空')
+            if '下行占优' in sig:
+                g = nr['down_prob'] - nr['up_prob']
+                lines.append(f'  → 近月±2.5%档位：跌的概率比涨的高 {g:+.1f}pp，市场隐含偏空')
+            if '上行占优' in sig:
+                g = nr['up_prob'] - nr['down_prob']
+                lines.append(f'  → 近月±2.5%档位：涨的概率比跌的高 {g:+.1f}pp，市场隐含偏多')
             if 'IV异常' in sig:
                 lines.append('  → 隐含波动率突破历史高位，关注尾部风险')
             if '尾部跳升' in sig:

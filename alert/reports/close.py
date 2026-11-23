@@ -197,18 +197,26 @@ def _classify_resonance_direction(resonance_data):
 
 
 def _classify_rnd_direction(rnd_data):
-    """RND偏度/概率 → 看空/看多/中性"""
+    """RND 概率分布方向 → 看空/看多/中性
+
+    2026-11-23 改：不再用「偏度翻转」这个词（它不是 SKEW 偏度、也不是由负转正），
+    直接用「下行占优 / 上行占优 + 差的百分点」说清楚是看空还是看多，
+    并给出「市场隐含的跌（涨）概率比另一边高多少」，避免 0.5pp 噪声也叫信号。
+    """
     if not rnd_data or rnd_data.get('error'):
         return None, '-'
     up_p = rnd_data.get('up_prob', 0)
     dn_p = rnd_data.get('down_prob', 0)
     sig = rnd_data.get('signal', '')
     skew = rnd_data.get('skew', 0)
-    if '偏度翻转' in sig or dn_p > up_p:
-        return 'bearish', f'偏度翻转(↑{up_p:.1f}%↓{dn_p:.1f}%,skew={skew:+.1f})'
-    elif up_p > dn_p * 1.15:
-        return 'bullish', f'上行占优(↑{up_p:.1f}%>↓{dn_p:.1f}%)'
-    return 'neutral', f'对称(↑{up_p:.1f}%↓{dn_p:.1f}%)'
+    gap = float(dn_p) - float(up_p)          # >0 偏空，<0 偏多
+    if '下行占优' in sig or gap >= 3.0:
+        return 'bearish', (f'下行占优 跌{dn_p:.1f}%vs涨{up_p:.1f}%'
+                           f'(差{gap:+.1f}pp,skew={skew:+.1f})')
+    if '上行占优' in sig or gap <= -3.0:
+        return 'bullish', (f'上行占优 涨{up_p:.1f}%vs跌{dn_p:.1f}%'
+                           f'(差{-gap:+.1f}pp,skew={skew:+.1f})')
+    return 'neutral', f'基本对称(涨{up_p:.1f}%跌{dn_p:.1f}%,差{gap:+.1f}pp)'
 
 
 def _classify_vts_direction(vts_data):
@@ -688,8 +696,9 @@ def _color_dir_cell(text):
     t = str(text if text is not None else '')
     if not t:
         return t
-    has_kong = ('空' in t) or ('翻转' in t)
-    has_duo = '多' in t
+    # 2026-11-23：新增「下行占优 / 上行占优」这两种叫法，老的「空/多/翻转」保留兼容
+    has_kong = ('空' in t) or ('翻转' in t) or ('下行' in t)
+    has_duo = ('多' in t) or ('上行' in t)
     if has_kong and has_duo:
         return t
     if has_kong:
@@ -865,7 +874,9 @@ def build_close_card(date_str, skew_data, ev_data, resonance_data,
             title="📊 隐含概率分布 (Breeden-Litzenberger)"
         ))
         elements.append(build_note(
-            "基于期权IV微笑曲线的风险中性概率，±2.5%档位。🔴偏度翻转=下行概率>上行；⚠️极端=单侧>50%。完整密度图见附件。",
+            "怎么读这张表：↑上行/↓下行 = 期权IV微笑反推的风险中性概率，档位±2.5%（近月）。"
+            "🔴下行占优 = 跌的概率比涨的高≥3pp（看空）；🟢上行占优 = 涨的高≥3pp（看多）；"
+            "两边差<3pp 就是消噪，当正常。⚠️极端 = 单侧>50%。完整密度图见附件。",
             tag="info"
         ))
     else:

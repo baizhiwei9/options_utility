@@ -50,7 +50,7 @@ from data_hub.core.lock import Lock, locked_sqlite, atomic_write, LockTimeout
 - 读用**读锁**（`LOCK_SH`，多进程并行）、写用**写锁**（`LOCK_EX`，独占）
 - 等锁**超时**抛 `LockTimeout`（继承 `TimeoutError`），绝无声永久阻塞
 - 锁文件落本地盘 `~/.local/share/cozedb`，不放云盘 FUSE
-- 依赖仓库：`github.com/baizhiwei9/datahub-three-tier` → `data_hub/core/lock.py`
+- 依赖仓库：`github.com/baizhiwei9/datahub-multi-tier` → `data_hub/core/lock.py`
 - 取不到该模块时降级为进程内 `RLock`，不阻断出图
 
 ## 数据源（只读配置数据库，不重新取数）

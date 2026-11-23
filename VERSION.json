@@ -52,7 +52,7 @@
     ],
     "regression_tests": "tests/test_regressions.py (14 cases)"
   },
-  "requires_sibling": "data_hub（baizhiwei9/datahub-three-tier），39 个文件依赖",
+  "requires_sibling": "data_hub（baizhiwei9/datahub-multi-tier），39 个文件依赖",
   "local_absorbed_20261110": {
     "note": "本地零散期权脚本的独有能力收编进 calc/cn/，公式与阈值一字未改",
     "modules": {

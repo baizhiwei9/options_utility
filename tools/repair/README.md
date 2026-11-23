@@ -9,7 +9,7 @@
 
 ## 归档缘由
 
-这 4 个脚本原先误放在 `datahub-three-tier` 仓库的 EDB 分支里。那个仓库只托管
+这 4 个脚本原先误放在 `datahub-multi-tier` 仓库的 EDB 分支里。那个仓库只托管
 `data_hub/`（宏观 / 流动性数据层），而它们操作的是 `style_drift.db` 的 25Δ IV
 与 skew，属于期权计算层，因此移回本仓库。
 

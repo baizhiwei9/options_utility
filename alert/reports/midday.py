@@ -387,7 +387,9 @@ def build_midday_card(date_str, skew_data, ev_data, resonance_data,
             title="📊 隐含概率分布 (Breeden-Litzenberger)"
         ))
         elements.append(build_note(
-            "基于期权IV微笑曲线的风险中性概率，±2.5%档位。🔴偏度翻转=下行概率>上行；⚠️极端=单侧>50%。完整密度图见附件。",
+            "怎么读这张表：↑上行/↓下行 = 期权IV微笑反推的风险中性概率，档位±2.5%（近月）。"
+            "🔴下行占优 = 跌的概率比涨的高≥3pp（看空）；🟢上行占优 = 涨的高≥3pp（看多）；"
+            "两边差<3pp 就是消噪，当正常。⚠️极端 = 单侧>50%。完整密度图见附件。",
             tag="info"
         ))
     else:
