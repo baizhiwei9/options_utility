@@ -147,22 +147,12 @@ for _p in (DATAHUB_SCRIPTS_DIR, _HUB_ROOT):
         sys.path.remove(_p)
     sys.path.insert(0, _p)   # 循环结束后 _HUB_ROOT 位于 sys.path[0]
 
-# ---- EDB SQLite 主库引导（2026-11-18 新增，红线#7 依赖）----
-# EDB 的 edb.sqlite3 是 WAL 模式，云盘 /Coze/Drive 是 fuse ro 挂载，
-# 无法创建/写 -shm 文件，sqlite3.connect 会直接抛
-#   OperationalError: unable to open database file
-# 主库实际落在「外汇掉期点」卷，本地可写视图在 /opt/coze/.fuse_drive 下。
-# 这里用 EDB_DB_PATH 显式指到可写副本；两处都不可写时保持默认，
-# 红线#7 会判 has_data=False 自动跳过（skip 不计入分母），不影响其余红线。
-_EDB_DB_CANDIDATES = [
-    '/opt/coze/.fuse_drive/外汇掉期点/data_hub/edb/data/edb.sqlite3',
-    '/Coze/Drive/外汇掉期点/data_hub/edb/data/edb.sqlite3',
-]
-if not os.environ.get('EDB_DB_PATH'):
-    for _cand in _EDB_DB_CANDIDATES:
-        if os.path.isfile(_cand) and os.access(_cand, os.W_OK):
-            os.environ['EDB_DB_PATH'] = _cand
-            break
+# ---- EDB SQLite 主库（统一一份，2026-11-24 调整）----
+# 全平台只有一份 EDB：<data_hub 仓库根>/data_hub/edb/data/edb.sqlite3
+# （data_hub.edb.store.db_path() 的默认值）。路径口径由 DataHub 自己决定，
+# 需要换库时只设 EDB_DB_PATH 一个环境变量——不要在这里另指副本：
+# 曾经指到「外汇掉期点」卷下的旧快照，那份和主库不同步，读到的数据是旧的。
+# 库不可用（如云盘只读）时红线#7 会判 has_data=False 自动跳过，不影响其余红线。
 try:
     from data_hub.tushare_config import get_tushare_pro
     pro = get_tushare_pro()
