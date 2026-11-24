@@ -81,6 +81,8 @@ COMMANDS = {
     'gex-weighted':    ('gex_weighted', '恒定期限加权 GEX（30/90）+ 分位', '本地收编'),
     'wing':            ('wing_danger', '微笑翼形归因 + 0-100 危险分', '本地收编'),
     'iv-history':      ('iv_history', 'ATM IV 期限结构回补 + 年分位阈值', '本地收编'),
+    # ---------- 仓位分布（2026-11-23）----------
+    'oi-position':     ('position_panel', '期权仓位分布（持仓/成交 × 行权价，双 Y 轴，可单发）', 'A股计算'),
 }
 
 

@@ -379,18 +379,33 @@ def compute_skew(sigma_func, S, T_years, r):
 
 # ============ 图表 ============
 
-def make_chart(results, date_str, strike_pct):
-    """生成概率密度图 (深色金融主题)
-      4指数 → 2×2
-      5指数 → 2×3 (最后一格留空)
-      6指数 → 2×3 或 3×2
+def make_chart(results, date_str, strike_pct, position_codes=None, position_data=None):
+    """生成概率密度图 (深色金融主题)，可选在末尾追加「期权仓位」子图格
+
+    网格只由总格数（指数格 + 仓位格）决定：
+      ≤4 → 2×2
+      5–6 → 2×3
+      >6 → 3×3（多余格隐藏）
+
+    position_codes: 需要追加仓位格的标准代码列表（如 ['510300', '588000']）；
+                    不传时行为与本函数加入该参数前完全一致。
+    position_data:  可选，{code: position_panel.build_position_data() 的结果}，避免重复取数。
     """
+    # 中文字体：统一走仓位模块的入口（无中文字体时自动回退，不影响原图）
+    try:
+        from position_panel import setup_font as _setup_font
+        _setup_font()
+    except Exception:
+        pass
+
     indices = list(INDEX_CFG.keys())
     n = len(indices)
+    pos_codes = [str(c) for c in (position_codes or [])]
+    n_total = n + len(pos_codes)
     # 决定网格
-    if n <= 4:
+    if n_total <= 4:
         rows, cols = 2, 2
-    elif n <= 6:
+    elif n_total <= 6:
         rows, cols = 2, 3
     else:
         rows, cols = 3, 3
@@ -457,8 +472,33 @@ def make_chart(results, date_str, strike_pct):
         for sp in ax.spines.values():
             sp.set_color(COLORS['grid'])
 
+    # ---- 仓位格（持仓量 / 成交量 × 行权价，双 Y 轴；沿用深色主题）----
+    if pos_codes:
+        from position_panel import draw_panel as _draw_position_panel, build_position_data
+        for j, code in enumerate(pos_codes):
+            ax = axes.flat[n + j]
+            ax.set_facecolor(COLORS['panel'])
+            try:
+                if position_data and code in position_data:
+                    data = position_data[code]
+                else:
+                    data = build_position_data(code)
+                _draw_position_panel(ax, data, theme='dark', show_legend=True,
+                                     annotate=True, fontsize=8.5, max_strike_labels=12)
+                spot = data.get('spot')
+                ax.set_title('%s 仓位%s' % (code, ('  ETF %.3f' % spot) if spot else ''),
+                             color=COLORS['text'], fontsize=12, pad=10)
+            except Exception as exc:                        # noqa: BLE001
+                ax.text(0.5, 0.5, '仓位数据不足\n%s' % exc, transform=ax.transAxes,
+                        ha='center', va='center', fontsize=10, color=COLORS['grid'])
+                ax.set_title('%s 仓位' % code, color=COLORS['text'], fontsize=12, pad=10)
+                ax.tick_params(colors=COLORS['text'], labelsize=8)
+                ax.grid(True, alpha=0.15, color=COLORS['grid'])
+                for sp in ax.spines.values():
+                    sp.set_color(COLORS['grid'])
+
     # 隐藏多余的子图
-    for idx in range(n, rows * cols):
+    for idx in range(n_total, rows * cols):
         axes.flat[idx].set_visible(False)
 
     fig.suptitle(
@@ -1000,7 +1040,10 @@ def main():
                         help='档位百分比 (默认 0.025 即 ±2.5%%)')
     parser.add_argument('--output-dir', default=None,
                         help='输出目录 (默认 outputs/)')
+    parser.add_argument('--position', default='510300,588000',
+                        help='末尾追加的仓位子图标的，逗号分隔；传空字符串关闭（默认 510300,588000）')
     args = parser.parse_args()
+    position_codes = [c.strip() for c in str(args.position).split(',') if c.strip()]
 
     # 日期
     if args.date:
@@ -1050,7 +1093,7 @@ def main():
                        if not v.get('error')}
     file_chart = None
     if valid_for_chart:
-        fig = make_chart(results, date_str, strike_pct)
+        fig = make_chart(results, date_str, strike_pct, position_codes=position_codes)
         file_chart = os.path.join(output_dir, f'{date_str}_option_pdf.png')
         fig.savefig(file_chart, dpi=150, bbox_inches='tight',
                     facecolor=fig.get_facecolor())
