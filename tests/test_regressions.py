@@ -350,12 +350,25 @@ class TestLocalAbsorbedCapabilities(unittest.TestCase):
         self.assertEqual(len(term), 2, "两个到期月必须都保留（曾出现远月覆盖近月）")
 
     def test_iv_percentile_thresholds(self):
-        """#M5 危险分第 6 维依赖的分位阈值。"""
+        """#M5 危险分第 6 维依赖的分位阈值。
+
+        2026-11-24：新增 MIN_PCTL_SAMPLE=60 样本下限，阈值只对足量样本出值；
+        小样本必须整组返回 None —— 宁可不判灯，也不能用几个点造出假极值。
+        原用例只造 5 个样本还断言有值，加了守卫后它自己会 NoneType 崩溃。
+        """
         from calc.cn.iv_history import iv_percentile_thresholds
-        th = iv_percentile_thresholds([10, 15, 20, 25, 30], current=28)
-        self.assertAlmostEqual(th["pct"], 80.0, places=1)
+        # 正常路径：样本 >= MIN_PCTL_SAMPLE，pct 应可计算
+        th = iv_percentile_thresholds([10.0 + i for i in range(100)], current=28.0)
+        self.assertAlmostEqual(th["pct"], 18.0, places=1)
         self.assertIsNotNone(th["p80"])
         self.assertIsNotNone(th["p95"])
+
+        # 小样本守卫：5 个样本整组不出值
+        short = iv_percentile_thresholds([10, 15, 20, 25, 30], current=28)
+        self.assertIsNone(short["p80"])
+        self.assertIsNone(short["p95"])
+        self.assertIsNone(short["pct"])
+        self.assertEqual(short["n"], 5)
 
     def test_new_cli_commands_registered(self):
         """#M6 5 个新子命令必须都在 CLI 清单里。"""
