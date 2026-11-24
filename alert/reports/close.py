@@ -1437,6 +1437,10 @@ def main():
         import skew_history
         n_sk = skew_history.append_daily(trade_date, result['skew'])
         skew_history.attach_percentiles(result['skew'], trade_date)
+        # 活库落本地盘（FUSE 写不了 SQLite），写完当日必须推一次云盘 gzip 快照，
+        # 否则换机/新会话会读到空库，分位列又变回「—」。节流 30s、失败静默。
+        if n_sk:
+            skew_history.snapshot()
         n_valid = sum(1 for v in result['skew'].values() if v and v.get('skew_pct') is not None)
         print(f"\n📚 SKEW历史库: 写入{n_sk}条, 分位可用{n_valid}/{len(result['skew'])}标的")
         if n_valid < len(result['skew']):

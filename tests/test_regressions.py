@@ -113,13 +113,34 @@ class TestNameErrorsWereFixed(unittest.TestCase):
                          'close.py 又用回了未定义的 skew_history_db（SKEW 历史库会静默停写）')
         self.assertIn('skew_history.append_daily', src)
         self.assertIn('skew_history.attach_percentiles', src)
+        # 活库在本地盘：写完当日不推快照 → 换会话读空库，分位恒「—」
+        self.assertIn('skew_history.snapshot', src)
 
     def test_skew_history_has_required_api(self):
         """#2 被调用的两个函数必须真实存在。"""
         import skew_history
         self.assertTrue(callable(getattr(skew_history, 'append_daily', None)))
         self.assertTrue(callable(getattr(skew_history, 'attach_percentiles', None)))
+        self.assertTrue(callable(getattr(skew_history, 'snapshot', None)))
         self.assertIsInstance(getattr(skew_history, 'MIN_SAMPLES', None), int)
+
+    def test_skew_history_snapshot_throttle(self):
+        """snapshot() 走 localdb 推快照；非 force 时 30s 内只推一次。"""
+        import skew_history
+        calls = []
+        _orig = skew_history._local_db_snapshot
+        try:
+            skew_history._local_db_snapshot = lambda *a, **k: calls.append((a, k))
+            skew_history._LAST_SNAP[0] = 0.0
+            self.assertTrue(skew_history.snapshot())
+            self.assertEqual(len(calls), 1, '首次应推快照')
+            self.assertFalse(skew_history.snapshot(), '30s 内应节流')
+            self.assertEqual(len(calls), 1, '节流期内不应再推')
+            self.assertTrue(skew_history.snapshot(force=True))
+            self.assertEqual(len(calls), 2, 'force 应忽略节流')
+        finally:
+            skew_history._local_db_snapshot = _orig
+            skew_history._LAST_SNAP[0] = 0.0
 
     def test_basis_imports_pandas(self):
         """#3 basis.py 用了 pd.concat，必须 import pandas as pd。"""
