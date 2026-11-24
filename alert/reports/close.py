@@ -219,6 +219,28 @@ def _classify_rnd_direction(rnd_data):
     return 'neutral', f'基本对称(涨{up_p:.1f}%跌{dn_p:.1f}%,差{gap:+.1f}pp)'
 
 
+def _classify_skew_flip_direction(rnd_data):
+    """25Δ RR 偏度信号 → 看空/看多/无
+
+    与 _classify_rnd_direction 是两套口径，别混读：
+      RND概率：分布两端的积分面积 → 「跌的概率是不是比涨的大」
+      偏度   ：25Δ put 与 25Δ call 谁更贵，以及相对自己近 20 日均值的变化
+               → 「市场在为哪一边的尾部付钱」
+
+    只有真出现符号翻转（🔄）或明显走陡/走平（📉/📈）才给方向，
+    其余返回 None 不进共振 —— 否则又是一个永远有方向的指标，把共振计数灌水。
+    """
+    if not rnd_data or rnd_data.get('error'):
+        return None, '-'
+    sig = rnd_data.get('signal', '') or ''
+    skew = rnd_data.get('skew') or 0
+    if '偏度转负' in sig or '偏度走陡' in sig:
+        return 'bearish', f'偏度转负/走陡(skew={skew:+.1f}pp)'
+    if '偏度转正' in sig or '偏度走平' in sig:
+        return 'bullish', f'偏度转正/走平(skew={skew:+.1f}pp)'
+    return None, '-'
+
+
 def _classify_vts_direction(vts_data):
     """波动率期限结构风险等级 → 看空/看多/中性
     红=已变盘(看空)、橙=短端紧张(偏空)、绿=低波机会(看多)、黄/灰=中性
@@ -316,12 +338,18 @@ def extract_multi_indicator_directions(result):
         if direction is not None:
             indicators['SKEW-EV共振'] = (direction, detail)
 
-        # 5. RND偏度
+        # 5. RND概率（分布两端面积）
         rnd_key = key_map['rnd']
         rnd_d = result.get('rnd', {}).get(rnd_key)
         direction, detail = _classify_rnd_direction(rnd_d)
         if direction is not None:
             indicators['RND概率'] = (direction, detail)
+
+        # 5b. RND偏度（25Δ RR 符号翻转/走陡走平）—— 与 RND概率 不同口径，
+        #     只有真翻转或明显变化才给方向，平时不进共振
+        direction, detail = _classify_skew_flip_direction(rnd_d)
+        if direction is not None:
+            indicators['RND偏度'] = (direction, detail)
 
         # 6. 波动率期限结构
         vts_key = key_map['vts']
@@ -876,7 +904,12 @@ def build_close_card(date_str, skew_data, ev_data, resonance_data,
         elements.append(build_note(
             "怎么读这张表：↑上行/↓下行 = 期权IV微笑反推的风险中性概率，档位±2.5%（近月）。"
             "🔴下行占优 = 跌的概率比涨的高≥3pp（看空）；🟢上行占优 = 涨的高≥3pp（看多）；"
-            "两边差<3pp 就是消噪，当正常。⚠️极端 = 单侧>50%。完整密度图见附件。",
+            "两边差<3pp 就是消噪，当正常。⚠️极端 = 单侧>50%。"
+            "偏度列是 25Δ RR（put IV−call IV，A股常态为负），另有两个独立信号："
+            "🔄偏度转正/转负 = 符号真的换向（极少见，才是字面意义的「翻转」）；"
+            "📉偏度走陡 = 比近20日均值再低≥5pp，避险加剧；📈偏度走平 = 保护需求下降。"
+            "概率信号看的是「分布哪边面积大」，偏度信号看的是「两翼哪边更贵」，两者可以背离。"
+            "完整密度图见附件。",
             tag="info"
         ))
     else:
@@ -1220,9 +1253,12 @@ def main():
                 rnd_results[opt_code] = res
                 if not res.get('error') and res.get('near'):
                     nr = res['near']
+                    # 历史 CSV 就在 OUTPUT_DIR，以前这里传 None 等于把
+                    # IV异常 / 尾部跳升 / 偏度走陡 三个需要历史的信号全掐掉了
                     sig, _, _ = rnd_module.detect_signal(
                         name, nr['up_prob'], nr['down_prob'],
-                        nr['atm_iv'], None)
+                        nr['atm_iv'], rnd_module.load_history(OUTPUT_DIR),
+                        skew=nr['skew'], date_str=trade_date)
                     rnd_data_for_card[name] = {
                         'expire': nr['expire_date'],
                         'days_left': nr['days_left'],
