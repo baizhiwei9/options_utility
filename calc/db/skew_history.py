@@ -38,6 +38,7 @@ import sys
 import json
 import glob
 import sqlite3
+import time
 import datetime
 
 # ==================== 数据目录解析（单一真源）====================
@@ -76,7 +77,50 @@ else:
         (d for d in _LEGACY_CANDIDATES if _db_ok(os.path.join(d, 'skew_history.db'))),
         _LEGACY_CANDIDATES[1],
     )
-DB_PATH = os.path.join(OUTPUT_DIR, 'skew_history.db')
+_CLOUD_DB = os.path.join(OUTPUT_DIR, 'skew_history.db')
+
+# 2026-11-24 修复（与 risk_history 2026-11-18 同一根因）：
+# 云盘（FilteredFS/FUSE）不支持 SQLite 随机写。原实现直接写 OUTPUT_DIR 下的库，
+# 实测 /Coze/Drive 是 Read-only file system、/opt/coze/.fuse_drive 上批量 INSERT
+# 抛 `disk I/O error`，导致 append_daily 长期静默失败（被 close.py 的 try 吞掉），
+# skew_daily 只剩 115 行手工补的数据、各标的 20 天 < MIN_SAMPLES=20 边界，
+# 分位列永远「—」。
+# 统一按 data_hub.core.localdb 既定规则：**活库落本地盘 + 云盘 gzip 快照**。
+#
+# 路径优先级：
+#   1) SKEW_HISTORY_DB  直接指定库绝对路径（最高优先）
+#   2) LOCAL_DB_DIR     本地库目录（默认 ~/.local/share/cozedb）
+#   3) OUTPUT_DIR       兜底（云盘，仅当 localdb 不可用）
+_LAST_SNAP = [0.0]
+_ENV_DB = os.environ.get('SKEW_HISTORY_DB', '').strip()
+
+try:
+    from data_hub.core.localdb import path as _local_db_path, snapshot as _local_db_snapshot
+except Exception:                                      # noqa: BLE001
+    _local_db_path = None
+    _local_db_snapshot = None
+
+if _ENV_DB:
+    DB_PATH = _ENV_DB
+elif _local_db_path is not None:
+    DB_PATH = _local_db_path('skew_history.db', cloud_dir=OUTPUT_DIR)
+else:
+    DB_PATH = os.path.join(OUTPUT_DIR, 'skew_history.db')
+
+
+def snapshot(force=False, min_interval=30.0):
+    """本地活库 → 云盘 gzip 快照（节流，默认 30s 内只同步一次）。失败静默不阻断。"""
+    if _local_db_snapshot is None:
+        return False
+    now = time.time()
+    if not force and now - _LAST_SNAP[0] < min_interval:
+        return False
+    _LAST_SNAP[0] = now
+    try:
+        _local_db_snapshot(DB_PATH, cloud_dir=OUTPUT_DIR)
+        return True
+    except Exception:                                  # noqa: BLE001
+        return False
 # ================================================================
 OUTPUTS_DIR = OUTPUT_DIR
 

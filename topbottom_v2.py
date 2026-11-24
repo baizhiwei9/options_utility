@@ -272,7 +272,7 @@ TECH_PCT60_MAX = 0.20       # 60 日分位上限
 TOP_SIGNAL_CONFIG = {
     1: {'name': 'IM-IC价差',    'desc': '小票溢价过高(>550点)',       'threshold_str': '>550点'},
     2: {'name': 'Vol PCR偏低',  'desc': '≥3个指数PCR 60日分位<20%',  'threshold_str': '≥3个<20%分位'},
-    3: {'name': '基差异常升水',  'desc': '250日分位>90%或基差>0',     'threshold_str': '分位>90%或>0'},
+    3: {'name': '贴水快速收窄',  'desc': '5日收窄幅度250日分位≥90%且仍贴水', 'threshold_str': '收窄分位≥90%'},
     4: {'name': 'PE分位极高',   'desc': '中证1000 PE 5Y分位>90%',   'threshold_str': '>90%'},
     5: {'name': '连续大阳+缩量', 'desc': '近5日≥3根大阳线且量能递减', 'threshold_str': '≥3根+缩量'},
     6: {'name': '融资余额高位',  'desc': '>2.8万亿或250日分位>90%',   'threshold_str': '>2.8T或>90%分位'},
@@ -1382,44 +1382,112 @@ def top_signal_2_low_pcr(sentiment_data):
 
 
 def top_signal_3_basis_premium(sentiment_data):
-    """T3: 基差250日分位>90%或基差>0(升水) → 做多情绪极度乐观"""
-    result = {'value': None, 'triggered': False, 'detail': '', 'has_data': False}
-    basis_rows = sentiment_data.get('basis_rows', [])
-    if not basis_rows:
-        result['detail'] = '基差数据不可用'
-        return result
-    
-    any_positive = False
-    any_high_pct = False
-    details = []
-    
-    for row in basis_rows:
-        if row.get('type') != '当季':
-            continue
-        basis_pts = row.get('basis_pts')
-        rank_252 = row.get('rank_252')
-        product = row.get('product', '?')
-        
-        if basis_pts is not None:
-            details.append(f'{product}: {basis_pts:+.0f}pt')
-            if basis_pts > 0:
-                any_positive = True
-            if rank_252 is not None and rank_252 > 0.90:
-                any_high_pct = True
-    
-    if details:
-        result['value'] = details[0] if details else None
-        result['has_data'] = True
-        result['detail'] = '; '.join(details)
-        result['triggered'] = any_positive or any_high_pct
-        if any_positive:
-            result['detail'] += ' (升水!)'
-        if any_high_pct:
-            result['detail'] += ' (分位>90%)'
-    else:
-        result['detail'] = '当季基差数据不可用'
-    return result
+    """T3: 贴水快速收窄（5日收窄幅度≥250日90%分位）且仍贴水 → 空头撤退，顶部预警
 
+    2026-11-24 修正（原逻辑方向错误）：
+      原用 rank_252（贴水深度分位）>0.90 判"升水"，但 rank_252 按 basis_abs 绝对值
+      排序，>90% 的真实含义是"贴水比过去250天都深"——这是底部特征，不是顶部。
+      实测 11-20 IF basis_abs=85.56 触发 92%，当日 5 日基差实际走阔 -25.9pt，
+      方向完全相反。现改为动量口径：5 日贴水收窄幅度在 250 日历史中的分位 ≥90%，
+      且当前仍贴水（basis_abs>0）。
+    数据源：options.db series_store.basis_history（主力连续，250日，
+            由 calc/basis_backfill.py 维护；主力连续无移仓跳空，适合算动量）
+
+    数据门控（2026-11-24 晚改造）：
+      计算逻辑整体收进 _compute()，由 data_readiness 就绪后回调触发。
+      - 数据够 → 门控立即同步回调 _compute()，本函数返回时结果已算好
+      - 数据不够 → 起后台回填并把「回填完自动重跑本脚本」挂上去，本轮直接让出时间片
+        不向上层抛"正在就绪"这类中间态，避免下游拿着 pending 状态去做降级判断
+    """
+    result = {'value': None, 'triggered': False, 'detail': '', 'has_data': False}
+    try:
+        import opt_store as _store
+    except Exception as e:
+        result['detail'] = f'opt_store 不可用: {e}'
+        return result
+
+    TARGETS = ['IF', 'IC', 'IM']
+    MIN_PCT = 90.0       # 收窄幅度历史分位阈值
+    LOOKBACK = 5         # 5 日动量
+    MIN_SAMPLE = 30      # 历史样本下限
+
+    # 回测支持：按 sentiment_data 里的交易日截断历史，只用到 as_of 当天为止
+    _as_of = sentiment_data.get('trade_date') or sentiment_data.get('date')
+    _as_of = str(_as_of).replace('-', '') if _as_of else None
+
+    def _compute():
+        """真正的 T3 计算。由门控就绪回调驱动，不在门控之外被直接调用。"""
+        details = []
+        hit_count = 0
+        valid_count = 0
+        for prod in TARGETS:
+            try:
+                hist = _store.load_series(_store.SERIES_BASIS, prod)
+            except Exception:
+                continue
+            if not hist:
+                details.append(f'{prod}: 无历史')
+                continue
+            vals = [(d, hist[d].get('basis_abs')) for d in sorted(hist.keys())
+                    if hist[d].get('basis_abs') is not None]
+            if _as_of:
+                vals = [v for v in vals if v[0] <= _as_of]
+            if len(vals) < MIN_SAMPLE + LOOKBACK:
+                details.append(f'{prod}: 样本{len(vals)}天不足')
+                continue
+            cur_v = vals[-1][1]
+            prev_v = vals[-1 - LOOKBACK][1]
+            delta = prev_v - cur_v          # 正数=贴水收窄
+            deltas = [vals[k - LOOKBACK][1] - vals[k][1] for k in range(LOOKBACK, len(vals))]
+            pct = sum(1 for x in deltas if x < delta) / len(deltas) * 100
+            hit = (pct >= MIN_PCT) and (cur_v > 0)
+            valid_count += 1
+            if hit:
+                hit_count += 1
+            details.append(f'{prod}: 5日{delta:+.0f}pt(分位{pct:.0f}%){"🔴" if hit else ""}')
+
+        # 多数确认：至少 2/3 品种同步收窄才算（单品种触发多为风格切换噪音，
+        # 如 2026-06-18 IF 收窄而 IC/IM 大幅走阔 -111/-230pt）
+        triggered_any = valid_count >= 2 and hit_count >= 2
+
+        if details:
+            result['value'] = details[0]
+            result['has_data'] = True
+            result['detail'] = '; '.join(details)
+            result['triggered'] = triggered_any
+            if triggered_any:
+                result['detail'] += f' ({hit_count}/{valid_count}品种同步收窄→空头撤退)'
+        else:
+            result['detail'] = '基差历史不可用'
+
+    # ---- 数据就绪门控：回调驱动，够了立刻算，不够就让出时间片 ----
+    _ran = [False]
+
+    def _on_ready(_rep):
+        _ran[0] = True
+        _compute()
+
+    try:
+        import importlib.util as _ilu
+        _dr_path = os.path.join(_HUB_ROOT, 'data_hub', 'data_readiness.py')
+        _spec = _ilu.spec_from_file_location('_coze_data_readiness', _dr_path)
+        _dr = _ilu.module_from_spec(_spec)
+        sys.modules['_coze_data_readiness'] = _dr
+        _spec.loader.exec_module(_dr)
+        _rep = _dr.ensure_ready(
+            'basis_history', entities=TARGETS,
+            on_ready=_on_ready, mode='defer',
+            resume_cmd=[sys.executable, os.path.abspath(__file__)] + sys.argv[1:],
+        )
+        if not _ran[0]:
+            # 数据不足：回填+重跑已经挂到后台，本轮不输出中间态
+            result['skipped'] = True
+            result['detail'] = '基差历史回补中，回填完成后自动重跑'
+            return result
+    except Exception:
+        _compute()      # 门控不可用不阻塞主流程，退回裸算
+
+    return result
 
 def top_signal_4_pe_extreme(valuation_data):
     """T4: 中证1000 PE 5Y分位>90% → 估值太贵"""
@@ -1587,8 +1655,8 @@ def compute_top_signals(trade_date, valuation_data, sentiment_data, trigger_data
     top_signals[2] = top_signal_2_low_pcr(sentiment_data)
     print(f"    {top_signals[2]['detail']} → {'🔴触发' if top_signals[2]['triggered'] else '✅未触发'}")
     
-    # T3: 基差异常升水
-    print("  T3: 基差异常升水...")
+    # T3: 贴水快速收窄
+    print("  T3: 贴水快速收窄...")
     top_signals[3] = top_signal_3_basis_premium(sentiment_data)
     print(f"    {top_signals[3]['detail']} → {'🔴触发' if top_signals[3]['triggered'] else '✅未触发'}")
     
@@ -2498,6 +2566,8 @@ def main_sync(trade_date, dry_run=False):
     
     valuation_data = {}
     sentiment_data = {}
+    # 2026-11-24：注入交易日，供 T3 等需要历史窗口的信号按 as_of 截断（回测/补跑用）
+    sentiment_data['trade_date'] = parse_date_to_str(trade_date)
     trigger_data = {}
     
     # ============================================================

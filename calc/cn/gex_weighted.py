@@ -129,14 +129,24 @@ def weighted_gex(legs: Sequence[dict],
     )
 
 
-def percentile_rank(hist_values: Sequence[float], value: float) -> Tuple[float, int]:
+# 算分位所需最少历史样本（约一季度）。2026-11-24 加样本下限：原实现只判空，
+# 十几个点的「252 日分位」会在 0% 和 100% 之间剧烈摆动，直接把 GEX 判成极值。
+# 样本不足一律返回 nan，由调用方当作「无信号」处理。
+MIN_PCTL_SAMPLE = 60
+
+
+def percentile_rank(hist_values: Sequence[float], value: float,
+                    min_samples: int = MIN_PCTL_SAMPLE) -> Tuple[float, int]:
     """当前值在历史序列中的百分位（0~100）与样本数。
 
     口径：严格小于当前值的占比（并列不重复计数）。
+    样本数 < min_samples 时返回 (nan, n)，不给出误导性极值。
     """
     vals = [float(v) for v in hist_values if v is not None and math.isfinite(float(v))]
     if not vals or value is None or not math.isfinite(float(value)):
         return float("nan"), 0
+    if len(vals) < min_samples:
+        return float("nan"), len(vals)
     below = sum(1 for v in vals if v < value)
     return round(below / len(vals) * 100, 1), len(vals)
 

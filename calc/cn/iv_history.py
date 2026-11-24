@@ -217,6 +217,9 @@ def build_iv_history(fetch_day_fn, codes, days: Iterable[str],
     return hist
 
 
+MIN_PCTL_SAMPLE = 60     # 算分位/阈值所需最少历史样本（约一季度）
+
+
 def iv_percentile_thresholds(series: Iterable[float],
                              current: Optional[float] = None,
                              pcts=(80, 95)) -> dict:
@@ -234,6 +237,11 @@ def iv_percentile_thresholds(series: Iterable[float],
                   if v is not None and math.isfinite(float(v)))
     if not vals:
         return {"cur": current, "p80": None, "p95": None, "pct": None, "n": 0}
+    # 2026-11-24 加样本下限：危险分第 6 维靠 p80/p95 判灯，十几个点的历史
+    # 算出的 P95 会接近当期值本身，等于恒判「IV 极高」。样本不足一律不出阈值。
+    if len(vals) < MIN_PCTL_SAMPLE:
+        return {"cur": current, "p80": None, "p95": None, "pct": None,
+                "n": len(vals)}
     cur = float(current) if current is not None else vals[-1]
 
     def _p(q: float) -> float:
@@ -271,11 +279,20 @@ def _self_check() -> bool:
     print("  atm_term_from_day: 月份数=%d ATM=%s → %s"
           % (len(term), [v["atm"] for v in term.values()], "✅" if ok else "❌"))
 
-    th = iv_percentile_thresholds([10, 15, 20, 25, 30], current=28)
-    ok2 = th["p80"] is not None and th["pct"] == 80.0
-    print("  iv_percentile: cur=%.1f p80=%.1f pct=%.1f%% → %s"
-          % (th["cur"], th["p80"], th["pct"] or 0, "✅" if ok2 else "❌"))
-    return bool(ok and ok2)
+    # 样本必须 >= MIN_PCTL_SAMPLE 才出阈值，自检要造够样本才有意义
+    th = iv_percentile_thresholds([10.0 + i for i in range(100)], current=28.0)
+    ok2 = th["p80"] is not None and th["pct"] == 18.0
+    print("  iv_percentile: n=%d cur=%.1f p80=%.1f pct=%.1f%% → %s"
+          % (th["n"], th["cur"], th["p80"] or float('nan'),
+             th["pct"] or 0, "✅" if ok2 else "❌"))
+
+    # 样本不足必须整组不出值（原实现会拿 5 个点算出 P95≈当期值，等于恒判极高）
+    th_short = iv_percentile_thresholds([10, 15, 20, 25, 30], current=28)
+    ok3 = (th_short["p80"] is None and th_short["p95"] is None
+           and th_short["pct"] is None and th_short["n"] == 5)
+    print("  iv_percentile 小样本守卫: n=%d p80=%s → %s"
+          % (th_short["n"], th_short["p80"], "✅" if ok3 else "❌"))
+    return bool(ok and ok2 and ok3)
 
 
 if __name__ == "__main__":

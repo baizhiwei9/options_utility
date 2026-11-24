@@ -297,10 +297,18 @@ def parse_date_to_str(date_str):
     return f"{date_str[:4]}-{date_str[4:6]}-{date_str[6:8]}"
 
 
-def percentile_rank(series, value):
-    """计算某值在序列中的百分位排名"""
+MIN_PCTL_SAMPLE = 60     # 算分位所需最少历史样本（约一季度，不足返回 nan 不参与判定）
+
+
+def percentile_rank(series, value, min_samples=MIN_PCTL_SAMPLE):
+    """计算某值在序列中的百分位排名。
+
+    2026-11-24 加样本下限：原实现只判空，十几天的历史也能算出「分位」，
+    小样本分位会在 0% 和 100% 之间剧烈摆动，直接把衍生品情绪判成极值。
+    样本不足一律返回 nan，由调用方当作「无信号」处理。
+    """
     valid = series.dropna()
-    if len(valid) == 0:
+    if len(valid) < min_samples:
         return np.nan
     return (valid < value).sum() / len(valid)
 
