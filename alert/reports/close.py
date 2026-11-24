@@ -233,7 +233,7 @@ def _classify_skew_flip_direction(rnd_data):
     if not rnd_data or rnd_data.get('error'):
         return None, '-'
     sig = rnd_data.get('signal', '') or ''
-    skew = rnd_data.get('skew', 0)
+    skew = rnd_data.get('skew') or 0
     if '偏度转负' in sig or '偏度走陡' in sig:
         return 'bearish', f'偏度转负/走陡(skew={skew:+.1f}pp)'
     if '偏度转正' in sig or '偏度走平' in sig:
@@ -907,7 +907,7 @@ def build_close_card(date_str, skew_data, ev_data, resonance_data,
             "两边差<3pp 就是消噪，当正常。⚠️极端 = 单侧>50%。"
             "偏度列是 25Δ RR（put IV−call IV，A股常态为负），另有两个独立信号："
             "🔄偏度转正/转负 = 符号真的换向（极少见，才是字面意义的「翻转」）；"
-            "📉偏度走陡 = 比近20日均值再低≥3pp，避险加剧；📈偏度走平 = 保护需求下降。"
+            "📉偏度走陡 = 比近20日均值再低≥5pp，避险加剧；📈偏度走平 = 保护需求下降。"
             "概率信号看的是「分布哪边面积大」，偏度信号看的是「两翼哪边更贵」，两者可以背离。"
             "完整密度图见附件。",
             tag="info"

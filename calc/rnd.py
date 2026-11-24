@@ -540,8 +540,8 @@ def detect_skew_signal(index_name, skew, history_df, date_str=None):
 
       🔄 偏度转正：skew 由负跨过死区转为正 → call 侧被加价，市场给上涨尾部付钱
       🔄 偏度转负：skew 由正跨回负 → put 侧重新被加价，避险回归
-      📉 偏度走陡：skew 比近 20 日均值再低 ≥3pp → put 更贵了，避险加剧
-      📈 偏度走平：skew 比近 20 日均值高 ≥3pp → 保护需求下降
+      📉 偏度走陡：skew 比近 20 日均值再低 ≥SKEW_SHIFT_GAP（5pp） → put 更贵了，避险加剧
+      📈 偏度走平：skew 比近 20 日均值高 ≥SKEW_SHIFT_GAP（5pp） → 保护需求下降
 
     「翻转」在这里就是字面意思：符号换向。没有足够历史时只做绝对符号判定
     （skew 明显为正 → 转正），不做翻转/走陡判定 —— 宁可不出信号，
