@@ -150,6 +150,10 @@ OPTION_KEYS_5 = ['300ETF', '500ETF', 'MO', '创业板ETF', '科创50ETF']
 PCR_HIGH_ABS = 1.2        # 条件①：vol_pcr 盘中最大值 >= 1.2（绝对值高位）
 PCR_LOW_ABS = 0.3         # 条件②：vol_pcr 盘中最小值 <  0.3（绝对值低位，新增）
 PCT_HIGH = 80.0           # 条件③⑤：250 日分位 > 80%
+# 算分位所需最少历史样本（与 vix_history.MIN_SAMPLE_COUNT=120 对齐）。
+# 2026-11-24 加：原实现只判空，vix_daily 长期只有 12 天 → 拿 12 个点算出的
+# 「250 日分位」要么恒 100%（当期即最大）要么恒 0%，告警五从上线起一次没真正触发过。
+MIN_PCTL_SAMPLE = 120
 PCT_LOW = 20.0            # 条件④⑥：250 日分位 < 20%
 OPTION_PCT_WINDOW = 250   # 期权分位窗口（交易日）
 VIX_PCT_HIGH = 80.0       # VIX 盘中最大值 250 日分位 > 80% → 告警五（新增维度）
@@ -735,6 +739,10 @@ def _vix_max_percentile(vix_key, vmax, window=250):
     if not vals:
         return None, None
     vals = vals[-window:]
+    # 样本不足一律不出分位，由调用方当作「无信号」处理（不推告警五）。
+    # 宁可不报警，也不能用 12 个点造出 100% 的假极值。
+    if len(vals) < MIN_PCTL_SAMPLE:
+        return None, len(vals)
     return round(100.0 * sum(1 for v in vals if v < vmax) / len(vals), 1), len(vals)
 
 

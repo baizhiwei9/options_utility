@@ -850,6 +850,10 @@ def vix_percentile_from_csv(csv_name, current):
                         pass
     except Exception:
         return None, 0
+    # 冷启动回填也必须有样本下限：几行 CSV 算出的分位会直接误导判灯。
+    # 2026-11-24 加：原实现只判空，2~3 个点的「分位」会在 0%/100% 之间乱跳。
+    if len(vals) < SAMPLE_MIN:
+        return None, len(vals)
     allv = vals + [current]
     pct = round(sum(1 for v in allv if v < current) / len(allv) * 100, 1)
     return pct, len(vals)
