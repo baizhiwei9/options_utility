@@ -408,7 +408,10 @@ def make_chart(results, date_str, strike_pct, position_codes=None, position_data
     elif n_total <= 6:
         rows, cols = 2, 3
     else:
-        rows, cols = 3, 3
+        # 超过 6 格按每行 3 格向外扩，别固定 3x3：
+        # 固定 3x3 时 6 个指数 + 4 个仓位代码（10 格）会踩 axes.flat 越界
+        cols = 3
+        rows = int(math.ceil(n_total / float(cols)))
     fig, axes = plt.subplots(rows, cols, figsize=(7 * cols, 5.5 * rows))
     fig.patch.set_facecolor(COLORS['bg'])
 
