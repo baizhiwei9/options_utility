@@ -669,11 +669,14 @@ def check_basis_extreme(symbol, current_basis):
     history = load_basis_history(symbol)
     basis_values = [v['basis_abs'] for v in history.values() 
                     if isinstance(v, dict) and 'basis_abs' in v]
+    # 先过滤 None/NaN 再判断样本数：历史里可能有 schema 改造前的旧条目，
+    # 只有 basis_abs 缺失时 len(basis_values) 仍会 >=20，但 arr 会是空的。
+    arr = np.array([float(v) for v in basis_values if v is not None], dtype=float)
+    arr = arr[np.isfinite(arr)]
     
-    if len(basis_values) < 20 or current_basis is None:
-        return False, None, None, None, None, len(basis_values)
+    if len(arr) < 20 or current_basis is None:
+        return False, None, None, None, None, len(arr)
     
-    arr = np.array([v for v in basis_values if v is not None])
     percentile = (arr < current_basis).sum() / len(arr) * 100
     
     low_th = np.percentile(arr, LOW_PERCENTILE)
