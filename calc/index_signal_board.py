@@ -154,7 +154,7 @@ for nm in names:
                     lv = helper(d, hidx, lidx, n=2)
                 except Exception:
                     lv = None
-            if lv and lv.get('high') is not None and lv.get('low') is not None:
+            if isinstance(lv, dict) and lv.get('high') is not None and lv.get('low') is not None:
                 smc = {'hi': round(float(lv['high']), 2),
                        'lo': round(float(lv['low']), 2),
                        'pos_pct': lv.get('pos_pct')}
