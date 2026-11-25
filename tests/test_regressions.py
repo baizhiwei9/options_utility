@@ -165,6 +165,29 @@ class TestNameErrorsWereFixed(unittest.TestCase):
         self.assertGreater(len(card.get('elements', [])), 0)
 
 
+class TestBasisDailyCaliber(unittest.TestCase):
+    """2026-11-25：基差日报把 basis_pct 传给按绝对基差分位的函数，三品种恒报「偏低」。"""
+
+    def test_basis_daily_passes_abs_not_pct(self):
+        """check_basis_extreme 的口径是绝对基差（股指=点，国债=收益率差%）。
+
+        传 basis_pct 会让「当前值」和「历史 basis_abs 数组」不同量纲，
+        分位恒接近 0 → is_extreme 恒 true/low，日报每天都说「偏低」。
+        """
+        tree = ast.parse(_src('calc/basis_daily.py'))
+        calls = [n for n in ast.walk(tree)
+                 if isinstance(n, ast.Call)
+                 and isinstance(n.func, ast.Name)
+                 and n.func.id == 'check_basis_extreme']
+        self.assertEqual(len(calls), 1, '应只有一处调用 check_basis_extreme')
+        arg = calls[0].args[1]
+        self.assertIsInstance(arg, ast.Subscript, '第二个参数应是 info[...] 取值')
+        key = arg.slice
+        key = getattr(key, 'value', None) if isinstance(key, ast.Constant) else None
+        self.assertEqual(key, 'basis_abs',
+                         '必须传 info["basis_abs"]；传 basis_pct 会让极值判定恒为「偏低」')
+
+
 class TestUsTreasuryRobustness(unittest.TestCase):
     """#5 美债 judge() 的 TLT 缺失保护"""
 

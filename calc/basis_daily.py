@@ -82,9 +82,11 @@ def run():
         latest_date = sorted(latest_info.keys())[-1]
         info = latest_info[latest_date]
         
-        # 检查极值
+        # 检查极值（check_basis_extreme 按**绝对基差**算分位：股指=点数，国债=收益率差%）
+        # 2026-11-25 修复：原来传的是 basis_pct（百分数），和历史 basis_abs 分位不是同一量纲，
+        # 比出来的分位恒接近 0 → is_extreme 恒为 true/low，日报里三品种天天「偏低」。
         is_extreme, direction, pctile, low_th, high_th, days = check_basis_extreme(
-            sym, info['basis_pct']
+            sym, info['basis_abs']
         )
         
         results[sym] = {
