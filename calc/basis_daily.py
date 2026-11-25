@@ -60,6 +60,7 @@ def run():
     for sym in MONITOR_SYMBOLS:
         cfg = BASIS_TARGETS[sym]
         name = cfg['name']
+        unit = '点' if cfg.get('category') == '股指' else '%'
         print(f'\n处理 {sym} ({name})...')
         
         # 三级降级获取数据
@@ -92,7 +93,7 @@ def run():
         results[sym] = {
             'name': name,
             'date': latest_date,
-            'fut_close': info.get('basis_abs', 0) and basis.get(latest_date, {}).get('fut_close', 0),
+            'fut_close': basis.get(latest_date, {}).get('fut_close', 0),
             'spot_close': basis.get(latest_date, {}).get('spot_close', 0),
             'basis_abs': info.get('basis_abs'),
             'basis_pct': info['basis_pct'],
@@ -111,9 +112,9 @@ def run():
         if is_extreme:
             ext_str = '🚨 偏低' if direction == 'low' else '🚨 偏高'
         
-        print(f'  基差: {info["basis_abs"]:.2f} ({info["basis_pct"]:.3f}%)')
+        print(f'  基差: {info["basis_abs"]:.2f}{unit} ({info["basis_pct"]:.3f}%)')
         print(f'  分位数: {pctile}% ({LOW_PERCENTILE}%~{HIGH_PERCENTILE}%区间外=极值) {ext_str}')
-        print(f'  历史区间: {low_th:.3f}% ~ {high_th:.3f}% ({days}天)')
+        print(f'  历史区间: {low_th:.3f}{unit} ~ {high_th:.3f}{unit} ({days}天)')
         print(f'  数据源: {source}')
     
     # 保存结果
@@ -130,13 +131,14 @@ def run():
     print('-' * 50)
     for sym in MONITOR_SYMBOLS:
         r = results.get(sym, {})
+        u = '点' if BASIS_TARGETS[sym].get('category') == '股指' else '%'
         if 'error' in r:
             print(f'{sym:<6} {"ERR":>8} {"":>6} {r["error"][:8]:<8}')
         else:
             status = '极值高' if r['is_extreme'] and r['extreme_dir'] == 'high' else \
                      '极值低' if r['is_extreme'] and r['extreme_dir'] == 'low' else '正常'
             print(f'{sym:<6} {r["basis_pct"]:>7.3f}% {r["percentile"]:>5.0f}% {status:<8} '
-                  f'{r["low_threshold"]:>7.3f}% {r["high_threshold"]:>7.3f}%')
+                  f'{r["low_threshold"]:>7.3f}{u} {r["high_threshold"]:>7.3f}{u}')
 
 
 if __name__ == '__main__':

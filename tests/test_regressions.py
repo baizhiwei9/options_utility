@@ -188,6 +188,23 @@ class TestBasisDailyCaliber(unittest.TestCase):
                          '必须传 info["basis_abs"]；传 basis_pct 会让极值判定恒为「偏低」')
 
 
+class TestBasisExtremeGuard(unittest.TestCase):
+    """2026-11-25：历史条目只有 basis_abs 键但值为 None 时，极值判定不能除零/崩。"""
+
+    def test_all_none_basis_abs_returns_not_extreme(self):
+        import basis
+        old = basis.load_basis_history
+        basis.load_basis_history = lambda symbol: {
+            str(i): {'basis_abs': None} for i in range(30)
+        }
+        try:
+            res = basis.check_basis_extreme('IF', 1.0)
+        finally:
+            basis.load_basis_history = old
+        self.assertFalse(res[0], '没有有效 basis_abs 时不应判极值')
+        self.assertEqual(res[5], 0, 'history_days 应按有效样本数返回 0')
+
+
 class TestUsTreasuryRobustness(unittest.TestCase):
     """#5 美债 judge() 的 TLT 缺失保护"""
 
