@@ -101,16 +101,26 @@ def monthly_expiries(df, after):
 
 
 def atm_iv(df, exp, S):
+    """月度到期日的 ATM 隐含波动率（百分数）。
+
+    口径：距现价最近的可成交合约（bid>0 且 oi>0）取 4 个求均值。
+
+    注意顺序——必须先过滤可成交合约、再按距离取最近 4 个。旧实现先取最近 4 个
+    再逐个过滤，若这 4 个恰好 OI 全为 0（实例：2026-11-25 NDX 近月 25050 的
+    4 个合约 bid 正常但 OI=0），ivs 为空即返回 None，下游按数值格式化直接崩栈。
+    过滤后无任何可成交合约时，回落为「IV 有效合约中取最近 4 个」的宽松口径，
+    既不改变原有可用场景的取值，也避免无谓返回 None。
+    """
     sub = df[(df.exp == exp) & df.iv.notna() & (df.iv < 2.0)].copy()
     if not len(sub):
         return None, None
     sub["dist"] = (sub.K - S).abs()
-    sub = sub.sort_values("dist")
-    picks = sub.head(4)
-    ivs = []
-    for _, r in picks.iterrows():
-        if (r.bid or 0) > 0 and (r.oi or 0) > 0:
-            ivs.append(float(r.iv) * 100)
+    traded = sub[(sub.bid.fillna(0) > 0) & (sub.oi.fillna(0) > 0)].sort_values("dist")
+    picks = traded.head(4) if len(traded) else sub.sort_values("dist").head(4)
+    ivs = [float(r.iv) * 100 for _, r in picks.iterrows()
+           if (r.bid or 0) > 0 and (r.oi or 0) > 0]
+    if not ivs:      # 兜底：无可成交合约时按宽松口径取值，不返回 None
+        ivs = [float(x) * 100 for x in sub.sort_values("dist").head(4).iv]
     return (float(np.mean(ivs)) if ivs else None), picks
 
 
