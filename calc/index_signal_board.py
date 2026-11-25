@@ -148,8 +148,13 @@ for nm in names:
             lv = None
             helper = getattr(TS, 'pivot_levels', None)
             if callable(helper):
-                lv = helper(d, hidx, lidx, n=2)
-            if lv and lv.get('high') and lv.get('low'):
+                # helper 自身异常（旧版签名/坏数据）不能把整个 SMC 兜底一起吞掉：
+                # 失败就退回下面的本地换算，再交给硬约束兜底。
+                try:
+                    lv = helper(d, hidx, lidx, n=2)
+                except Exception:
+                    lv = None
+            if isinstance(lv, dict) and lv.get('high') is not None and lv.get('low') is not None:
                 smc = {'hi': round(float(lv['high']), 2),
                        'lo': round(float(lv['low']), 2),
                        'pos_pct': lv.get('pos_pct')}
