@@ -132,7 +132,11 @@ def weighted_gex(legs: Sequence[dict],
 # 算分位所需最少历史样本（约一季度）。2026-11-24 加样本下限：原实现只判空，
 # 十几个点的「252 日分位」会在 0% 和 100% 之间剧烈摆动，直接把 GEX 判成极值。
 # 样本不足一律返回 nan，由调用方当作「无信号」处理。
-MIN_PCTL_SAMPLE = 60
+# 2026-11-25：门槛值收敛到 config/thresholds.py（原硬编码 60）。
+try:
+    from config.thresholds import PCTL_MIN_SAMPLES_SHORT as MIN_PCTL_SAMPLE
+except ImportError:                       # 独立运行（非项目根）时回落
+    MIN_PCTL_SAMPLE = 60
 
 
 def percentile_rank(hist_values: Sequence[float], value: float,

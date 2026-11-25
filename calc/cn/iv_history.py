@@ -217,7 +217,12 @@ def build_iv_history(fetch_day_fn, codes, days: Iterable[str],
     return hist
 
 
-MIN_PCTL_SAMPLE = 60     # 算分位/阈值所需最少历史样本（约一季度）
+# 算分位/阈值所需最少历史样本（约一季度）
+# 2026-11-25：门槛值收敛到 config/thresholds.py（原硬编码 60）。
+try:
+    from config.thresholds import PCTL_MIN_SAMPLES_SHORT as MIN_PCTL_SAMPLE
+except ImportError:                       # 独立运行（非项目根）时回落
+    MIN_PCTL_SAMPLE = 60
 
 
 def iv_percentile_thresholds(series: Iterable[float],

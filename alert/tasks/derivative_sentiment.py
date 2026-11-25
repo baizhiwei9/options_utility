@@ -297,7 +297,12 @@ def parse_date_to_str(date_str):
     return f"{date_str[:4]}-{date_str[4:6]}-{date_str[6:8]}"
 
 
-MIN_PCTL_SAMPLE = 60     # 算分位所需最少历史样本（约一季度，不足返回 nan 不参与判定）
+# 算分位所需最少历史样本（约一季度，不足返回 None 不参与判定）
+# 2026-11-25：门槛值收敛到 config/thresholds.py（原硬编码 60）。
+try:
+    from config.thresholds import PCTL_MIN_SAMPLES_SHORT as MIN_PCTL_SAMPLE
+except ImportError:                       # 独立运行（非项目根）时回落
+    MIN_PCTL_SAMPLE = 60
 
 
 def percentile_rank(series, value, min_samples=MIN_PCTL_SAMPLE):

@@ -742,14 +742,59 @@ def calc_kc50_support_levels(trade_date):
 # ============================================================
 
 def redline_1_vix(trade_date):
-    """红线#1: 中证1000 VIX > 35
+    """红线#1: 中证1000 VIX > 35（绝对阈值 → 底部特征）
 
     2026-10-23：口径由「50ETF QVIX 代理」改为 data_hub 期权链自算 VIX，
     中证1000 直接取 MO（中证1000 股指期权）自算 VIX，不再降级/代理。
     阈值沿用 35（红线判定逻辑不变）。
+
+    2026-11-25 两处修正：
+      1) 取数改用 data_hub 统一快照 get_vix_snapshot，判阈值用
+         ``ref = max(当前值, 盘中最大值)``。恐慌是全天累积的，14:30 运行时
+         当前值可能已从早盘高点回落，只判当前值会漏掉当日真实极值
+         （实测 11-20 盘中最高 35.14，收盘回落到 34.x，旧口径漏报）。
+      2) 与波动率告警五共用同一份取数。此前两条链路各自读 VIX、各自算分位，
+         同一天可能报出两个不同数字；现在统一到 data_hub 一个入口。
+
+    注意：本红线是**绝对阈值**（35），告警五是**相对分位**（250 日分位 > 80%），
+    两者不冲突也不重复 —— 绝对阈值抓「够不够恐慌」，相对分位抓「在历史上多极端」。
+    极端行情里两者会同时亮，这是冗余而非矛盾，不做事后去重（去重会让
+    「只亮一条」看起来像口径漂移，反而更难排查）。
     """
     result = {'value': None, 'triggered': False, 'detail': '', 'has_data': False}
     try:
+        # ---- 首选：data_hub 统一快照（2026-11-25 新增）----
+        try:
+            from data_hub.collectors.vix_history import get_vix_snapshot
+        except ImportError:
+            get_vix_snapshot = None      # data_hub 尚未升级，走下面的回落分支
+        if get_vix_snapshot is not None:
+            snap = (get_vix_snapshot(keys=['MO'], realtime=True,
+                                     time_budget_sec=60) or {}).get('MO') or {}
+            ref = snap.get('ref')
+            if ref is not None:
+                ref = float(ref)
+                result['value'] = ref
+                result['has_data'] = True
+                parts = [f'中证1000 MO自算VIX={ref:.1f}']
+                if snap.get('ref_kind') == 'intraday_max':
+                    t = snap.get('intraday_max_time') or '—'
+                    parts.append(f'（取盘中最高，{t}）')
+                pct = (snap.get('pct_max')
+                       if snap.get('ref_kind') == 'intraday_max'
+                       else snap.get('pct_current'))
+                if pct is not None:
+                    parts.append(f'，250日分位{pct:.1f}%')
+                result['detail'] = ''.join(parts)
+                result['triggered'] = ref > 35
+                result['note'] = ('data_hub 统一快照 get_vix_snapshot；'
+                                  'ref=max(当前值,盘中最大值)；CBOE 分钟到期法自算')
+                return result
+            result['detail'] = ('中证1000 MO自算VIX 数据缺失: %s'
+                               % (snap.get('error') or '无有效数据'))
+            return result
+
+        # ---- 回落：旧路径（data_hub 未升级时保持原行为）----
         from data_hub.collectors.vix_history import get_all_vix_percentiles
         rt = get_all_vix_percentiles(keys=['MO'], realtime=True, time_budget_sec=60)
         entry = (rt or {}).get('MO') or {}
@@ -759,7 +804,8 @@ def redline_1_vix(trade_date):
             result['has_data'] = True
             result['detail'] = f'中证1000 MO自算VIX={latest_val:.1f}'
             result['triggered'] = latest_val > 35
-            result['note'] = 'data_hub 期权链自算 VIX（MO 中证1000 股指期权，CBOE 分钟到期法）'
+            result['note'] = ('data_hub 期权链自算 VIX（MO 中证1000 股指期权，'
+                              'CBOE 分钟到期法）；旧路径，未取盘中最大值')
         else:
             result['detail'] = f"中证1000 MO自算VIX 数据缺失: {entry.get('error') or '无有效数据'}"
     except Exception as e:
