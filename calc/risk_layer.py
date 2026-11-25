@@ -89,7 +89,11 @@ MIN_ACTIVE_DTE = 7
 GAMMA_BAND = 0.03
 BASELINE_DAYS = 252
 CALIBRATION_DAYS = 3          # 冷启动头3天只校准不报警
-SAMPLE_MIN = 20               # 基线最少样本，不足视为校准中
+# 基线最少样本（中位数/标准差/MAD 的统计门槛），不足视为校准中。
+# ★ 注意语义：这是「算统计量」的门槛，不是「算分位」的门槛 —— 20 个点算
+# median/std 勉强够用，算百分位排名只会得到 0%/100% 的假极值。分位门槛见
+# config/thresholds.py 的 PCTL_MIN_SAMPLES_*。
+SAMPLE_MIN = 20
 VIX_PCT_MIN = 60              # VIX分位参与判灯的最小历史样本（约1季度，不足只展示不触灯，防小窗假分位）
 SKEW_TENSE_FALLBACK = 105.0   # 自身基线不足时SKEW紧张线兜底（经验，非跨标的统一硬套）
 FLIP_STEP = 0.002             # Flip线扫描步长(现价比例)
@@ -831,7 +835,15 @@ def baseline(state, key, field, current, tail=BASELINE_DAYS):
 
 
 def vix_percentile_from_csv(csv_name, current):
-    """VIX分位冷启动回填：本地 iv_term_history.csv（样本不足则标注）"""
+    """VIX分位冷启动回填：本地 iv_term_history.csv（样本不足则标注）。
+
+    2026-11-25 口径对齐（当前无调用点，保留作冷启动兜底）：
+      1) 分位分母改为「历史样本」而不含 current 自身。原实现 ``len(allv)``
+         把当前值也算进样本，与 data_hub ``_pct_of`` 的口径差 1 个样本，
+         跨系统对同一数字会得到不同分位。
+      2) 门槛从 SAMPLE_MIN(20，基线统计门槛) 换成 PCTL_MIN_SAMPLES_SHORT，
+         20 个点算分位必然 0%/100% 二选一，会直接误导判灯。
+    """
     if not os.path.exists(IV_HISTORY_CSV) or current is None:
         return None, 0
     vals, dates = [], []
@@ -852,10 +864,15 @@ def vix_percentile_from_csv(csv_name, current):
         return None, 0
     # 冷启动回填也必须有样本下限：几行 CSV 算出的分位会直接误导判灯。
     # 2026-11-24 加：原实现只判空，2~3 个点的「分位」会在 0%/100% 之间乱跳。
-    if len(vals) < SAMPLE_MIN:
+    # 2026-11-25：门槛改用分位专用常量（原误用基线门槛 SAMPLE_MIN=20）。
+    try:
+        from config.thresholds import PCTL_MIN_SAMPLES_SHORT as _pctl_min
+    except ImportError:                   # 独立运行（非项目根）时回落
+        _pctl_min = 60
+    if len(vals) < _pctl_min:
         return None, len(vals)
-    allv = vals + [current]
-    pct = round(sum(1 for v in allv if v < current) / len(allv) * 100, 1)
+    # 分母只算历史样本，不含 current 自身（与 data_hub _pct_of 对齐）
+    pct = round(sum(1 for v in vals if v < current) / len(vals) * 100, 1)
     return pct, len(vals)
 
 

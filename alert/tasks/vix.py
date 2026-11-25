@@ -150,10 +150,14 @@ OPTION_KEYS_5 = ['300ETF', '500ETF', 'MO', '创业板ETF', '科创50ETF']
 PCR_HIGH_ABS = 1.2        # 条件①：vol_pcr 盘中最大值 >= 1.2（绝对值高位）
 PCR_LOW_ABS = 0.3         # 条件②：vol_pcr 盘中最小值 <  0.3（绝对值低位，新增）
 PCT_HIGH = 80.0           # 条件③⑤：250 日分位 > 80%
-# 算分位所需最少历史样本（与 vix_history.MIN_SAMPLE_COUNT=120 对齐）。
+# 算分位所需最少历史样本（与 data_hub vix_history.MIN_SAMPLE_COUNT=120 对齐）。
 # 2026-11-24 加：原实现只判空，vix_daily 长期只有 12 天 → 拿 12 个点算出的
 # 「250 日分位」要么恒 100%（当期即最大）要么恒 0%，告警五从上线起一次没真正触发过。
-MIN_PCTL_SAMPLE = 120
+# 2026-11-25：门槛值收敛到 config/thresholds.py 统一管理，此处只留别名。
+try:
+    from config.thresholds import PCTL_MIN_SAMPLES_DAILY as MIN_PCTL_SAMPLE
+except ImportError:                       # 独立运行（非项目根）时回落
+    MIN_PCTL_SAMPLE = 120
 PCT_LOW = 20.0            # 条件④⑥：250 日分位 < 20%
 OPTION_PCT_WINDOW = 250   # 期权分位窗口（交易日）
 VIX_PCT_HIGH = 80.0       # VIX 盘中最大值 250 日分位 > 80% → 告警五（新增维度）
@@ -1461,6 +1465,16 @@ def _build_vix_pct_message(td, hits, sample_time):
     lines.append('口径：data_hub 期权链自算 VIX（CBOE 分钟到期法）；'
                  '分位基于**盘中最大值**对近 250 交易日收盘 VIX 序列；'
                  '原 30/35/40/45 分档告警（告警一）保持不变')
+    lines.append('')
+    # 2026-11-25 加：此前只写「历史高位」，下游（含 AI 解读）会自行补成
+    # 「顶部预警」，与顶底体系红线#1 的「VIX>35=底部特征」看起来方向相反。
+    # 实际两者是同一事实的两种度量（相对分位 vs 绝对阈值），本条不判方向。
+    lines.append('⚠️ **本条只回答「当前恐慌在历史上有多极端」，不判顶底方向。**')
+    lines.append('VIX 高分位既可能出现在下跌末段（恐慌见顶→反转窗口），'
+                 '也可能出现在流动性冲击中途（恐慌继续加深），'
+                 '单看分位无法区分，需结合顶底体系红线数量与价格位置一起看。')
+    lines.append('顶底体系红线#1 的「VIX > 35」是**绝对阈值口径的底部特征判据**，'
+                 '与本条不构成方向冲突：同一事实的两种表达。')
     return '\n'.join(lines)
 
 
