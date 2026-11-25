@@ -136,19 +136,37 @@ for nm in names:
         except Exception:
             vw = {}
 
-        # SMC 摆动区间位置（hi/lo 是**索引**，要回查 high/low 才是价位）
+        # SMC 摆动区间位置
+        #   ⚠️ smc_layer() 的 hi/lo 是**K 线索引，不是价位**（踩过：直接把索引当支撑，
+        #   得到「支撑 187」这种连现价千分之一都不到的数字，不报错也不告警）。
+        #   优先用技术库官方 helper pivot_levels()（techAnly-summary PR #6）；
+        #   老版本技术库没这个函数 → 回退本地换算，两边都只取真实 high/low。
         smc = {}
         try:
             s = TS.smc_layer(d, k=3)
             hidx, lidx = s.get('hi') or [], s.get('lo') or []
-            if len(hidx) >= 2 and len(lidx) >= 2:
-                hs = d['high'].values
-                ls = d['low'].values
-                rh = float(max(hs[hidx[-1]], hs[hidx[-2]]))
-                rl = float(min(ls[lidx[-1]], ls[lidx[-2]]))
-                if rh > rl:
-                    smc = {'hi': round(rh, 2), 'lo': round(rl, 2),
-                           'pos_pct': round(100.0 * (close - rl) / (rh - rl), 1)}
+            lv = None
+            helper = getattr(TS, 'pivot_levels', None)
+            if callable(helper):
+                lv = helper(d, hidx, lidx, n=2)
+            if lv and lv.get('high') and lv.get('low'):
+                smc = {'hi': round(float(lv['high']), 2),
+                       'lo': round(float(lv['low']), 2),
+                       'pos_pct': lv.get('pos_pct')}
+            elif len(hidx) >= 2 and len(lidx) >= 2:
+                hs, ls = d['high'].values, d['low'].values
+                nh = len(d)
+                hi_ok = [int(x) for x in hidx if 0 <= int(x) < nh]
+                lo_ok = [int(x) for x in lidx if 0 <= int(x) < nh]
+                if len(hi_ok) >= 2 and len(lo_ok) >= 2:
+                    rh = float(max(hs[hi_ok[-1]], hs[hi_ok[-2]]))
+                    rl = float(min(ls[lo_ok[-1]], ls[lo_ok[-2]]))
+                    if rh > rl:
+                        smc = {'hi': round(rh, 2), 'lo': round(rl, 2),
+                               'pos_pct': round(100.0 * (close - rl) / (rh - rl), 1)}
+            # 硬约束：区间上下沿必须分居现价两侧，否则宁可不用（防索引/价位残余混淆）
+            if smc and not (smc['lo'] < close < smc['hi']):
+                smc = {}
         except Exception:
             smc = {}
 
