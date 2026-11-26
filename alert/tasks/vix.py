@@ -1101,6 +1101,16 @@ def run(dry_run=False, once=False, state_path=None, tiers=None,
                  % (len(union_times), expected_n, slots_missing))
 
         # ========== 4) 告警一：盘中 VIX 最大值分档 ==========
+        # 【2026-11-19 合并推送】一次采样可能同时命中多类告警（VIX档位/分位/
+        # MA850/VWAP/期权情绪）。原来每类各发一张私聊卡，同一次采样连发 2-4 条，
+        # 主人反馈刷屏。改为：各段只算+收集，最后统一拼成一张卡推送一次；
+        # state 只在合并卡真正推送成功后由各段回调写回（失败下次采样重试）。
+        outbox = []
+
+        def _queue(key, body, template, image_keys, on_ok):
+            outbox.append({'key': key, 'body': body, 'template': template,
+                           'image_keys': image_keys or [], 'on_ok': on_ok})
+
         sent_tiers = list((state.get('vix_tiers') or {}).get(td, []) or [])
         for k, name, _code in INDEXES:
             mx = max_all.get(k) or {}
@@ -1133,18 +1143,21 @@ def run(dry_run=False, once=False, state_path=None, tiers=None,
         if summary['tier_new']:
             body = _build_tier_message(td, summary['tier_new'], sample_time,
                                        expected_n=expected_n)
-            ok = yva.send_private(ALERT_TITLE, body, dry_run=dry_run,
-                                  template='red')
-            if ok:
-                new_keys = set(sent_tiers)
-                for h in summary['tier_new']:
+            _tier_hits = list(summary['tier_new'])
+            _tier_sent = list(sent_tiers)
+
+            def _ok_tiers(_hits=_tier_hits, _sent=_tier_sent):
+                new_keys = set(_sent)
+                for h in _hits:
                     for t in h['tiers_new']:
                         new_keys.add('%s:%s' % (h['key'], t))
                 state.setdefault('vix_tiers', {})[td] = sorted(new_keys)
-                summary['tier_pushed'] = [h['name'] for h in summary['tier_new']]
+                summary['tier_pushed'] = [h['name'] for h in _hits]
                 summary['pushed'].append('vix_tiers')
                 _log('[alert] 盘中VIX最大值告警已推送：%s'
-                     % [h['name'] + str(h['tiers_new']) for h in summary['tier_new']])
+                     % [h['name'] + str(h['tiers_new']) for h in _hits])
+
+            _queue('vix_tiers', body, 'red', None, _ok_tiers)
 
         # ========== 4b) 告警三：采样链路连续失败（缺失不静默） ==========
         if summary['fail_streak'] >= FAIL_STREAK_ALERT:
@@ -1152,15 +1165,18 @@ def run(dry_run=False, once=False, state_path=None, tiers=None,
             if 'all_fail' not in sent_fail:
                 body = _build_fail_message(td, summary['fail_streak'], sample_time,
                                            slots_missing, expected_n)
-                ok = yva.send_private(ALERT_TITLE, body, dry_run=dry_run,
-                                      template='red')
-                if ok:
+                _fail_sent = list(sent_fail)
+                _fail_streak = summary['fail_streak']
+
+                def _ok_fail(_sent=_fail_sent, _streak=_fail_streak):
                     state.setdefault('fail_alert_sent', {})[td] = \
-                        sorted(set(sent_fail) | {'all_fail'})
+                        sorted(set(_sent) | {'all_fail'})
                     summary['fail_alert'] = True
                     summary['pushed'].append('fail_streak')
                     _log('[alert] 采样链路连续失败告警已推送（连续 %d 个时点全失败）'
-                         % summary['fail_streak'])
+                         % _streak)
+
+                _queue('fail_streak', body, 'red', None, _ok_fail)
 
         # ========== 4c) 告警四：期权情绪盘中极值（PCR 四条 + 偏度两条） ==========
         if skip_opt:
@@ -1207,16 +1223,20 @@ def run(dry_run=False, once=False, state_path=None, tiers=None,
                                  'd': d, 'conds': new_conds})
             if hits:
                 body = _build_option_message(td, hits, sample_time)
-                ok = yva.send_private(ALERT_TITLE, body, dry_run=dry_run,
-                                      template='red')
-                if ok:
-                    for h in hits:
+                _opt_hits = list(hits)
+                _opt_sent = sent_opt
+
+                def _ok_opt(_hits=_opt_hits, _sent=_opt_sent):
+                    for h in _hits:
                         for c in h['conds']:
-                            sent_opt.append('%s:%s' % (h['key'], c[0]))
+                            _sent.append('%s:%s' % (h['key'], c[0]))
                     summary['opt_pushed'] = ['%s:%s' % (h['label'], c[0])
-                                             for h in hits for c in h['conds']]
+                                             for h in _hits for c in h['conds']]
                     summary['pushed'].append('option_alerts')
+                    state.setdefault('option_alerts', {})[td] = sorted(set(_sent))
                     _log('[alert] 期权情绪告警已推送：%s' % summary['opt_pushed'])
+
+                _queue('option_alerts', body, 'red', None, _ok_opt)
             if sent_opt != list((state.get('option_alerts') or {}).get(td, []) or []):
                 state.setdefault('option_alerts', {})[td] = sorted(set(sent_opt))
 
@@ -1237,15 +1257,19 @@ def run(dry_run=False, once=False, state_path=None, tiers=None,
                            'current': (vix_map.get(k) or {}).get('vix')})
         if vp_new:
             body = _build_vix_pct_message(td, vp_new, sample_time)
-            ok = yva.send_private(ALERT_TITLE, body, dry_run=dry_run,
-                                  template='orange')
-            if ok:
-                for h in vp_new:
-                    sent_vp.append('%s:vix_pct_high' % h['key'])
-                state.setdefault('vix_pct_alerts', {})[td] = sorted(set(sent_vp))
-                summary['vix_pct_pushed'] = [h['name'] for h in vp_new]
+            _vp_new = list(vp_new)
+            _vp_sent = list(sent_vp)
+
+            def _ok_vp(_hits=_vp_new, _sent=_vp_sent):
+                for h in _hits:
+                    _sent.append('%s:vix_pct_high' % h['key'])
+                state.setdefault('vix_pct_alerts', {})[td] = sorted(set(_sent))
+                summary['vix_pct_pushed'] = [h['name'] for h in _hits]
                 summary['pushed'].append('vix_pct')
-                _log('[alert] VIX 250日分位告警已推送：%s' % summary['vix_pct_pushed'])
+                _log('[alert] VIX 250日分位告警已推送：%s'
+                     % summary['vix_pct_pushed'])
+
+            _queue('vix_pct', body, 'orange', None, _ok_vp)
 
         # ========== 5) 指数日线 OHLCV（MA850 与 VWAP 带共用一次取数） ==========
         bars = {}
@@ -1292,15 +1316,18 @@ def run(dry_run=False, once=False, state_path=None, tiers=None,
                 })
             if summary['ma_new']:
                 body = _build_ma_message(td, summary['ma_new'], ma_window)
-                ok = yva.send_private(ALERT_TITLE, body, dry_run=dry_run,
-                                      template='orange')
-                if ok:
-                    state.setdefault('ma850_cross', {})[td] = sorted(sent_ma)
+                _ma_new = list(summary['ma_new'])
+                _ma_sent = list(sent_ma)
+
+                def _ok_ma(_hits=_ma_new, _sent=_ma_sent):
+                    state.setdefault('ma850_cross', {})[td] = sorted(_sent)
                     summary['ma_pushed'] = [c['name'] + c['direction']
-                                            for c in summary['ma_new']]
+                                            for c in _hits]
                     summary['pushed'].append('ma850_cross')
                     _log('[alert] MA%d 穿越告警已推送：%s'
                          % (ma_window, summary['ma_pushed']))
+
+                _queue('ma850_cross', body, 'orange', None, _ok_ma)
 
         # ========== 5b) 告警六：VWAP 20 日标准差带穿越（2026-11-09 新增） ==========
         # 与 MA850 互不干扰：独立 state 桶 vwap_bands / vwap_baseline，
@@ -1308,7 +1335,8 @@ def run(dry_run=False, once=False, state_path=None, tiers=None,
         if not skip_vwap:
             try:
                 vres = yva.run_vwap_alerts(bars, td, sample_time, state,
-                                           dry_run=dry_run, log=_log)
+                                           dry_run=dry_run, log=_log,
+                                           defer_push=True)
                 summary['vwap_snapshots'] = vres['snapshots']
                 summary['vwap_hits'] = vres['hits']
                 summary['vwap_new'] = vres['new']
@@ -1317,8 +1345,18 @@ def run(dry_run=False, once=False, state_path=None, tiers=None,
                 summary['vwap_rows_written'] = vres['rows_written']
                 summary['vwap_events_pushed'] = vres['events_pushed']
                 summary['errors'].extend(vres['errors'])
-                if vres['events_pushed']:
-                    summary['pushed'].append('vwap_bands')
+                if vres.get('vwap_body'):
+                    _vwap_sigs = list(vres.get('vwap_all_sigs') or [])
+                    _vwap_events = list(vres.get('events_pushed') or [])
+
+                    def _ok_vwap(_sigs=_vwap_sigs, _events=_vwap_events):
+                        state.setdefault('vwap_bands', {})[td] = sorted(set(_sigs))
+                        summary['vwap_events_pushed'] = _events
+                        summary['pushed'].append('vwap_bands')
+                        _log('[alert] VWAP 标准差带穿越已推送：%s' % _events)
+
+                    _queue('vwap_bands', vres['vwap_body'], 'orange',
+                           vres.get('vwap_image_keys') or [], _ok_vwap)
                 _log('[vwap] 命中=%d 新事件=%d 基线模式=%s 落库=%d'
                      % (len(vres['hits']), len(vres['new']),
                         vres['baseline_only'], vres['rows_written']))
@@ -1326,6 +1364,29 @@ def run(dry_run=False, once=False, state_path=None, tiers=None,
                 summary['errors'].append('VWAP标准差带检测失败: %s: %s'
                                          % (type(e).__name__, e))
                 _log('[error] VWAP 带检测失败：%s: %s' % (type(e).__name__, e))
+
+        # ========== 5c) 合并推送：一次采样只发一张私聊卡（2026-11-19） ==========
+        if outbox:
+            merged_body = '\n\n---\n\n'.join(x['body'] for x in outbox)
+            merged_tmpl = ('red' if any(x['template'] == 'red' for x in outbox)
+                           else 'orange')
+            merged_imgs = [k for x in outbox for k in (x['image_keys'] or [])]
+            _log('[alert] 本次合并推送 %d 类告警：%s'
+                 % (len(outbox), [x['key'] for x in outbox]))
+            ok = yva.send_private(ALERT_TITLE, merged_body, dry_run=dry_run,
+                                  template=merged_tmpl, image_keys=merged_imgs)
+            if ok:
+                for x in outbox:
+                    try:
+                        x['on_ok']()
+                    except Exception as e:  # noqa
+                        summary['errors'].append(
+                            '合并推送后回调失败(%s): %s: %s'
+                            % (x['key'], type(e).__name__, e))
+                        _log('[error] 合并推送回调失败(%s): %s: %s'
+                             % (x['key'], type(e).__name__, e))
+            else:
+                _log('[alert] 合并推送失败：state 不更新，下次采样自动重试')
 
         # ========== 6) 落盘 ==========
         _prune_state(state)

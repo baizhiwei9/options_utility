@@ -939,18 +939,26 @@ def upsert_vwap_intraday(rows, db_path=None):
         conn.close()
 
 
-def run_vwap_alerts(bars, td, sample_time, state, dry_run=False, log=print):
+def run_vwap_alerts(bars, td, sample_time, state, dry_run=False, log=print,
+                    defer_push=False):
     """VWAP 标准差带：算快照 → 落库 → 12 类穿越检测 → 幂等推送。
 
     state 由调用方持有（就地更新，不落盘），与 MA850 / VIX 桶互不干扰。
     首次运行（state 无 vwap_baseline）只建基线不推送，避免部署当日误报。
 
+    defer_push=True（2026-11-19 新增）：只算不推，把卡片正文/配图/待更新签名
+    放回 res，由调用方与其他盘中告警合并成一张卡统一推送，避免同一次采样
+    连发多张私聊卡片。
+
     Returns: dict(snapshots, hits, new, skipped, baseline_only, rows_written,
-                  events_pushed, errors)
+                  events_pushed, errors[, vwap_body/vwap_image_keys/
+                  vwap_new_hits/vwap_pending_sigs/vwap_all_sigs])
     """
     res = {'snapshots': {}, 'hits': [], 'new': [], 'skipped': [],
            'baseline_only': False, 'rows_written': 0,
-           'events_pushed': [], 'chart_images': [], 'errors': []}
+           'events_pushed': [], 'chart_images': [], 'errors': [],
+           'vwap_body': None, 'vwap_image_keys': [], 'vwap_new_hits': [],
+           'vwap_pending_sigs': [], 'vwap_all_sigs': []}
     # dry_run 的副作用边界：
     #   · 落库：跳过（DB 是生产库，不能留测试行）
     #   · state：照常读写 —— 采样脚本 dry_run 用的是独立的 *_dryrun.json，
@@ -1018,14 +1026,27 @@ def run_vwap_alerts(bars, td, sample_time, state, dry_run=False, log=print):
                                                upload=not dry_run, log=log)
         res['chart_images'] = [k[0] if isinstance(k, (tuple, list)) else k
                                for k in image_keys]
-        ok = send_private(ALERT_TITLE, body, dry_run=dry_run,
-                          template='orange', image_keys=image_keys)
-        if ok:
-            state_view.setdefault('vwap_bands', {})[td] = sorted(
-                set(sent) | {_vwap_sig(h) for h in hits})
+        if defer_push:
+            # 合并推送模式：本函数只算不推，卡片正文交回调用方统一发。
+            # state 也不在此更新 —— 由调用方在合并卡真正推送成功后写回，
+            # 避免「推送失败但 state 已记已发」导致当日漏报。
+            res['vwap_body'] = body
+            res['vwap_image_keys'] = image_keys
+            res['vwap_new_hits'] = new
+            res['vwap_pending_sigs'] = sorted({_vwap_sig(h) for h in new})
+            res['vwap_all_sigs'] = sorted({_vwap_sig(h) for h in hits})
             res['events_pushed'] = ['%s/%s/%s' % (h['name'], h['band_label'],
                                                  h['event_label']) for h in new]
-            log('  [alert] VWAP 标准差带穿越已推送：%s' % res['events_pushed'])
+            log('  [vwap] 合并推送模式：%d 条新穿越待并入本次盘中卡' % len(new))
+        else:
+            ok = send_private(ALERT_TITLE, body, dry_run=dry_run,
+                              template='orange', image_keys=image_keys)
+            if ok:
+                state_view.setdefault('vwap_bands', {})[td] = sorted(
+                    set(sent) | {_vwap_sig(h) for h in hits})
+                res['events_pushed'] = ['%s/%s/%s' % (h['name'], h['band_label'],
+                                                     h['event_label']) for h in new]
+                log('  [alert] VWAP 标准差带穿越已推送：%s' % res['events_pushed'])
     return res
 
 
