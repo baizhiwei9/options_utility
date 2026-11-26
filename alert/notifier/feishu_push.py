@@ -343,6 +343,23 @@ def _log_push_failure(detail, content):
         print(f"⚠️  错误日志写入失败: {e}")
 
 
+def _mirror_card_to_case_out(content_json):
+    """把即将发出去的卡片同时写一份 `$CASE_OUT_DIR/card.json`（私有展示页直接转 DOM）。
+
+    两层口径：飞书收到的和网页看到的是同一张卡片，页面不用再猜报告格式。
+    没设 CASE_OUT_DIR（crontab 直跑）就什么都不做；写盘失败也不挡发卡。
+    """
+    d = (os.environ.get("CASE_OUT_DIR") or "").strip()
+    if not d or not content_json:
+        return
+    try:
+        os.makedirs(d, exist_ok=True)
+        with open(os.path.join(d, "card.json"), "w", encoding="utf-8") as f:
+            f.write(content_json)
+    except OSError as e:
+        print(f"[card-mirror] 落盘失败（不影响推送）: {e}")
+
+
 def push_card_to_feishu(card_dict=None, card_json=None, card_file=None,
                         chat_id=None, user_id=None):
     """
@@ -369,6 +386,8 @@ def push_card_to_feishu(card_dict=None, card_json=None, card_file=None,
     else:
         print("❌ 必须提供 card_dict / card_json / card_file 之一")
         return False
+
+    _mirror_card_to_case_out(content)
 
     # lark-cli --msg-type interactive --content 直接传card对象JSON即可
     target = ['--user-id', str(user_id)] if user_id else ['--chat-id', cid]
