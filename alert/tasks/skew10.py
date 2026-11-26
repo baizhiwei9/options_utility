@@ -527,6 +527,15 @@ def main():
         else:
             fired.append(item)
 
+    try:
+        from case_summary import write_summary
+        write_summary('skew10',
+                      {it['key']: (it['latest'] or {}).get('skew10') for it in scanned
+                       if (it['latest'] or {}).get('skew10') is not None},
+                      today)
+    except Exception as _e:
+        print('[skew10] 写汇总 JSON 失败: %s' % _e)
+
     if not fired:
         print(f'\n本次无新增预警（{len(scanned)} 个标的全部正常或今日已发），不发送邮件')
         return []
