@@ -746,6 +746,17 @@ def run_monitor(target_name, use_near_pcr=False, send_email=True,
         return []
     
     latest = macd_data[-1]
+
+    try:
+        from case_summary import write_summary
+        write_summary('pcr_macd',
+                      {target_name: {'pcr': latest['pcr'],
+                                     'histogram': latest['histogram'],
+                                     'dif': latest['dif'],
+                                     'dea': latest['dea']}},
+                      latest['date'])
+    except Exception as _e:
+        print('[pcr_macd] 写汇总 JSON 失败: %s' % _e)
     print(f"\n  最新({latest['date']}):")
     print(f"    PCR = {latest['pcr']:.4f}")
     print(f"    DIF = {latest['dif']:.6f}")

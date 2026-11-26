@@ -232,6 +232,14 @@ def main():
     now_str = now.strftime('%Y-%m-%d %H:%M')
 
     rows, errors = collect()
+
+    try:
+        from case_summary import write_summary
+        write_summary('oi_pcr', {r['target']: r['pcr'] for r in rows
+                                 if r.get('ok') and r.get('pcr') is not None},
+                      date_str)
+    except Exception as _e:
+        print('[oi_pcr] 写汇总 JSON 失败: %s' % _e)
     state, state_path = load_state(date_str)
     state[session]['rows'] = rows
 
