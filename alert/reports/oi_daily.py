@@ -417,6 +417,18 @@ def main():
     basis_ok = sum(1 for d in basis_data.values() if 'error' not in d)
     basis_total = len(basis_data)
     print(f"[INFO] 基差数据：{basis_ok}/{basis_total} 个品种成功")
+
+    # 基差数值另落一份汇总：oi_abnormal.json 只有期权持仓、没有基差，
+    # 展示页（stock-dashboard）靠这份文件搬 opt.oi.basis_abs.* 指标。
+    if basis_ok:
+        try:
+            from case_summary import write_summary
+            write_summary('oi_basis',
+                          {code: d['basis_abs'] for code, d in basis_data.items()
+                           if 'error' not in d and d.get('basis_abs') is not None},
+                          TRADE_DATE)
+        except Exception as _e:
+            print(f"[WARN] 基差汇总 JSON 落盘失败: {_e}")
     
     # 全失败检查：所有标的都有error → 静默跳过
     oi_error_count = sum(1 for r in results.values() if 'error' in r)
