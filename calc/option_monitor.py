@@ -33,7 +33,33 @@ ts.set_token(TS_TOKEN)
 # 2026-11-17 改造：pro 统一由 data_hub 托管（代理/限频/熔断/IP轮动复用），
 # 保留模块级变量名 pro 供旧调用方 `from option_monitor import pro` 兼容。
 from hub_option_api import get_pro  # noqa: E402
-pro = get_pro()
+
+
+class _LazyPro:
+    """data_hub 托管的 tushare pro 惰性代理。
+
+    2026-11-28：原写法 ``pro = get_pro()`` 在 import 期就去解析 data_hub，
+    公开库在没装私有库 data_hub 的环境里 ``import calc.option_monitor`` 直接
+    ModuleNotFoundError（连带 calc.rnd / calc.risk_layer / calc.iv_term 一起挂）。
+    改成首次真正取数时才解析：import 期零私有依赖，用法 ``pro.query(...)`` 与
+    ``from calc.option_monitor import pro`` 都不变；缺 data_hub 时只在调用处报错。
+    """
+
+    __slots__ = ("_obj",)
+
+    def __init__(self):
+        self._obj = None
+
+    def _resolve(self):
+        if self._obj is None:
+            self._obj = get_pro()
+        return self._obj
+
+    def __getattr__(self, name):
+        return getattr(self._resolve(), name)
+
+
+pro = _LazyPro()
 
 API_SLEEP = 0.15  # API请求间隔(秒)
 
