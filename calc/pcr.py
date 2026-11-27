@@ -740,6 +740,76 @@ def _compute_pcr_from_akshare_summary(date_compact):
 
 
 # ================================================================
+# 数据注入：调用方直接传期权链 DataFrame（零网络、不依赖 DataHub）
+# ================================================================
+def pcr_from_df(df, nearest_month_only=True, min_dte_days=3,
+                trade_date=None, vol_col=None, oi_col=None):
+    """从期权链 DataFrame 算 PCR（成交量 / 持仓量），不取数。
+
+    列名认 tushare/DataHub 风格（call_put / exercise_price / maturity_date / vol / oi）
+    或通用风格（option_type / strike / expiry / volume / oi），见 calc/dfinput.py。
+
+    Args:
+        df: 期权链 DataFrame。
+        nearest_month_only: True 时只用最近到期月（滤掉临到期，dte < min_dte_days）。
+        min_dte_days: 最近月的最小剩余天数；不足 4 条合约时退到 min_dte_days-1。
+        trade_date: YYYYMMDD，用来算 dte；缺省按当天。
+        vol_col / oi_col: 显式指定列名（给定时不再走别名匹配）。
+
+    Returns:
+        dict: {'vol_pcr', 'oi_pcr', 'expiry', 'n_contracts', 'trade_date'}
+              数据不足返回 None。
+    """
+    try:
+        from .dfinput import standardize_chain_df
+    except ImportError:                      # 以脚本 / 顶层模块方式运行
+        from dfinput import standardize_chain_df
+
+    import datetime as _dt
+
+    std = standardize_chain_df(df)
+    if std.empty:
+        return None
+
+    if vol_col and vol_col in df.columns:
+        std["volume"] = df[vol_col].values
+    if oi_col and oi_col in df.columns:
+        std["oi"] = df[oi_col].values
+
+    ref = _dt.datetime.strptime(trade_date, "%Y%m%d").date() if trade_date else _dt.date.today()
+    std["_dte"] = [
+        max((_dt.datetime.strptime(e, "%Y%m%d").date() - ref).days, 0) for e in std["expiry"]
+    ]
+
+    expiry_used = None
+    if nearest_month_only:
+        pool = std[std["_dte"] >= min_dte_days]
+        if len(pool) < 4:
+            pool = std[std["_dte"] >= max(min_dte_days - 1, 0)]
+        if len(pool) >= 4:
+            expiry_used = pool["_dte"].min()
+            pool = pool[pool["_dte"] == expiry_used]
+            std = pool
+
+    calls = std[std["opt_type"] == "C"]
+    puts = std[std["opt_type"] == "P"]
+
+    out = {"expiry": None if expiry_used is None
+           else std.loc[std["_dte"] == expiry_used, "expiry"].iloc[0],
+           "n_contracts": int(len(std)),
+           "trade_date": ref.strftime("%Y%m%d")}
+
+    call_vol, put_vol = float(calls["volume"].sum(skipna=True)), float(puts["volume"].sum(skipna=True))
+    if call_vol > 0:
+        out["vol_pcr"] = round(put_vol / call_vol, 4)
+    call_oi, put_oi = float(calls["oi"].sum(skipna=True)), float(puts["oi"].sum(skipna=True))
+    if call_oi > 0:
+        out["oi_pcr"] = round(put_oi / call_oi, 4)
+
+    return out if ("vol_pcr" in out or "oi_pcr" in out) else None
+
+
+# ================================================================
 # 公开接口
 # ================================================================
 def get_index_pcr(index_name, trading_date, smooth_days=5, min_days=3,

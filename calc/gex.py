@@ -502,6 +502,54 @@ def calc_gex_full(chain_data: dict, spot_price: float, multiplier: int,
     return result
 
 
+def gex_from_df(df, spot, multiplier=10000, symbol="", r=0.025, trade_date=None):
+    """DataFrame 版 GEX —— 数据由调用方给，本函数不取数、不依赖 DataHub。
+
+    Args:
+        df: 期权链 DataFrame，列名认 tushare/DataHub 风格或通用风格
+            （见 calc/dfinput.py）；必需列：认购认沽、行权价、到期日、价格。
+        spot: 标的现价（调用方给，取数归 DataHub）。
+        multiplier: 合约乘数（300ETF 等 10000）。
+        symbol: 品种代码，仅用于结果标注。
+        r: 无风险利率。
+        trade_date: YYYYMMDD，缺省按当天算 T。
+
+    Returns:
+        dict: 与 calc_gex_full 完全一致（含 gex_per_strike 逐行权价曲线）。
+
+    例::
+
+        from calc.gex import gex_from_df
+        out = gex_from_df(chain_df, spot=4.52, symbol="510300")
+    """
+    try:
+        from .dfinput import standardize_chain_df
+    except ImportError:                      # 以脚本 / 顶层模块方式运行
+        from dfinput import standardize_chain_df
+
+    std = standardize_chain_df(df)
+    if std.empty:
+        return _empty_result(symbol, spot, "期权链 DataFrame 为空或列名不匹配")
+
+    contracts = []
+    for row in std.itertuples(index=False):
+        contracts.append({
+            "maturity_date": row.expiry,
+            "option_type": row.opt_type,
+            "strike": float(row.strike),
+            "close": 0.0 if row.price != row.price else float(row.price),
+            "volume": 0 if row.volume != row.volume else int(row.volume),
+            "oi": 0 if row.oi != row.oi else int(row.oi),
+            "ts_code": "" if row.contract != row.contract else str(row.contract),
+        })
+
+    chain_data = contracts_to_chain(contracts)
+    if not chain_data:
+        return _empty_result(symbol, spot, "期权链 DataFrame 无有效到期月/合约")
+    return calc_gex_full(chain_data, spot, multiplier, symbol,
+                         r=r, trade_date=trade_date)
+
+
 def _empty_result(symbol: str, spot: float, reason: str) -> dict:
     return {
         "symbol": symbol,
