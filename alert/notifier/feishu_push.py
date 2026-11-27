@@ -46,7 +46,13 @@ if not os.environ.get('LARKSUITE_CLI_LOG_DIR'):
 del _k
 # =========================================================================
 
-CHAT_ID = FEISHU_CHAT_ID
+# 按应用初始化（apps.options-utility）：群 chat_id 以应用绑定为准，取不到再用本仓库凭据
+try:
+    import notify_init as _notify_init
+    _notify_init.init()
+    CHAT_ID = _notify_init.chat_id(FEISHU_CHAT_ID)
+except Exception:
+    CHAT_ID = FEISHU_CHAT_ID
 MAX_LEN = 4000  # 飞书单条消息字符上限
 CARD_MD_MAX = 2800  # 飞书卡片单个Markdown元素字符上限（留buffer）
 

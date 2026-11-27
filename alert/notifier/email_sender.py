@@ -140,6 +140,16 @@ def _log(record):
         pass
 
 
+def _app_subject(subject):
+    """按应用口径取邮件标题（部署配置 apps.options-utility.subject_prefix）；没配则原样。"""
+    try:
+        import notify_init
+        notify_init.init()
+        return notify_init.subject(subject)
+    except Exception:
+        return subject
+
+
 def send_email(
     subject,
     html=None,
@@ -178,7 +188,7 @@ def send_email(
         cfg.update(config)
 
     source = source or _caller_source()
-    final_subject = build_subject(subject, source)
+    final_subject = build_subject(_app_subject(subject), source)
     final_from_name = build_from_name(from_name, source)
 
     # 收件人归一化
