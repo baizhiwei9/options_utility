@@ -17,5 +17,4 @@ include = ["alert*", "calc*", "config*"]
 namespaces = false
 
 [tool.setuptools]
-py-modules = ["cli", "deriv_src", "deriv_v2", "hub_option_api", "option_pcr",
-              "sync_pull", "topbottom_src", "topbottom_v2"]
+py-modules = ["cli", "hub_option_api", "option_pcr", "sync_pull"]

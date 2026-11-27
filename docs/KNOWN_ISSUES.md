@@ -189,9 +189,9 @@ FUSE 云盘上 sqlite `commit()` 返回成功但数据不落盘。
 | `oi_volume.py` | `OI_VOLUME_RULES` |
 | `oi_intraday.py` | `OI_INTRADAY_RULES` |
 | `vix_alerts.py` | `VIX_ALERT_RULES` |
-| `bottom_redline.py` | `BOTTOM_REDLINE_RULES` |
-| `topbottom.py` | 未声明 |
-| `derivative_sentiment.py` | 未声明 |
+| `bottom_redline.py`（已迁 precious-task） | `BOTTOM_REDLINE_RULES`（规则仍在本库） |
+| `topbottom.py`（已迁 precious-task） | 未声明 |
+| `derivative_sentiment.py`（已迁 precious-task） | 未声明 |
 | `oi_realtime.py` | 未声明 |
 | `vix.py` | 采集任务，无判定 |
 
