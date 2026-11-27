@@ -41,9 +41,8 @@ COMMANDS = {
     'oi-realtime':     ('oi_realtime', '实时持仓', 'A股报警'),
     'vix':             ('vix', '自算 VIX 采集', 'A股采集'),
     'vix-alerts':      ('vix_alerts', 'VIX 恐慌线 / MA850 穿越', 'A股报警'),
-    'bottom':          ('bottom_redline', '底部 12 条红线', 'A股报警'),
-    'topbottom':       ('topbottom', '顶底监控', 'A股报警'),
-    'derivative':      ('derivative_sentiment', '衍生品情绪', 'A股报警'),
+    # 2026-11-28：bottom / topbottom / derivative 三个子命令已随杨康平顶底策略
+    # 迁到 precious-task/standalone/topbottom_v2/（策略私有，期权算法才归本库）。
     # ---------- A 股计算/日报 ----------
     'risk-layer':      ('risk_layer', '五轨期权风险速览（含红黄灯）', 'A股计算'),
     'gex':             ('gex', 'GEX 与 Gamma Flip', 'A股计算'),
