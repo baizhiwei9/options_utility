@@ -28,7 +28,7 @@ import os
 def _load_private():
     """尝试加载同目录的 private.py；不存在时静默返回 None。"""
     try:
-        import private as _p  # noqa: F401  （config/ 由 bootstrap 注入 sys.path）
+        from config import private as _p  # noqa: F401  （本地私有配置，不入库）
         return _p
     except Exception:
         return None

@@ -21,7 +21,6 @@ SCRIPTS = '/Coze/Drive/蓁宝/所有对话/主对话/市场情绪监控/scripts'
 DB_CLOUD = '/Coze/Drive/蓁宝/所有对话/主对话/市场情绪监控/data/options_cache/style_drift.db'
 DB_LOCAL = '/tmp/_style_drift_full.db'
 
-sys.path.insert(0, SCRIPTS)
 
 
 class DBWrap:

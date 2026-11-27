@@ -53,8 +53,6 @@ try:
         _alt = '/opt/coze/.fuse_drive/dataHub_三级体系'
         if os.path.isdir(_alt):
             _DH_ROOT = _alt
-    if _DH_ROOT not in sys.path:
-        sys.path.insert(0, _DH_ROOT)
     from data_hub.core.option_metrics import calc_pcr_from_df as _calc_pcr_from_df
 except Exception as _e:  # noqa
     _calc_pcr_from_df = None
@@ -764,8 +762,6 @@ def get_zz1000_main_pcr(trading_date_compact, smooth_days=5, min_days=3):
     if not dh:
         print("    ❌ 中证1000(MO主力): data_hub 路径不可用")
         return None
-    if dh not in sys.path:
-        sys.path.insert(0, dh)
     try:
         from data_hub.collectors import option_intraday as _oi
         from data_hub.collectors.stock_daily import get_trade_dates

@@ -22,22 +22,6 @@ GEX (Gamma Exposure) 监控脚本
   - 飞书交互式卡片推送
 """
 
-# ==================== options 项目路径引导（自动生成，勿手改） ====================
-# 向上查找项目根（同时含 calc/ 与 alert/ 的目录），把 calc、calc/db、alert/notifier
-# 及 data_hub 所在上层目录注入 sys.path，保证任意脚本都能 python3 直接运行，
-# 不依赖 crontab 里手工设置的 PYTHONPATH。
-import os as _opt_os, sys as _opt_sys
-_p = _opt_os.path.dirname(_opt_os.path.abspath(__file__))
-while _p != _opt_os.path.dirname(_p) and not (
-        _opt_os.path.isdir(_opt_os.path.join(_p, 'calc')) and _opt_os.path.isdir(_opt_os.path.join(_p, 'alert'))):
-    _p = _opt_os.path.dirname(_p)
-_OPT_ROOT = _p
-for _sub in (_OPT_ROOT, _opt_os.path.join(_OPT_ROOT, 'calc'), _opt_os.path.join(_OPT_ROOT, 'calc', 'db'),
-             _opt_os.path.join(_OPT_ROOT, 'config'), _opt_os.path.join(_OPT_ROOT, 'alert', 'notifier'), _opt_os.path.dirname(_OPT_ROOT)):
-    if _sub not in _opt_sys.path:
-        _opt_sys.path.insert(0, _sub)
-# ==================================================================================
-
 
 import os
 import sys
@@ -52,16 +36,15 @@ PROJECT_DIR = os.path.dirname(SCRIPT_DIR)
 OUTPUT_DIR = os.path.join(PROJECT_DIR, 'outputs')
 os.makedirs(OUTPUT_DIR, exist_ok=True)
 
-sys.path.insert(0, SCRIPT_DIR)
-import fetch as data_fetcher
-from fetch_eastmoney import get_spot_price
+import calc.fetch as data_fetcher
+from calc.fetch_eastmoney import get_spot_price
 from alert.trigger import trigger  # noqa: E402
 
 # 乘数配置：唯一事实来源在 calc/multipliers.py（与TARGET_CONFIG一致）
 try:
     from .multipliers import MULTIPLIER_MAP
 except ImportError:  # 以脚本 / 顶层模块方式运行（calc 已在 sys.path）
-    from multipliers import MULTIPLIER_MAP
+    from calc.multipliers import MULTIPLIER_MAP
 
 # 标的名称与新浪现货代码的映射
 SPOT_CODE_MAP = {
@@ -81,11 +64,9 @@ RISK_FREE_RATE = 0.025
 # 飞书推送
 _HERE = os.path.dirname(os.path.abspath(__file__))
 _NOTIFIER = os.path.join(os.path.dirname(_HERE), 'alert', 'notifier')
-if _NOTIFIER not in sys.path:
-    sys.path.insert(0, _NOTIFIER)
 try:
-    from feishu_card_utils import build_card_header, build_data_table, build_hr, build_note, build_markdown
-    from feishu_push import push_card_to_feishu
+    from alert.notifier.feishu_card_utils import build_card_header, build_data_table, build_hr, build_note, build_markdown
+    from alert.notifier.feishu_push import push_card_to_feishu
     FEISHU_AVAILABLE = True
 except Exception as e:
     FEISHU_AVAILABLE = False

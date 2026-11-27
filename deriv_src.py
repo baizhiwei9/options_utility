@@ -51,9 +51,7 @@ try:
     while _q_cd != _q_os.path.dirname(_q_cd) and not _q_os.path.isdir(_q_os.path.join(_q_cd, 'config')):
         _q_cd = _q_os.path.dirname(_q_cd)
     _q_cfg = _q_os.path.join(_q_cd, 'config')
-    if _q_cfg not in _q_sys.path:
-        _q_sys.path.insert(0, _q_cfg)
-    from credentials import QQ_EMAIL_AUTH_CODE
+    from config.credentials import QQ_EMAIL_AUTH_CODE
 except Exception:  # noqa: BLE001
     QQ_EMAIL_AUTH_CODE = os.environ.get('QQ_EMAIL_AUTH_CODE', '')
 import sys
@@ -95,9 +93,6 @@ FEISHU_PUSH_PATH = "/Coze/Drive/蓁宝/所有对话/主对话/feishu_push.py"
 BOTTOM_MONITOR_PATH = "/Coze/Drive/中期风险偏好/codeact/scripts/market_bottom_monitor.py"
 
 # 添加复用路径
-for p in [OPTION_MONITOR_DIR, os.path.dirname(FEISHU_PUSH_PATH), os.path.dirname(BOTTOM_MONITOR_PATH)]:
-    if p not in sys.path:
-        sys.path.insert(0, p)
 
 # ============================================================
 # 导入复用模块
@@ -173,7 +168,7 @@ except Exception:
 
 # 飞书群ID（2026-11-17 安全改造：从 config/credentials.py 取，优先级 环境变量 > private.py）
 try:
-    from credentials import FEISHU_CHAT_ID  # noqa: F401
+    from config.credentials import FEISHU_CHAT_ID  # noqa: F401
 except Exception:  # noqa: BLE001
     FEISHU_CHAT_ID = os.environ.get('FEISHU_CHAT_ID', '')
 

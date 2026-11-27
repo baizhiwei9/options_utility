@@ -21,18 +21,13 @@ while _p != _opt_os.path.dirname(_p) and not (
         _opt_os.path.isdir(_opt_os.path.join(_p, 'calc')) and _opt_os.path.isdir(_opt_os.path.join(_p, 'alert'))):
     _p = _opt_os.path.dirname(_p)
 _OPT_ROOT = _p
-for _sub in (_OPT_ROOT, _opt_os.path.join(_OPT_ROOT, 'calc'), _opt_os.path.join(_OPT_ROOT, 'calc', 'db'),
-             _opt_os.path.join(_OPT_ROOT, 'config'), _opt_os.path.join(_OPT_ROOT, 'alert', 'notifier'),
-             _opt_os.path.dirname(_OPT_ROOT)):
-    if _sub not in _opt_sys.path:
-        _opt_sys.path.insert(0, _sub)
 # ==================================================================================
 
 import datetime
 import sys
 
-import opt_store as _store  # noqa: E402
-from basis import BASIS_TARGETS, get_basis_daily, update_basis_history  # noqa: E402
+import config.opt_store as _store
+from calc.basis import BASIS_TARGETS, get_basis_daily, update_basis_history  # noqa: E402
 
 # 股指三个品种：IF 沪深300、IC 中证500、IM 中证1000（上证50 已剔除）
 DEFAULT_TARGETS = ['IF', 'IC', 'IM']

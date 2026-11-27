@@ -59,12 +59,12 @@ import argparse
 import datetime
 import glob
 import os
+_OPT_ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 import shutil
 import sqlite3
 import sys
 
 # ==================== 数据目录解析（与 calc/db/*.py 同一套优先级） ====================
-_OPT_ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 _LEGACY_CANDIDATES = (
     os.environ.get('OPTIONS_LEGACY_DATA_DIR') or '/Coze/Drive/期权风险监控/outputs',

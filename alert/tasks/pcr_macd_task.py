@@ -27,42 +27,15 @@
 MACD参数（默认10,15,9，可改）:
   fast=10, slow=15, signal=9
 """
+from config.credentials import (TS_TOKEN, FEISHU_CHAT_ID, FEISHU_PRIVATE_USER_ID, EMAIL_FROM_ADDR, EMAIL_FROM_PASS, EMAIL_TO_ADDR, AGENT_EMAIL)
 
-# ==================== options 项目路径引导（自动生成，勿手改） ====================
-# 向上查找项目根（同时含 calc/ 与 alert/ 的目录），把 calc、calc/db、alert/notifier
-# 及 data_hub 所在上层目录注入 sys.path，保证任意脚本都能 python3 直接运行，
-# 不依赖 crontab 里手工设置的 PYTHONPATH。
-# ==================== 凭证引导（自动生成，勿手改） ====================
-# 敏感信息统一放 config/private.py（.gitignore 排除）或同名环境变量，
-# 仓库里只保留 config/private.example.py 模板。取值逻辑见 config/credentials.py。
-import os as _cred_os, sys as _cred_sys
-_cd = _cred_os.path.dirname(_cred_os.path.abspath(__file__))
-while _cd != _cred_os.path.dirname(_cd) and not _cred_os.path.isdir(_cred_os.path.join(_cd, 'config')):
-    _cd = _cred_os.path.dirname(_cd)
-_cred_cfg = _cred_os.path.join(_cd, 'config')
-if _cred_cfg not in _cred_sys.path:
-    _cred_sys.path.insert(0, _cred_cfg)
-from credentials import (TS_TOKEN, FEISHU_CHAT_ID, FEISHU_PRIVATE_USER_ID,
-                         EMAIL_FROM_ADDR, EMAIL_FROM_PASS, EMAIL_TO_ADDR, AGENT_EMAIL)
-# =======================================================================
-import os as _opt_os, sys as _opt_sys
-_p = _opt_os.path.dirname(_opt_os.path.abspath(__file__))
-while _p != _opt_os.path.dirname(_p) and not (
-        _opt_os.path.isdir(_opt_os.path.join(_p, 'calc')) and _opt_os.path.isdir(_opt_os.path.join(_p, 'alert'))):
-    _p = _opt_os.path.dirname(_p)
-_OPT_ROOT = _p
-for _sub in (_OPT_ROOT, _opt_os.path.join(_OPT_ROOT, 'calc'), _opt_os.path.join(_OPT_ROOT, 'calc', 'db'),
-             _opt_os.path.join(_OPT_ROOT, 'config'), _opt_os.path.join(_OPT_ROOT, 'alert', 'notifier'), _opt_os.path.dirname(_OPT_ROOT)):
-    if _sub not in _opt_sys.path:
-        _opt_sys.path.insert(0, _sub)
-# ==================================================================================
 
 
 import os
 import sys
 import json
 import argparse
-import opt_store as _store  # 统一存储层：历史数据落 data/options.db
+import config.opt_store as _store
 import datetime as dt_module
 from datetime import datetime, timedelta
 from collections import defaultdict
@@ -73,11 +46,9 @@ OUTPUT_DIR = os.path.join(PROJECT_DIR, 'outputs')
 PCR_HISTORY_DIR = os.path.join(OUTPUT_DIR, 'pcr_history')
 os.makedirs(PCR_HISTORY_DIR, exist_ok=True)
 
-sys.path.insert(0, SCRIPT_DIR)
 
 # 统一邮件出口（标题自动带「｜扣子·来源」后缀）
-sys.path.insert(0, os.path.dirname(_OPT_ROOT))  # 原硬编码主对话目录，改为按项目根推导
-from email_sender import send_email  # noqa: E402
+from alert.notifier.email_sender import send_email  # noqa: E402
 from alert.trigger import trigger  # noqa: E402
 
 # 判定内核统一走 alert 引擎：MACD 六类信号的阈值/级别/口径文案全部来自
@@ -94,7 +65,7 @@ MACD_SIGNAL = 5
 
 # ========== 标的配置（统一真源：scripts/targets_config.py）==========
 # 标的清单/走势映射/展示名一律从 targets_config 引入，禁止在此重复定义
-from targets import (  # noqa: E402
+from config.targets import (  # noqa: E402
     TARGET_CONFIG, UNDERLYING_MAP, DISPLAY_NAME, MONITOR_TARGETS, targets_csv,
 )
 
@@ -289,7 +260,7 @@ def get_daily_pcr_from_tushare(target_name, trade_date):
         return None
     
     try:
-        from option_monitor import pro, API_SLEEP
+        from calc.option_monitor import pro, API_SLEEP
         import time
         time.sleep(API_SLEEP)
         
@@ -351,7 +322,7 @@ def backfill_pcr_history(target_name, n_days=200):
     print(f"{'='*60}")
     
     try:
-        from option_monitor import pro, API_SLEEP
+        from calc.option_monitor import pro, API_SLEEP
         import time
         
         # 获取交易日列表
@@ -748,7 +719,7 @@ def run_monitor(target_name, use_near_pcr=False, send_email=True,
     latest = macd_data[-1]
 
     try:
-        from case_summary import write_summary
+        from alert.notifier.case_summary import write_summary
         write_summary('pcr_macd',
                       {target_name: {'pcr': latest['pcr'],
                                      'histogram': latest['histogram'],
@@ -929,7 +900,7 @@ def _fetch_underlying_price(target_name, start_date, end_date):
     ts_code, kind, label = meta
 
     try:
-        from option_monitor import pro, API_SLEEP
+        from calc.option_monitor import pro, API_SLEEP
         import time
         time.sleep(API_SLEEP)
 

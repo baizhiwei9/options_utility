@@ -35,38 +35,12 @@
 幂等：state 文件按 (交易日, 信号) 去重；进程间用 fcntl 文件锁串行化，
       两个脚本同一时刻运行也只会推一次。
 """
+from config.credentials import (TS_TOKEN, FEISHU_CHAT_ID, FEISHU_PRIVATE_USER_ID, EMAIL_FROM_ADDR, EMAIL_FROM_PASS, EMAIL_TO_ADDR, AGENT_EMAIL)
 
-# ==================== options 项目路径引导（自动生成，勿手改） ====================
-# 向上查找项目根（同时含 calc/ 与 alert/ 的目录），把 calc、calc/db、alert/notifier
-# 及 data_hub 所在上层目录注入 sys.path，保证任意脚本都能 python3 直接运行，
-# 不依赖 crontab 里手工设置的 PYTHONPATH。
-# ==================== 凭证引导（自动生成，勿手改） ====================
-# 敏感信息统一放 config/private.py（.gitignore 排除）或同名环境变量，
-# 仓库里只保留 config/private.example.py 模板。取值逻辑见 config/credentials.py。
-import os as _cred_os, sys as _cred_sys
-_cd = _cred_os.path.dirname(_cred_os.path.abspath(__file__))
-while _cd != _cred_os.path.dirname(_cd) and not _cred_os.path.isdir(_cred_os.path.join(_cd, 'config')):
-    _cd = _cred_os.path.dirname(_cd)
-_cred_cfg = _cred_os.path.join(_cd, 'config')
-if _cred_cfg not in _cred_sys.path:
-    _cred_sys.path.insert(0, _cred_cfg)
-from credentials import (TS_TOKEN, FEISHU_CHAT_ID, FEISHU_PRIVATE_USER_ID,
-                         EMAIL_FROM_ADDR, EMAIL_FROM_PASS, EMAIL_TO_ADDR, AGENT_EMAIL)
-# =======================================================================
-import os as _opt_os, sys as _opt_sys
-_p = _opt_os.path.dirname(_opt_os.path.abspath(__file__))
-while _p != _opt_os.path.dirname(_p) and not (
-        _opt_os.path.isdir(_opt_os.path.join(_p, 'calc')) and _opt_os.path.isdir(_opt_os.path.join(_p, 'alert'))):
-    _p = _opt_os.path.dirname(_p)
-_OPT_ROOT = _p
-for _sub in (_OPT_ROOT, _opt_os.path.join(_OPT_ROOT, 'calc'), _opt_os.path.join(_OPT_ROOT, 'calc', 'db'),
-             _opt_os.path.join(_OPT_ROOT, 'config'), _opt_os.path.join(_OPT_ROOT, 'alert', 'notifier'), _opt_os.path.dirname(_OPT_ROOT)):
-    if _sub not in _opt_sys.path:
-        _opt_sys.path.insert(0, _sub)
-# ==================================================================================
 
 
 import os
+_OPT_ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 import re
 import sys
 import json
@@ -76,6 +50,7 @@ from alert.rules import VIX_ALERT_RULES  # noqa: E402
 import fcntl
 import subprocess
 from datetime import datetime, timedelta
+
 
 # ============================================================
 # 路径与常量
@@ -94,9 +69,7 @@ LEGACY_STATE_PATH = os.path.join(OUTPUT_DIR, 'yangkangping_vix_alerts_state.json
 # dry-run 独立 state（与 A 的 dryrun 文件一致，便于 A/B 去重联测）。
 DRYRUN_STATE_PATH = os.path.join(OUTPUT_DIR, 'vix_intraday_sampler_state_dryrun.json')
 
-DATAHUB_SCRIPTS_DIR = _opt_os.path.dirname(_OPT_ROOT)  # data_hub 数据获取层所在根目录
-if DATAHUB_SCRIPTS_DIR not in sys.path:
-    sys.path.insert(0, DATAHUB_SCRIPTS_DIR)
+DATAHUB_SCRIPTS_DIR = os.path.dirname(_OPT_ROOT)  # data_hub 数据获取层所在根目录
 
 # ---- lark-cli 配置引导（crontab 环境不会继承会话环境变量）----
 # 2026-10-23：crontab 直接调度时环境里没有 LARKSUITE_CLI_* 变量，lark-cli 会返回

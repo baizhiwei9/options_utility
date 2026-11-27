@@ -11,22 +11,6 @@
 GEX 绝对值（local_gex_yi / flip_price / walls）也落库，供回溯，但报告只给关键值。
 """
 
-# ==================== options 项目路径引导（自动生成，勿手改） ====================
-# 向上查找项目根（同时含 calc/ 与 alert/ 的目录），把 calc、calc/db、alert/notifier
-# 及 data_hub 所在上层目录注入 sys.path，保证任意脚本都能 python3 直接运行，
-# 不依赖 crontab 里手工设置的 PYTHONPATH。
-import os as _opt_os, sys as _opt_sys
-_p = _opt_os.path.dirname(_opt_os.path.abspath(__file__))
-while _p != _opt_os.path.dirname(_p) and not (
-        _opt_os.path.isdir(_opt_os.path.join(_p, 'calc')) and _opt_os.path.isdir(_opt_os.path.join(_p, 'alert'))):
-    _p = _opt_os.path.dirname(_p)
-_OPT_ROOT = _p
-for _sub in (_OPT_ROOT, _opt_os.path.join(_OPT_ROOT, 'calc'), _opt_os.path.join(_OPT_ROOT, 'calc', 'db'),
-             _opt_os.path.join(_OPT_ROOT, 'config'), _opt_os.path.join(_OPT_ROOT, 'alert', 'notifier'), _opt_os.path.dirname(_OPT_ROOT)):
-    if _sub not in _opt_sys.path:
-        _opt_sys.path.insert(0, _sub)
-# ==================================================================================
-
 import os
 import csv
 import shutil
@@ -99,8 +83,6 @@ try:
 except Exception:                                     # noqa: BLE001
     try:
         import sys as _sys
-        _sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.dirname(
-            os.path.dirname(os.path.abspath(__file__))))))
         from data_hub.core import lock as _db_lock
     except Exception:                                 # noqa: BLE001
         _db_lock = None

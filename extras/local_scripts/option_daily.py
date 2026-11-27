@@ -32,7 +32,6 @@ _orig = socket.getaddrinfo
 socket.getaddrinfo = lambda *a, **k: [r for r in _orig(*a, **k) if r[0] == socket.AF_INET]
 
 WS = '/root/.openclaw/workspace'
-sys.path.insert(0, os.path.join(WS, 'bin'))
 
 # ═══════════════════════════════════════════════════════════════════════
 # 统一期权库（2026-11-10 大佬要求：本地期权一律用 optstack/options_utility）
@@ -42,11 +41,6 @@ sys.path.insert(0, os.path.join(WS, 'bin'))
 _OPTLIB = os.path.join(WS, 'optstack', 'options_utility')
 _OPTLIB_OK = False
 if os.path.isdir(_OPTLIB):
-    for _p in (_OPTLIB, os.path.join(_OPTLIB, 'calc'),
-               os.path.join(_OPTLIB, 'calc', 'cn'),
-               os.path.join(_OPTLIB, 'config')):
-        if _p not in sys.path:
-            sys.path.insert(0, _p)
     try:
         from calc.cn.wing_danger import (          # noqa: E402
             wing_stats as _lib_wing_stats,

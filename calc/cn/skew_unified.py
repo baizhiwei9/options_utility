@@ -55,12 +55,6 @@ while _p != os.path.dirname(_p) and not (
         os.path.isdir(os.path.join(_p, 'calc')) and os.path.isdir(os.path.join(_p, 'alert'))):
     _p = os.path.dirname(_p)
 _OPT_ROOT = _p
-for _sub in (_OPT_ROOT,
-             os.path.join(_OPT_ROOT, 'calc'),
-             os.path.join(_OPT_ROOT, 'calc', 'db'),
-             os.path.dirname(_OPT_ROOT)):
-    if _sub not in sys.path:
-        sys.path.insert(0, _sub)
 # ==================================================================================
 
 __all__ = ['skew_25d', 'to_option_contracts', 'SKEW_UNIFIED_VERSION']

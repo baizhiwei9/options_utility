@@ -17,29 +17,13 @@
   python3 oi_pcr_alert.py --dry-run  # 只打印不推送（测试用）
 """
 
-# ==================== options 项目路径引导（自动生成，勿手改） ====================
-# 向上查找项目根（同时含 calc/ 与 alert/ 的目录），把 calc、calc/db、alert/notifier
-# 及 data_hub 所在上层目录注入 sys.path，保证任意脚本都能 python3 直接运行，
-# 不依赖 crontab 里手工设置的 PYTHONPATH。
-import os as _opt_os, sys as _opt_sys
-_p = _opt_os.path.dirname(_opt_os.path.abspath(__file__))
-while _p != _opt_os.path.dirname(_p) and not (
-        _opt_os.path.isdir(_opt_os.path.join(_p, 'calc')) and _opt_os.path.isdir(_opt_os.path.join(_p, 'alert'))):
-    _p = _opt_os.path.dirname(_p)
-_OPT_ROOT = _p
-for _sub in (_OPT_ROOT, _opt_os.path.join(_OPT_ROOT, 'calc'), _opt_os.path.join(_OPT_ROOT, 'calc', 'db'),
-             _opt_os.path.join(_OPT_ROOT, 'config'), _opt_os.path.join(_OPT_ROOT, 'alert', 'notifier'), _opt_os.path.dirname(_OPT_ROOT)):
-    if _sub not in _opt_sys.path:
-        _opt_sys.path.insert(0, _sub)
-# ==================================================================================
-
 
 import os
 import sys
 import json
 import datetime
 import argparse
-import opt_store as _store  # 统一存储层：历史数据落 data/options.db
+import config.opt_store as _store
 
 SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
 PROJECT_DIR = os.path.dirname(SCRIPT_DIR)
@@ -47,21 +31,20 @@ OUTPUT_DIR = os.path.join(PROJECT_DIR, 'outputs')
 SNAPSHOT_DIR = os.path.join(OUTPUT_DIR, 'oi_pcr_alert')
 os.makedirs(SNAPSHOT_DIR, exist_ok=True)
 
-sys.path.insert(0, SCRIPT_DIR)
-from fetch import get_option_chain  # noqa: E402
-from trading_day import check_trading_day  # noqa: E402
+from calc.fetch import get_option_chain  # noqa: E402
+from calc.trading_day import check_trading_day  # noqa: E402
 
 # 飞书推送（统一由 alert/notifier 提供，路径已由文件头 bootstrap 注入）
-from feishu_push import push_card_to_feishu  # noqa: E402
+from alert.notifier.feishu_push import push_card_to_feishu  # noqa: E402
 from alert.trigger import trigger  # noqa: E402
-from feishu_card_utils import (  # noqa: E402
+from alert.notifier.feishu_card_utils import (  # noqa: E402
     build_card_header, build_data_table, build_note, build_markdown,
     wrap_card,
 )
 
 # ========== 配置（统一真源：scripts/targets_config.py）==========
 # 标的清单/展示名/阈值一律从 targets_config 引入，禁止在此重复定义
-from targets import MONITOR_TARGETS as TARGETS, DISPLAY_NAME  # noqa: E402
+from config.targets import MONITOR_TARGETS as TARGETS, DISPLAY_NAME  # noqa: E402
 
 # 判定内核统一走 alert 引擎：阈值、级别、口径文案全部来自 alert/rules.py，
 # 本脚本不再自带阈值常量（改阈值只改 rules.py 一处）。
@@ -234,7 +217,7 @@ def main():
     rows, errors = collect()
 
     try:
-        from case_summary import write_summary
+        from alert.notifier.case_summary import write_summary
         write_summary('oi_pcr', {r['target']: r['pcr'] for r in rows
                                  if r.get('ok') and r.get('pcr') is not None},
                       date_str)

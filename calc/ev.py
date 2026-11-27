@@ -14,35 +14,8 @@
 - EV含义: 公允价 - 市价 > 0 → 被低估（正EV买入划算）
 - 数据缺失时明确提示，不报错退出
 """
+from config.credentials import (TS_TOKEN, FEISHU_CHAT_ID, FEISHU_PRIVATE_USER_ID, EMAIL_FROM_ADDR, EMAIL_FROM_PASS, EMAIL_TO_ADDR, AGENT_EMAIL)
 
-# ==================== options 项目路径引导（自动生成，勿手改） ====================
-# 向上查找项目根（同时含 calc/ 与 alert/ 的目录），把 calc、calc/db、alert/notifier
-# 及 data_hub 所在上层目录注入 sys.path，保证任意脚本都能 python3 直接运行，
-# 不依赖 crontab 里手工设置的 PYTHONPATH。
-# ==================== 凭证引导（自动生成，勿手改） ====================
-# 敏感信息统一放 config/private.py（.gitignore 排除）或同名环境变量，
-# 仓库里只保留 config/private.example.py 模板。取值逻辑见 config/credentials.py。
-import os as _cred_os, sys as _cred_sys
-_cd = _cred_os.path.dirname(_cred_os.path.abspath(__file__))
-while _cd != _cred_os.path.dirname(_cd) and not _cred_os.path.isdir(_cred_os.path.join(_cd, 'config')):
-    _cd = _cred_os.path.dirname(_cd)
-_cred_cfg = _cred_os.path.join(_cd, 'config')
-if _cred_cfg not in _cred_sys.path:
-    _cred_sys.path.insert(0, _cred_cfg)
-from credentials import (TS_TOKEN, FEISHU_CHAT_ID, FEISHU_PRIVATE_USER_ID,
-                         EMAIL_FROM_ADDR, EMAIL_FROM_PASS, EMAIL_TO_ADDR, AGENT_EMAIL)
-# =======================================================================
-import os as _opt_os, sys as _opt_sys
-_p = _opt_os.path.dirname(_opt_os.path.abspath(__file__))
-while _p != _opt_os.path.dirname(_p) and not (
-        _opt_os.path.isdir(_opt_os.path.join(_p, 'calc')) and _opt_os.path.isdir(_opt_os.path.join(_p, 'alert'))):
-    _p = _opt_os.path.dirname(_p)
-_OPT_ROOT = _p
-for _sub in (_OPT_ROOT, _opt_os.path.join(_OPT_ROOT, 'calc'), _opt_os.path.join(_OPT_ROOT, 'calc', 'db'),
-             _opt_os.path.join(_OPT_ROOT, 'config'), _opt_os.path.join(_OPT_ROOT, 'alert', 'notifier'), _opt_os.path.dirname(_OPT_ROOT)):
-    if _sub not in _opt_sys.path:
-        _opt_sys.path.insert(0, _sub)
-# ==================================================================================
 
 
 import os, sys, json, math, time, warnings
@@ -89,7 +62,9 @@ def bs_call(S, K, T, r, sigma, q=0):
 # IV 反解 —— 2026-11-18 收敛到生产主线口径 option_monitor.bs_iv（唯一真源）。
 # 原 ev.py 自写 bs_iv（1e-8 容差 + xtol=1e-7）会硬解出伪 IV（见 data_hub 注释），
 # 连同仅被其使用的 bs_put 一并删除；bs_d1 / bs_call 仍被下方 RND 理论价计算使用，保留。
-from option_monitor import bs_iv  # noqa: E402
+from calc.option_monitor import bs_iv  # noqa: E402
+_OPT_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+
 
 def bs_survival(K, S, T, r, sigma, q):
     """BS生存函数 P(S_T > K) = N(d2)"""
@@ -616,7 +591,7 @@ def main():
         print(f"  {r['name']:<10}{spot_str:<12}{v('平值'):<12}{v(itm_key):<13}{v(otm_key):<13}{v('深度实值'):<14}{v('深度虚值'):<14}{r['expire']:<10}")
 
     # 保存JSON
-    out_dir = _opt_os.path.join(_OPT_ROOT, "outputs")
+    out_dir = os.path.join(_OPT_ROOT, "outputs")
     os.makedirs(out_dir, exist_ok=True)
     out_file = f"{out_dir}/{trade_date}_ev_analysis.json"
     summary = []

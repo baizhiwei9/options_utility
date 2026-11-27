@@ -652,7 +652,7 @@ class IdempotentLock:
     def _db():
         """延迟导入统一存储层；不可用返回 None（触发文件兜底）。"""
         try:
-            import opt_store
+            import config.opt_store as opt_store
             return opt_store
         except Exception:
             return None

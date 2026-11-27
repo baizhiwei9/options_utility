@@ -27,12 +27,6 @@ import unittest
 TESTS_DIR = os.path.dirname(os.path.abspath(__file__))
 ROOT = os.path.dirname(TESTS_DIR)
 PARENT = os.path.dirname(ROOT)
-for _p in (ROOT, os.path.join(ROOT, 'calc'), os.path.join(ROOT, 'calc', 'db'),
-           os.path.join(ROOT, 'calc', 'us'), os.path.join(ROOT, 'calc', 'cn'),
-           os.path.join(ROOT, 'config'), os.path.join(ROOT, 'alert'),
-           os.path.join(ROOT, 'alert', 'notifier'), PARENT):
-    if _p not in sys.path:
-        sys.path.insert(0, _p)
 
 
 def _src(rel):
@@ -83,8 +77,8 @@ class TestNameErrorsWereFixed(unittest.TestCase):
         所以用 AST 确认 `option_pcr` 在函数体内已经完全不出现，
         再用 exec 把函数体里的关键行执行一遍，确认能解析到 pcr。
         """
-        import pcr
-        import pcr_macd
+        import calc.pcr as pcr
+        import calc.pcr_macd as pcr_macd
 
         # ① 源码级：函数体内不得再出现 option_pcr
         src = _src('calc/pcr_macd.py')
@@ -118,7 +112,7 @@ class TestNameErrorsWereFixed(unittest.TestCase):
 
     def test_skew_history_has_required_api(self):
         """#2 被调用的两个函数必须真实存在。"""
-        import skew_history
+        import calc.db.skew_history as skew_history
         self.assertTrue(callable(getattr(skew_history, 'append_daily', None)))
         self.assertTrue(callable(getattr(skew_history, 'attach_percentiles', None)))
         self.assertTrue(callable(getattr(skew_history, 'snapshot', None)))
@@ -126,7 +120,7 @@ class TestNameErrorsWereFixed(unittest.TestCase):
 
     def test_skew_history_snapshot_throttle(self):
         """snapshot() 走 localdb 推快照；非 force 时 30s 内只推一次。"""
-        import skew_history
+        import calc.db.skew_history as skew_history
         calls = []
         _orig = skew_history._local_db_snapshot
         try:
@@ -146,18 +140,18 @@ class TestNameErrorsWereFixed(unittest.TestCase):
         """#3 basis.py 用了 pd.concat，必须 import pandas as pd。"""
         src = _src('calc/basis.py')
         self.assertIn('import pandas as pd', src)
-        import basis
+        import calc.basis as basis
         self.assertTrue(hasattr(basis, 'pd'), 'basis 模块命名空间里没有 pd')
 
     def test_build_field_is_defined(self):
         """#4 build_field 必须存在且可调用。"""
-        import feishu_card_utils as F
+        import alert.notifier.feishu_card_utils as F
         self.assertTrue(callable(getattr(F, 'build_field', None)),
                         'feishu_card_utils 缺 build_field 定义')
 
     def test_risk_forecast_card_with_margin_runs(self):
         """#4 端到端：带 margin_data 的旧单卡必须能构造。"""
-        import feishu_card_utils as F
+        import alert.notifier.feishu_card_utils as F
         card = F.build_risk_forecast_card(
             '2026-11-10', {}, '结论',
             margin_data={'current': {'rzye': 1e12}, 'data_warnings': ['测试警告']})
@@ -192,7 +186,7 @@ class TestBasisExtremeGuard(unittest.TestCase):
     """2026-11-25：历史条目只有 basis_abs 键但值为 None 时，极值判定不能除零/崩。"""
 
     def test_all_none_basis_abs_returns_not_extreme(self):
-        import basis
+        import calc.basis as basis
         old = basis.load_basis_history
         basis.load_basis_history = lambda symbol: {
             str(i): {'basis_abs': None} for i in range(30)
@@ -445,7 +439,7 @@ class TestOptionRiskGuards(unittest.TestCase):
         """缺列（如 risk_history.db 兜底无 vol_pcr）应返回同日期索引的全 NaN，
         而不是把列名当 Index 传入抛 TypeError。"""
         import pandas as pd
-        import option_risk_chart as m
+        import calc.option_risk_chart as m
         df = pd.DataFrame({
             "trade_date": pd.to_datetime(["20261120", "20261121"], format="%Y%m%d"),
             "vix30": [20.0, 21.0], "skew_index": [100.0, 101.0], "oi_pcr": [1.0, 1.1],
@@ -462,7 +456,7 @@ class TestOptionRiskGuards(unittest.TestCase):
         gex → calc/fetch.py → option_monitor → tushare，会把纯常量校验绑到
         网络/数据库环境上（issue #6 复核时在缺 tushare/data_hub 的机器误报）。
         """
-        from multipliers import CODE_MULTIPLIER, CODE_TO_GEX_NAME, MULTIPLIER_MAP
+        from calc.multipliers import CODE_MULTIPLIER, CODE_TO_GEX_NAME, MULTIPLIER_MAP
         self.assertEqual(MULTIPLIER_MAP["300ETF"], 10000)
         self.assertEqual(MULTIPLIER_MAP["中证1000"], 100)
         for code, name in CODE_TO_GEX_NAME.items():
@@ -503,7 +497,7 @@ class TestRiskHistorySchemaConstants(unittest.TestCase):
     """
 
     def test_fields_and_migration_cols_defined(self):
-        import risk_history as rh
+        import calc.db.risk_history as rh
         self.assertTrue(isinstance(getattr(rh, "FIELDS", None), list), "FIELDS 必须存在且为 list")
         self.assertTrue(len(rh.FIELDS) > 0)
         self.assertTrue(isinstance(getattr(rh, "_MIGRATION_COLS", None), dict),
@@ -514,7 +508,7 @@ class TestRiskHistorySchemaConstants(unittest.TestCase):
 
     def test_upsert_then_percentile_roundtrip(self):
         """临时库写入 + 读分位，跑通即证明 FIELDS 链路完好（不触云盘快照）。"""
-        import risk_history as rh
+        import calc.db.risk_history as rh
         import tempfile
         with tempfile.TemporaryDirectory() as td:
             old_db, old_snap = rh.DB_PATH, rh.snapshot
@@ -545,7 +539,6 @@ class TestDblockConcurrencyPrimitives(unittest.TestCase):
 
     @classmethod
     def setUpClass(cls):
-        sys.path.insert(0, PARENT)
         # 统一引用 DataHub 的读写锁库（唯一实现）
         from data_hub.core import lock
         cls.dbl = lock
@@ -616,7 +609,7 @@ class TestRiskHistoryReuseTableFirst(unittest.TestCase):
     def test_full_rec_roundtrip_keeps_nested_fields(self):
         """整条 rec 存/取必须逐字段一致（judge_light 依赖 gex 里的嵌套键）。"""
         import tempfile
-        import risk_history as rh
+        import calc.db.risk_history as rh
         rec = {
             "key": "300ETF", "name": "沪深300ETF", "ok": True,
             "vix": 24.4, "R": 1.051, "skew": 96.1, "oi_pcr": 0.701,
@@ -646,7 +639,7 @@ class TestRiskHistoryReuseTableFirst(unittest.TestCase):
     def test_no_fd_leak_on_repeated_upsert(self):
         """反复 upsert 不能泄漏文件描述符（原 `with _conn()` 的病灶）。"""
         import tempfile
-        import risk_history as rh
+        import calc.db.risk_history as rh
         with tempfile.TemporaryDirectory() as td:
             old_db, old_snap = rh.DB_PATH, rh.snapshot
             rh.DB_PATH = os.path.join(td, "risk_history.db")
@@ -679,7 +672,6 @@ class TestReadWriteLock(unittest.TestCase):
 
     @classmethod
     def setUpClass(cls):
-        sys.path.insert(0, PARENT)
         # 统一引用 DataHub 的读写锁库（唯一实现）
         from data_hub.core import lock
         cls.dbl = lock
@@ -810,7 +802,7 @@ class TestLockReviewFollowup(unittest.TestCase):
     def test_pack_rec_keeps_nested_numeric_types(self):
         import json
         import numpy as np
-        import risk_history as rh
+        import calc.db.risk_history as rh
 
         rec = {"vix": float("nan"), "gex": {"strength": np.int64(7),
                                             "ok": np.bool_(True),
@@ -824,7 +816,7 @@ class TestLockReviewFollowup(unittest.TestCase):
 
     def test_read_path_works_on_fresh_db(self):
         import tempfile
-        import risk_history as rh
+        import calc.db.risk_history as rh
         with tempfile.TemporaryDirectory() as td:
             old_db, old_snap = rh.DB_PATH, rh.snapshot
             rh.DB_PATH = os.path.join(td, "risk_history.db")

@@ -14,11 +14,7 @@
 
 用法
 ----
-    import sys
-    # 原为硬编码的「主对话」目录；合并后按项目根推导，缺失时不影响本模块
-    _ROOT_DIR = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-    sys.path.insert(0, os.path.dirname(_ROOT_DIR))
-    from email_sender import send_email
+    from alert.notifier.email_sender import send_email
 
     ok = send_email(
         subject='期权多指标共振预警 | 2026-11-09 | 中证500看空',
@@ -52,9 +48,7 @@ _cd = _cred_os.path.dirname(_cred_os.path.abspath(__file__))
 while _cd != _cred_os.path.dirname(_cd) and not _cred_os.path.isdir(_cred_os.path.join(_cd, 'config')):
     _cd = _cred_os.path.dirname(_cd)
 _cred_cfg = _cred_os.path.join(_cd, 'config')
-if _cred_cfg not in _cred_sys.path:
-    _cred_sys.path.insert(0, _cred_cfg)
-from credentials import (TS_TOKEN, FEISHU_CHAT_ID, FEISHU_PRIVATE_USER_ID,
+from config.credentials import (TS_TOKEN, FEISHU_CHAT_ID, FEISHU_PRIVATE_USER_ID,
                          EMAIL_FROM_ADDR, EMAIL_FROM_PASS, EMAIL_TO_ADDR, AGENT_EMAIL)
 # =======================================================================
 import os

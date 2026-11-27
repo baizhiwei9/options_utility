@@ -5,22 +5,6 @@
 用akshare的交易日历判断当天是否为交易日
 """
 
-# ==================== options 项目路径引导（自动生成，勿手改） ====================
-# 向上查找项目根（同时含 calc/ 与 alert/ 的目录），把 calc、calc/db、alert/notifier
-# 及 data_hub 所在上层目录注入 sys.path，保证任意脚本都能 python3 直接运行，
-# 不依赖 crontab 里手工设置的 PYTHONPATH。
-import os as _opt_os, sys as _opt_sys
-_p = _opt_os.path.dirname(_opt_os.path.abspath(__file__))
-while _p != _opt_os.path.dirname(_p) and not (
-        _opt_os.path.isdir(_opt_os.path.join(_p, 'calc')) and _opt_os.path.isdir(_opt_os.path.join(_p, 'alert'))):
-    _p = _opt_os.path.dirname(_p)
-_OPT_ROOT = _p
-for _sub in (_OPT_ROOT, _opt_os.path.join(_OPT_ROOT, 'calc'), _opt_os.path.join(_OPT_ROOT, 'calc', 'db'),
-             _opt_os.path.join(_OPT_ROOT, 'config'), _opt_os.path.join(_OPT_ROOT, 'alert', 'notifier'), _opt_os.path.dirname(_OPT_ROOT)):
-    if _sub not in _opt_sys.path:
-        _opt_sys.path.insert(0, _sub)
-# ==================================================================================
-
 import os
 import json
 from datetime import datetime, date
@@ -44,7 +28,6 @@ def _get_trading_days():
     # 尝试Tushare
     try:
         import sys
-        sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
         # 2026-11-17 改造：交易日历统一走 data_hub（hub_option_api）
         from hub_option_api import fetch_trade_cal
         df = fetch_trade_cal(exchange='SSE', start_date=f'{date.today().year}0101', end_date=f'{date.today().year}1231')

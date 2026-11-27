@@ -40,38 +40,12 @@
 用法:
     python yangkangping_topbottom_monitor.py [YYYY-MM-DD] [--dry-run]
 """
+from config.credentials import (TS_TOKEN, FEISHU_CHAT_ID, FEISHU_PRIVATE_USER_ID, EMAIL_FROM_ADDR, EMAIL_FROM_PASS, EMAIL_TO_ADDR, AGENT_EMAIL, QQ_EMAIL_AUTH_CODE)
 
-# ==================== options 项目路径引导（自动生成，勿手改） ====================
-# 向上查找项目根（同时含 calc/ 与 alert/ 的目录），把 calc、calc/db、alert/notifier
-# 及 data_hub 所在上层目录注入 sys.path，保证任意脚本都能 python3 直接运行，
-# 不依赖 crontab 里手工设置的 PYTHONPATH。
-# ==================== 凭证引导（自动生成，勿手改） ====================
-# 敏感信息统一放 config/private.py（.gitignore 排除）或同名环境变量，
-# 仓库里只保留 config/private.example.py 模板。取值逻辑见 config/credentials.py。
-import os as _cred_os, sys as _cred_sys
-_cd = _cred_os.path.dirname(_cred_os.path.abspath(__file__))
-while _cd != _cred_os.path.dirname(_cd) and not _cred_os.path.isdir(_cred_os.path.join(_cd, 'config')):
-    _cd = _cred_os.path.dirname(_cd)
-_cred_cfg = _cred_os.path.join(_cd, 'config')
-if _cred_cfg not in _cred_sys.path:
-    _cred_sys.path.insert(0, _cred_cfg)
-from credentials import (TS_TOKEN, FEISHU_CHAT_ID, FEISHU_PRIVATE_USER_ID,
-                         EMAIL_FROM_ADDR, EMAIL_FROM_PASS, EMAIL_TO_ADDR, AGENT_EMAIL, QQ_EMAIL_AUTH_CODE)
-# =======================================================================
-import os as _opt_os, sys as _opt_sys
-_p = _opt_os.path.dirname(_opt_os.path.abspath(__file__))
-while _p != _opt_os.path.dirname(_p) and not (
-        _opt_os.path.isdir(_opt_os.path.join(_p, 'calc')) and _opt_os.path.isdir(_opt_os.path.join(_p, 'alert'))):
-    _p = _opt_os.path.dirname(_p)
-_OPT_ROOT = _p
-for _sub in (_OPT_ROOT, _opt_os.path.join(_OPT_ROOT, 'calc'), _opt_os.path.join(_OPT_ROOT, 'calc', 'db'),
-             _opt_os.path.join(_OPT_ROOT, 'config'), _opt_os.path.join(_OPT_ROOT, 'alert', 'notifier'), _opt_os.path.dirname(_OPT_ROOT)):
-    if _sub not in _opt_sys.path:
-        _opt_sys.path.insert(0, _sub)
-# ==================================================================================
 
 
 import os
+_OPT_ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 import sys
 import json
 import time
@@ -89,6 +63,7 @@ from email.mime.multipart import MIMEMultipart
 import numpy as np
 import pandas as pd
 from alert.trigger import trigger  # noqa: E402
+
 
 warnings.filterwarnings('ignore')
 
@@ -121,8 +96,6 @@ os.environ.setdefault('LARK_CLI_NO_PROXY', '1')
 # Tushare初始化（2026-10-23：统一走 data_hub 入口，不再硬编码 token）
 # ============================================================
 DATAHUB_SCRIPTS_DIR = os.path.join(_LEGACY_AGENT_DIR, "codeact", "scripts")
-if DATAHUB_SCRIPTS_DIR not in sys.path:
-    sys.path.insert(0, DATAHUB_SCRIPTS_DIR)
 try:
     from data_hub.tushare_config import get_tushare_pro
     pro = get_tushare_pro()

@@ -77,10 +77,6 @@ from typing import Any, Callable, Dict, List, Mapping, Optional, Sequence, Tuple
 # ---------------------------------------------------------------------------
 _HERE = os.path.dirname(os.path.abspath(__file__))
 _OPT_ROOT = os.path.dirname(_HERE)
-for _p in (_OPT_ROOT, _HERE, os.path.join(_OPT_ROOT, 'calc'),
-           os.path.join(_OPT_ROOT, 'calc', 'db'), os.path.join(_OPT_ROOT, 'config')):
-    if _p not in sys.path:
-        sys.path.insert(0, _p)
 
 from alert.engine import (  # noqa: E402
     CH_EMAIL, CH_FEISHU, LEVEL_ORDER, LEVEL_RED, LEVEL_YELLOW,

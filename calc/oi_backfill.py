@@ -11,22 +11,6 @@
   python oi_history_backfill.py all 20
 """
 
-# ==================== options 项目路径引导（自动生成，勿手改） ====================
-# 向上查找项目根（同时含 calc/ 与 alert/ 的目录），把 calc、calc/db、alert/notifier
-# 及 data_hub 所在上层目录注入 sys.path，保证任意脚本都能 python3 直接运行，
-# 不依赖 crontab 里手工设置的 PYTHONPATH。
-import os as _opt_os, sys as _opt_sys
-_p = _opt_os.path.dirname(_opt_os.path.abspath(__file__))
-while _p != _opt_os.path.dirname(_p) and not (
-        _opt_os.path.isdir(_opt_os.path.join(_p, 'calc')) and _opt_os.path.isdir(_opt_os.path.join(_p, 'alert'))):
-    _p = _opt_os.path.dirname(_p)
-_OPT_ROOT = _p
-for _sub in (_OPT_ROOT, _opt_os.path.join(_OPT_ROOT, 'calc'), _opt_os.path.join(_OPT_ROOT, 'calc', 'db'),
-             _opt_os.path.join(_OPT_ROOT, 'config'), _opt_os.path.join(_OPT_ROOT, 'alert', 'notifier'), _opt_os.path.dirname(_OPT_ROOT)):
-    if _sub not in _opt_sys.path:
-        _opt_sys.path.insert(0, _sub)
-# ==================================================================================
-
 
 import os
 import sys
@@ -34,7 +18,7 @@ import json
 import time
 import datetime
 from collections import defaultdict
-import opt_store as _store  # 统一存储层：历史数据落 data/options.db
+import config.opt_store as _store
 
 SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
 PROJECT_DIR = os.path.dirname(SCRIPT_DIR)
@@ -42,11 +26,10 @@ OUTPUT_DIR = os.path.join(PROJECT_DIR, 'outputs')
 OI_HISTORY_DIR = os.path.join(OUTPUT_DIR, 'oi_history')
 os.makedirs(OI_HISTORY_DIR, exist_ok=True)
 
-sys.path.insert(0, SCRIPT_DIR)
 import tushare as ts
 
 # Tushare pro接口
-from option_monitor import pro, API_SLEEP
+from calc.option_monitor import pro, API_SLEEP
 
 # 标的配置：与oi_abnormal_analysis.py对齐，但用tushare的exchange编码
 BACKFILL_TARGETS = {

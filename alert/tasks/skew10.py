@@ -21,40 +21,14 @@ skew10_alert.py — 0.1Δ 偏度预警轨（2026-10-25 新增）
   python3 skew10_alert.py --dry-run      # 只出图+打印，不发送
   python3 skew10_alert.py --key 300ETF   # 只跑指定标的
 """
+from config.credentials import (TS_TOKEN, FEISHU_CHAT_ID, FEISHU_PRIVATE_USER_ID, EMAIL_FROM_ADDR, EMAIL_FROM_PASS, EMAIL_TO_ADDR, AGENT_EMAIL)
 
-# ==================== options 项目路径引导（自动生成，勿手改） ====================
-# 向上查找项目根（同时含 calc/ 与 alert/ 的目录），把 calc、calc/db、alert/notifier
-# 及 data_hub 所在上层目录注入 sys.path，保证任意脚本都能 python3 直接运行，
-# 不依赖 crontab 里手工设置的 PYTHONPATH。
-# ==================== 凭证引导（自动生成，勿手改） ====================
-# 敏感信息统一放 config/private.py（.gitignore 排除）或同名环境变量，
-# 仓库里只保留 config/private.example.py 模板。取值逻辑见 config/credentials.py。
-import os as _cred_os, sys as _cred_sys
-_cd = _cred_os.path.dirname(_cred_os.path.abspath(__file__))
-while _cd != _cred_os.path.dirname(_cd) and not _cred_os.path.isdir(_cred_os.path.join(_cd, 'config')):
-    _cd = _cred_os.path.dirname(_cd)
-_cred_cfg = _cred_os.path.join(_cd, 'config')
-if _cred_cfg not in _cred_sys.path:
-    _cred_sys.path.insert(0, _cred_cfg)
-from credentials import (TS_TOKEN, FEISHU_CHAT_ID, FEISHU_PRIVATE_USER_ID,
-                         EMAIL_FROM_ADDR, EMAIL_FROM_PASS, EMAIL_TO_ADDR, AGENT_EMAIL)
-# =======================================================================
-import os as _opt_os, sys as _opt_sys
-_p = _opt_os.path.dirname(_opt_os.path.abspath(__file__))
-while _p != _opt_os.path.dirname(_p) and not (
-        _opt_os.path.isdir(_opt_os.path.join(_p, 'calc')) and _opt_os.path.isdir(_opt_os.path.join(_p, 'alert'))):
-    _p = _opt_os.path.dirname(_p)
-_OPT_ROOT = _p
-for _sub in (_OPT_ROOT, _opt_os.path.join(_OPT_ROOT, 'calc'), _opt_os.path.join(_OPT_ROOT, 'calc', 'db'),
-             _opt_os.path.join(_OPT_ROOT, 'config'), _opt_os.path.join(_OPT_ROOT, 'alert', 'notifier'), _opt_os.path.dirname(_OPT_ROOT)):
-    if _sub not in _opt_sys.path:
-        _opt_sys.path.insert(0, _sub)
-# ==================================================================================
 
 import argparse
 import datetime
 import json
 import os
+_OPT_ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 import sys
 
 import matplotlib
@@ -65,20 +39,19 @@ import mplfinance as mpf
 import pandas as pd
 import requests
 
-sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-import risk_history as hdb
-import risk_layer as M
+import calc.db.risk_history as hdb
+import calc.risk_layer as M
 
 # 统一报警引擎：判定逻辑集中在 alert/engine.py，阈值集中在 alert/rules.py
 from alert.engine import judge_all
 from alert.rules import SKEW10_RULES
 from alert.trigger import trigger
 
+
 # 统一邮件出口（标题自动带「｜扣子·来源」后缀）
-sys.path.insert(0, os.path.dirname(_OPT_ROOT))  # 原硬编码主对话目录，改为按项目根推导
 
 # ---------------- 配置 ----------------
-OUTPUT_DIR = _opt_os.path.join(_OPT_ROOT, 'outputs')  # 项目内产物目录
+OUTPUT_DIR = os.path.join(_OPT_ROOT, 'outputs')  # 项目内产物目录
 CHART_DIR = os.path.join(OUTPUT_DIR, 'skew10_alert')
 SENT_LOCK = os.path.join(OUTPUT_DIR, 'skew10_sent_lock.json')
 os.makedirs(CHART_DIR, exist_ok=True)
@@ -88,7 +61,7 @@ EMAIL_CFG = {
     'from_addr': EMAIL_FROM_ADDR, 'from_pass': EMAIL_FROM_PASS,
     'from_name': '期权偏度预警', 'to_addr': EMAIL_TO_ADDR,
 }
-FEISHU_PUSH = _opt_os.path.join(_OPT_ROOT, 'alert', 'notifier', 'feishu_push.py')
+FEISHU_PUSH = os.path.join(_OPT_ROOT, 'alert', 'notifier', 'feishu_push.py')
 
 # target_key → (展示名, 新浪指数代码)
 TARGETS = [
@@ -353,8 +326,7 @@ def send_email(subject, html, image_cids):
 def push_feishu_image(path, caption):
     """红灯图推飞书群：先发文本卡片摘要，再发可预览图片。"""
     try:
-        sys.path.insert(0, os.path.dirname(FEISHU_PUSH))
-        from feishu_push import push_to_feishu
+        from alert.notifier.feishu_push import push_to_feishu
         return trigger('偏度预警', content=caption,
                        files=[path] if path else None,
                        source='期权偏度预警')['ok']
@@ -528,7 +500,7 @@ def main():
             fired.append(item)
 
     try:
-        from case_summary import write_summary
+        from alert.notifier.case_summary import write_summary
         write_summary('skew10',
                       {it['key']: (it['latest'] or {}).get('skew10') for it in scanned
                        if (it['latest'] or {}).get('skew10') is not None},
@@ -577,8 +549,7 @@ def main():
     red_items = [i for i in fired if i['level'] == 'red']
     if red_items:
         try:
-            sys.path.insert(0, os.path.dirname(FEISHU_PUSH))
-            from feishu_push import push_to_feishu
+            from alert.notifier.feishu_push import push_to_feishu
             trigger('偏度红灯预警',
                     content=build_feishu_caption(date_disp, fired, red_items),
                     files=[it['chart'] for it in red_items if it.get('chart')],

@@ -34,11 +34,9 @@ from email.header import Header
 from email.mime.text import MIMEText
 
 try:
-    from paths import US_DATA_DIR as DATA_DIR
+    from config.paths import US_DATA_DIR as DATA_DIR
 except ImportError:  # 以脚本方式直接运行时兜底
-    sys.path.insert(0, os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(
-        os.path.abspath(__file__)))), "config"))
-    from paths import US_DATA_DIR as DATA_DIR
+    from config.paths import US_DATA_DIR as DATA_DIR
 
 DATA_FILE = str(DATA_DIR / "options_data_output.json")
 HIST_FILE = str(DATA_DIR / "options_oi_history.json")

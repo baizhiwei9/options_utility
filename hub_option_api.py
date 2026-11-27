@@ -38,8 +38,6 @@ if not os.path.isdir(_HUB_ROOT):
     _alt = '/opt/coze/.fuse_drive/dataHub_三级体系'
     if os.path.isdir(_alt):
         _HUB_ROOT = _alt
-if _HUB_ROOT not in sys.path:
-    sys.path.insert(0, _HUB_ROOT)
 
 _SRC = None
 

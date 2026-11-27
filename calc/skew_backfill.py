@@ -20,35 +20,8 @@ skew10_backfill.py — 0.1Δ偏度 / 近月持仓PCR / 锚定30日VIX 历史回�
   python3 skew10_backfill.py --mo-days 130         # 再补 MO 近130个自然日
   python3 skew10_backfill.py --start 20250401      # 指定起始
 """
+from config.credentials import (TS_TOKEN, TS_PROXY_TOKEN, FEISHU_CHAT_ID, FEISHU_PRIVATE_USER_ID, EMAIL_FROM_ADDR, EMAIL_FROM_PASS, EMAIL_TO_ADDR, AGENT_EMAIL)
 
-# ==================== options 项目路径引导（自动生成，勿手改） ====================
-# 向上查找项目根（同时含 calc/ 与 alert/ 的目录），把 calc、calc/db、alert/notifier
-# 及 data_hub 所在上层目录注入 sys.path，保证任意脚本都能 python3 直接运行，
-# 不依赖 crontab 里手工设置的 PYTHONPATH。
-# ==================== 凭证引导（自动生成，勿手改） ====================
-# 敏感信息统一放 config/private.py（.gitignore 排除）或同名环境变量，
-# 仓库里只保留 config/private.example.py 模板。取值逻辑见 config/credentials.py。
-import os as _cred_os, sys as _cred_sys
-_cd = _cred_os.path.dirname(_cred_os.path.abspath(__file__))
-while _cd != _cred_os.path.dirname(_cd) and not _cred_os.path.isdir(_cred_os.path.join(_cd, 'config')):
-    _cd = _cred_os.path.dirname(_cd)
-_cred_cfg = _cred_os.path.join(_cd, 'config')
-if _cred_cfg not in _cred_sys.path:
-    _cred_sys.path.insert(0, _cred_cfg)
-from credentials import (TS_TOKEN, TS_PROXY_TOKEN, FEISHU_CHAT_ID, FEISHU_PRIVATE_USER_ID,
-                         EMAIL_FROM_ADDR, EMAIL_FROM_PASS, EMAIL_TO_ADDR, AGENT_EMAIL)
-# =======================================================================
-import os as _opt_os, sys as _opt_sys
-_p = _opt_os.path.dirname(_opt_os.path.abspath(__file__))
-while _p != _opt_os.path.dirname(_p) and not (
-        _opt_os.path.isdir(_opt_os.path.join(_p, 'calc')) and _opt_os.path.isdir(_opt_os.path.join(_p, 'alert'))):
-    _p = _opt_os.path.dirname(_p)
-_OPT_ROOT = _p
-for _sub in (_OPT_ROOT, _opt_os.path.join(_OPT_ROOT, 'calc'), _opt_os.path.join(_OPT_ROOT, 'calc', 'db'),
-             _opt_os.path.join(_OPT_ROOT, 'config'), _opt_os.path.join(_OPT_ROOT, 'alert', 'notifier'), _opt_os.path.dirname(_OPT_ROOT)):
-    if _sub not in _opt_sys.path:
-        _opt_sys.path.insert(0, _sub)
-# ==================================================================================
 
 import argparse
 import datetime
@@ -57,9 +30,10 @@ import shutil
 import sqlite3
 import sys
 
-sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-import risk_layer as M
-import risk_history as hdb
+import calc.risk_layer as M
+import calc.db.risk_history as hdb
+_OPT_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+
 
 # style_drift.db 原始库（FUSE 上 sqlite 易 bus error，先拷本地）
 #
@@ -108,7 +82,7 @@ def _build_months(conn, td, undl):
     """轻量构建：不全链反解（312日×全链brentq太慢）。
     近月(DTE>20)翼部合约反解IV/delta供10Δ偏度，ATM±6%反解供VIX；
     PCR只用OI不需IV。返回 (months_lite, spot)，结构与 prepare_chain 输出兼容。"""
-    from option_monitor import bs_iv, bs_gamma, bs_d1
+    from calc.option_monitor import bs_iv, bs_gamma, bs_d1
     from scipy.stats import norm
     spot = conn.execute(
         'SELECT spot_price FROM daily_metrics WHERE trade_date=? AND underlying=?',

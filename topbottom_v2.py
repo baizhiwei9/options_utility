@@ -41,37 +41,13 @@
     python yangkangping_topbottom_monitor.py [YYYY-MM-DD] [--dry-run]
 """
 
-# ==================== options 项目路径引导（自动生成，勿手改） ====================
-# 向上查找项目根（同时含 calc/ 与 alert/ 的目录），把 calc、calc/db、alert/notifier
-# 及 data_hub 所在上层目录注入 sys.path，保证任意脚本都能 python3 直接运行，
-# 不依赖 crontab 里手工设置的 PYTHONPATH。
-# ==================== 凭证引导（自动生成，勿手改） ====================
-# 敏感信息统一放 config/private.py（.gitignore 排除）或同名环境变量，
-# 仓库里只保留 config/private.example.py 模板。取值逻辑见 config/credentials.py。
-import os as _cred_os, sys as _cred_sys
-_cd = _cred_os.path.dirname(_cred_os.path.abspath(__file__))
-while _cd != _cred_os.path.dirname(_cd) and not _cred_os.path.isdir(_cred_os.path.join(_cd, 'config')):
-    _cd = _cred_os.path.dirname(_cd)
-_cred_cfg = _cred_os.path.join(_cd, 'config')
-if _cred_cfg not in _cred_sys.path:
-    _cred_sys.path.insert(0, _cred_cfg)
-from credentials import (TS_TOKEN, FEISHU_CHAT_ID, FEISHU_PRIVATE_USER_ID,
+from config.credentials import (TS_TOKEN, FEISHU_CHAT_ID, FEISHU_PRIVATE_USER_ID,
                          EMAIL_FROM_ADDR, EMAIL_FROM_PASS, EMAIL_TO_ADDR, AGENT_EMAIL, QQ_EMAIL_AUTH_CODE)
-# =======================================================================
-import os as _opt_os, sys as _opt_sys
-_p = _opt_os.path.dirname(_opt_os.path.abspath(__file__))
-while _p != _opt_os.path.dirname(_p) and not (
-        _opt_os.path.isdir(_opt_os.path.join(_p, 'calc')) and _opt_os.path.isdir(_opt_os.path.join(_p, 'alert'))):
-    _p = _opt_os.path.dirname(_p)
-_OPT_ROOT = _p
-for _sub in (_OPT_ROOT, _opt_os.path.join(_OPT_ROOT, 'calc'), _opt_os.path.join(_OPT_ROOT, 'calc', 'db'),
-             _opt_os.path.join(_OPT_ROOT, 'config'), _opt_os.path.join(_OPT_ROOT, 'alert', 'notifier'), _opt_os.path.dirname(_OPT_ROOT)):
-    if _sub not in _opt_sys.path:
-        _opt_sys.path.insert(0, _sub)
-# ==================================================================================
+
 
 
 import os
+_OPT_ROOT = os.path.dirname(os.path.abspath(__file__))
 import sys
 import json
 import time
@@ -142,11 +118,6 @@ if not os.path.isdir(_HUB_ROOT):
     _alt = '/opt/coze/.fuse_drive/dataHub_三级体系'
     if os.path.isdir(_alt):
         _HUB_ROOT = _alt
-for _p in (DATAHUB_SCRIPTS_DIR, _HUB_ROOT):
-    while _p in sys.path:
-        sys.path.remove(_p)
-    sys.path.insert(0, _p)   # 循环结束后 _HUB_ROOT 位于 sys.path[0]
-
 # ---- EDB SQLite 主库（统一一份，2026-11-24 调整）----
 # 全平台只有一份 EDB：<data_hub 仓库根>/data_hub/edb/data/edb.sqlite3
 # （data_hub.edb.store.db_path() 的默认值）。路径口径由 DataHub 自己决定，
@@ -168,6 +139,7 @@ API_SLEEP = 0.5
 from hub_option_api import (  # noqa: E402
     fetch_index_daily, fetch_index_dailybasic, fetch_fut_daily_multi, fetch_margin,
 )
+
 
 # ============================================================
 # 导入复用模块
@@ -1437,7 +1409,7 @@ def top_signal_3_basis_premium(sentiment_data):
     """
     result = {'value': None, 'triggered': False, 'detail': '', 'has_data': False}
     try:
-        import opt_store as _store
+        import config.opt_store as _store
     except Exception as e:
         result['detail'] = f'opt_store 不可用: {e}'
         return result

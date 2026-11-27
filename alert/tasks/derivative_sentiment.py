@@ -41,38 +41,12 @@
     4. 飞书卡片推送（非dry-run模式，幂等）
     5. 触发信号时邮件提醒（非dry-run模式，按指数独立冷却期）
 """
+from config.credentials import (TS_TOKEN, FEISHU_CHAT_ID, FEISHU_PRIVATE_USER_ID, EMAIL_FROM_ADDR, EMAIL_FROM_PASS, EMAIL_TO_ADDR, AGENT_EMAIL, QQ_EMAIL_AUTH_CODE)
 
-# ==================== options 项目路径引导（自动生成，勿手改） ====================
-# 向上查找项目根（同时含 calc/ 与 alert/ 的目录），把 calc、calc/db、alert/notifier
-# 及 data_hub 所在上层目录注入 sys.path，保证任意脚本都能 python3 直接运行，
-# 不依赖 crontab 里手工设置的 PYTHONPATH。
-# ==================== 凭证引导（自动生成，勿手改） ====================
-# 敏感信息统一放 config/private.py（.gitignore 排除）或同名环境变量，
-# 仓库里只保留 config/private.example.py 模板。取值逻辑见 config/credentials.py。
-import os as _cred_os, sys as _cred_sys
-_cd = _cred_os.path.dirname(_cred_os.path.abspath(__file__))
-while _cd != _cred_os.path.dirname(_cd) and not _cred_os.path.isdir(_cred_os.path.join(_cd, 'config')):
-    _cd = _cred_os.path.dirname(_cd)
-_cred_cfg = _cred_os.path.join(_cd, 'config')
-if _cred_cfg not in _cred_sys.path:
-    _cred_sys.path.insert(0, _cred_cfg)
-from credentials import (TS_TOKEN, FEISHU_CHAT_ID, FEISHU_PRIVATE_USER_ID,
-                         EMAIL_FROM_ADDR, EMAIL_FROM_PASS, EMAIL_TO_ADDR, AGENT_EMAIL, QQ_EMAIL_AUTH_CODE)
-# =======================================================================
-import os as _opt_os, sys as _opt_sys
-_p = _opt_os.path.dirname(_opt_os.path.abspath(__file__))
-while _p != _opt_os.path.dirname(_p) and not (
-        _opt_os.path.isdir(_opt_os.path.join(_p, 'calc')) and _opt_os.path.isdir(_opt_os.path.join(_p, 'alert'))):
-    _p = _opt_os.path.dirname(_p)
-_OPT_ROOT = _p
-for _sub in (_OPT_ROOT, _opt_os.path.join(_OPT_ROOT, 'calc'), _opt_os.path.join(_OPT_ROOT, 'calc', 'db'),
-             _opt_os.path.join(_OPT_ROOT, 'config'), _opt_os.path.join(_OPT_ROOT, 'alert', 'notifier'), _opt_os.path.dirname(_OPT_ROOT)):
-    if _sub not in _opt_sys.path:
-        _opt_sys.path.insert(0, _sub)
-# ==================================================================================
 
 
 import os
+_OPT_ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 import sys
 import json
 import math
@@ -96,6 +70,7 @@ warnings.filterwarnings('ignore')
 # ============================================================
 import tushare as ts
 from alert.trigger import trigger  # noqa: E402
+
 TS_TOKEN = TS_TOKEN
 ts.set_token(TS_TOKEN)
 pro = ts.pro_api()
@@ -108,16 +83,13 @@ OUTPUT_DIR = os.path.join(os.path.dirname(SCRIPT_DIR), 'output')
 os.makedirs(OUTPUT_DIR, exist_ok=True)
 
 # 复用option_monitor.py的路径
-OPTION_MONITOR_DIR = _opt_os.path.join(_OPT_ROOT, "calc")  # 期权链/指标计算统一收归 calc/
-FEISHU_PUSH_PATH = _opt_os.path.join(_OPT_ROOT, "alert", "notifier", "feishu_push.py")
+OPTION_MONITOR_DIR = os.path.join(_OPT_ROOT, "calc")  # 期权链/指标计算统一收归 calc/
+FEISHU_PUSH_PATH = os.path.join(_OPT_ROOT, "alert", "notifier", "feishu_push.py")
 # 2026-11-10：原指向 /Coze/Drive/中期风险偏好/codeact/scripts/market_bottom_monitor.py，
 # 该目录已不存在（旧版副本，与 options 版有 206 行差异）。改指 options 内真源。
-BOTTOM_MONITOR_PATH = _opt_os.path.join(_OPT_ROOT, "alert", "tasks", "bottom_redline.py")
+BOTTOM_MONITOR_PATH = os.path.join(_OPT_ROOT, "alert", "tasks", "bottom_redline.py")
 
 # 添加复用路径
-for p in [OPTION_MONITOR_DIR, os.path.dirname(FEISHU_PUSH_PATH), os.path.dirname(BOTTOM_MONITOR_PATH)]:
-    if p not in sys.path:
-        sys.path.insert(0, p)
 
 # ============================================================
 # 导入复用模块

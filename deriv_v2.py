@@ -43,6 +43,7 @@
 """
 
 import os
+_OPT_ROOT = os.path.dirname(os.path.abspath(__file__))
 
 # 凭证统一走 config/credentials.py（原明文授权码已移除）
 try:
@@ -51,9 +52,7 @@ try:
     while _q_cd != _q_os.path.dirname(_q_cd) and not _q_os.path.isdir(_q_os.path.join(_q_cd, 'config')):
         _q_cd = _q_os.path.dirname(_q_cd)
     _q_cfg = _q_os.path.join(_q_cd, 'config')
-    if _q_cfg not in _q_sys.path:
-        _q_sys.path.insert(0, _q_cfg)
-    from credentials import QQ_EMAIL_AUTH_CODE
+    from config.credentials import QQ_EMAIL_AUTH_CODE
 except Exception:  # noqa: BLE001
     QQ_EMAIL_AUTH_CODE = os.environ.get('QQ_EMAIL_AUTH_CODE', '')
 import sys
@@ -85,10 +84,8 @@ _cd = os.path.dirname(os.path.abspath(__file__))
 while _cd != os.path.dirname(_cd) and not os.path.isdir(os.path.join(_cd, 'config')):
     _cd = os.path.dirname(_cd)
 _cred_cfg = os.path.join(_cd, 'config')
-if _cred_cfg not in sys.path:
-    sys.path.insert(0, _cred_cfg)
 try:
-    from credentials import TS_TOKEN as _TS_TOKEN
+    from config.credentials import TS_TOKEN as _TS_TOKEN
 except Exception:  # noqa: BLE001
     _TS_TOKEN = os.environ.get('TS_TOKEN', '')
 if _TS_TOKEN:
@@ -103,7 +100,6 @@ pro = get_pro()
 SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
 # 2026-11-18 收敛：本文件已由 options_refactor/ 合入生产库 options/ 根目录，
 # _OPT_ROOT 即生产库根，alert/ 与 config/ 均在此下，供 feishu_push / credentials 解析。
-_OPT_ROOT = SCRIPT_DIR
 # 输出根显式钉住「主对话/output」——deriv_pcr_history.csv（PCR 历史累积）、
 # deriv_alert_state.json（告警幂等）、pcr_daily_cache/ 都在这里，
 # 合并后若跟着 SCRIPT_DIR 漂走会导致幂等状态丢失、重复推送。
@@ -124,9 +120,6 @@ FEISHU_PUSH_PATH = os.path.join(_OPT_ROOT, "alert", "notifier", "feishu_push.py"
 BOTTOM_MONITOR_PATH = "/Coze/Drive/中期风险偏好/codeact/scripts/market_bottom_monitor.py"
 
 # 添加复用路径
-for p in [OPTION_MONITOR_DIR, os.path.dirname(FEISHU_PUSH_PATH), os.path.dirname(BOTTOM_MONITOR_PATH)]:
-    if p not in sys.path:
-        sys.path.insert(0, p)
 
 # ============================================================
 # 导入复用模块
@@ -189,8 +182,6 @@ try:
         _alt = '/opt/coze/.fuse_drive/dataHub_三级体系'
         if os.path.isdir(_alt):
             _DH_ROOT = _alt
-    if _DH_ROOT not in sys.path:
-        sys.path.insert(0, _DH_ROOT)
     from data_hub.core.option_metrics import calc_pcr_from_df as _calc_pcr_from_df
 except Exception as _e:
     _calc_pcr_from_df = None
@@ -222,7 +213,7 @@ except Exception:
 
 # 飞书群ID（2026-11-17 安全改造：从 config/credentials.py 取，优先级 环境变量 > private.py）
 try:
-    from credentials import FEISHU_CHAT_ID  # noqa: F401
+    from config.credentials import FEISHU_CHAT_ID  # noqa: F401
 except Exception:  # noqa: BLE001
     FEISHU_CHAT_ID = os.environ.get('FEISHU_CHAT_ID', '')
 

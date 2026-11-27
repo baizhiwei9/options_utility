@@ -23,9 +23,6 @@ import sqlite3
 
 WS = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 OPTLIB = os.path.join(WS, 'optstack', 'options_utility')
-for _p in (OPTLIB, os.path.join(OPTLIB, 'calc'), os.path.join(OPTLIB, 'calc', 'cn')):
-    if _p not in sys.path:
-        sys.path.insert(0, _p)
 from calc.cn.iv_history import atm_term_from_day, RISK_FREE, TARGETS   # noqa: E402
 
 DB_DEFAULT = os.path.join(OPTLIB, 'outputs', 'option_chain.db')

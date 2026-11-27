@@ -25,35 +25,8 @@
   红线候选集随之收敛为 沪深300/中证500/中证1000/科创50/创业板（上证50 出）。
   详见 get_zz1000_main_pcr()。
 """
+from config.credentials import (TS_TOKEN, FEISHU_CHAT_ID, FEISHU_PRIVATE_USER_ID, EMAIL_FROM_ADDR, EMAIL_FROM_PASS, EMAIL_TO_ADDR, AGENT_EMAIL)
 
-# ==================== options 项目路径引导（自动生成，勿手改） ====================
-# 向上查找项目根（同时含 calc/ 与 alert/ 的目录），把 calc、calc/db、alert/notifier
-# 及 data_hub 所在上层目录注入 sys.path，保证任意脚本都能 python3 直接运行，
-# 不依赖 crontab 里手工设置的 PYTHONPATH。
-# ==================== 凭证引导（自动生成，勿手改） ====================
-# 敏感信息统一放 config/private.py（.gitignore 排除）或同名环境变量，
-# 仓库里只保留 config/private.example.py 模板。取值逻辑见 config/credentials.py。
-import os as _cred_os, sys as _cred_sys
-_cd = _cred_os.path.dirname(_cred_os.path.abspath(__file__))
-while _cd != _cred_os.path.dirname(_cd) and not _cred_os.path.isdir(_cred_os.path.join(_cd, 'config')):
-    _cd = _cred_os.path.dirname(_cd)
-_cred_cfg = _cred_os.path.join(_cd, 'config')
-if _cred_cfg not in _cred_sys.path:
-    _cred_sys.path.insert(0, _cred_cfg)
-from credentials import (TS_TOKEN, FEISHU_CHAT_ID, FEISHU_PRIVATE_USER_ID,
-                         EMAIL_FROM_ADDR, EMAIL_FROM_PASS, EMAIL_TO_ADDR, AGENT_EMAIL)
-# =======================================================================
-import os as _opt_os, sys as _opt_sys
-_p = _opt_os.path.dirname(_opt_os.path.abspath(__file__))
-while _p != _opt_os.path.dirname(_p) and not (
-        _opt_os.path.isdir(_opt_os.path.join(_p, 'calc')) and _opt_os.path.isdir(_opt_os.path.join(_p, 'alert'))):
-    _p = _opt_os.path.dirname(_p)
-_OPT_ROOT = _p
-for _sub in (_OPT_ROOT, _opt_os.path.join(_OPT_ROOT, 'calc'), _opt_os.path.join(_OPT_ROOT, 'calc', 'db'),
-             _opt_os.path.join(_OPT_ROOT, 'config'), _opt_os.path.join(_OPT_ROOT, 'alert', 'notifier'), _opt_os.path.dirname(_OPT_ROOT)):
-    if _sub not in _opt_sys.path:
-        _opt_sys.path.insert(0, _sub)
-# ==================================================================================
 
 
 import os
@@ -66,6 +39,8 @@ from pathlib import Path
 
 import pandas as pd
 import numpy as np
+_OPT_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+
 
 # ============================================================
 # PCR 计算内核（2026-11-17 统一口径）
@@ -80,8 +55,6 @@ try:
         _alt = '/opt/coze/.fuse_drive/dataHub_三级体系'
         if os.path.isdir(_alt):
             _DH_ROOT = _alt
-    if _DH_ROOT not in sys.path:
-        sys.path.insert(0, _DH_ROOT)
     from data_hub.core.option_metrics import calc_pcr_from_df as _calc_pcr_from_df
 except Exception as _e:  # noqa
     _calc_pcr_from_df = None
@@ -305,8 +278,6 @@ def _chain_db():
         return _CHAIN_DB
     try:
         _root = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-        if _root not in sys.path:
-            sys.path.insert(0, _root)
         from data_hub.collectors.misc import option_chain_db as _m
         _CHAIN_DB = _m
         return _m
@@ -1010,7 +981,7 @@ def _datahub_scripts_dir():
     options 项目统一依赖上一级目录 dataHub_三级体系/data_hub，不再回退到
     主对话 codeact/scripts 下的历史副本（两份副本已确认存在版本分裂）。
     """
-    _root = _opt_os.path.dirname(_OPT_ROOT)
+    _root = os.path.dirname(_OPT_ROOT)
     return _root if os.path.isdir(os.path.join(_root, 'data_hub')) else None
 
 
@@ -1040,8 +1011,6 @@ def get_zz1000_main_pcr(trading_date_compact, smooth_days=5, min_days=3,
     if not dh:
         print("    ❌ 中证1000(MO全合约): data_hub 路径不可用")
         return None
-    if dh not in sys.path:
-        sys.path.insert(0, dh)
     try:
         from data_hub.collectors import option_intraday as _oi
         from data_hub.collectors.stock_daily import get_trade_dates

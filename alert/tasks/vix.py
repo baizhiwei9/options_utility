@@ -52,30 +52,16 @@
   python3 vix_intraday_sampler.py --no-opt       # 跳过期权情绪采样/告警（测试用）
 """
 
-# ==================== options 项目路径引导（自动生成，勿手改） ====================
-# 向上查找项目根（同时含 calc/ 与 alert/ 的目录），把 calc、calc/db、alert/notifier
-# 及 data_hub 所在上层目录注入 sys.path，保证任意脚本都能 python3 直接运行，
-# 不依赖 crontab 里手工设置的 PYTHONPATH。
-import os as _opt_os, sys as _opt_sys
-_p = _opt_os.path.dirname(_opt_os.path.abspath(__file__))
-while _p != _opt_os.path.dirname(_p) and not (
-        _opt_os.path.isdir(_opt_os.path.join(_p, 'calc')) and _opt_os.path.isdir(_opt_os.path.join(_p, 'alert'))):
-    _p = _opt_os.path.dirname(_p)
-_OPT_ROOT = _p
-for _sub in (_OPT_ROOT, _opt_os.path.join(_OPT_ROOT, 'calc'), _opt_os.path.join(_OPT_ROOT, 'calc', 'db'),
-             _opt_os.path.join(_OPT_ROOT, 'config'), _opt_os.path.join(_OPT_ROOT, 'alert', 'notifier'), _opt_os.path.dirname(_OPT_ROOT)):
-    if _sub not in _opt_sys.path:
-        _opt_sys.path.insert(0, _sub)
-# ==================================================================================
-
 
 import os
+_OPT_ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 import sys
 import json
 import time
 import fcntl
 import signal
 from datetime import datetime
+
 
 # ============================================================
 # 路径（/Coze/Drive 与 /opt/coze/.fuse_drive 双挂载回退）
@@ -85,7 +71,7 @@ PROJECT_DIR = os.path.dirname(os.path.dirname(_HERE))       # .../options
 OUTPUT_DIR = os.path.join(PROJECT_DIR, 'codeact', 'output')
 
 # 2026-10-30 修复：fuse只读挂载回退到可写路径
-_WRITABLE_FALLBACK = _opt_os.path.join(_OPT_ROOT, 'outputs')
+_WRITABLE_FALLBACK = os.path.join(_OPT_ROOT, 'outputs')
 try:
     os.makedirs(OUTPUT_DIR, exist_ok=True)
     _test = os.path.join(OUTPUT_DIR, '.write_test')
@@ -101,13 +87,9 @@ DRYRUN_STATE_PATH = os.path.join(OUTPUT_DIR, 'vix_intraday_sampler_state_dryrun.
 LOG_PATH = '/tmp/vix_intraday_sampler.log'
 
 # data_hub 数据获取层：统一使用项目内的 dataHub_三级体系（options 的上一级）
-DATAHUB_DIR = _opt_os.path.dirname(_OPT_ROOT)
-if os.path.isdir(os.path.join(DATAHUB_DIR, 'data_hub')) and DATAHUB_DIR not in sys.path:
-    sys.path.insert(0, DATAHUB_DIR)
+DATAHUB_DIR = os.path.dirname(_OPT_ROOT)
 
 # 复用 14:30 生产链路的共享告警库（同目录）
-if _HERE not in sys.path:
-    sys.path.insert(0, _HERE)
 
 # ============================================================
 # 常量
