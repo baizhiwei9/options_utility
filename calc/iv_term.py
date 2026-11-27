@@ -117,32 +117,28 @@ def _get_pcr(exp_data, spot):
     """计算PCR（成交量口径优先，其次持仓量）。
 
     2026-11-18 收敛：选月已由 exp_data 在上层完成（dte≥MIN_NEAR_DTE），本函数
-    只做求和相除，统一入口走 data_hub.calc_pcr_from_df（nearest_month_only=False）。
-    库内 round(4) 与本函数「返回原始未取整、下游统一 round(,3)」的既有口径冲突
-    ——round(4)→round(3) 双重取整会漂移（实测 ~5% 取值 3 位小数差 0.001），
-    故最终数值仍用原始求和相除，库只作 vol 优先/oi 兜底判定与校验。
+    只做求和相除。
+    2026-11-28：**去掉对私有库 data_hub 的依赖** —— 原来为了统一口径去调
+    data_hub.option_metrics.calc_pcr_from_df，公开库单独安装（没有 DataHub）时
+    这里必抛 ModuleNotFoundError，整条期限结构分析直接 error。口径不变（原始
+    求和相除、下游统一 round(,3)），也就没有双重取整漂移问题。
     """
-    import pandas as pd
-    from data_hub.option_metrics import calc_pcr_from_df
-
     calls = exp_data['calls']
     puts = exp_data['puts']
     if not calls and not puts:
         return None
-    df = pd.DataFrame(
-        [{'call_put': 'C', 'vol': c.get('volume', 0) or 0, 'oi': c.get('oi', 0) or 0} for c in calls] +
-        [{'call_put': 'P', 'vol': p.get('volume', 0) or 0, 'oi': p.get('oi', 0) or 0} for p in puts]
-    )
-    res = calc_pcr_from_df(df, nearest_month_only=False)
-    if not res:
-        return None
-    if 'vol_pcr' in res:
-        call_vol = float(df.loc[df['call_put'] == 'C', 'vol'].sum())
-        put_vol = float(df.loc[df['call_put'] == 'P', 'vol'].sum())
+
+    def _vol(items):
+        return sum(float(c.get('vol', c.get('volume', 0)) or 0) for c in items)
+
+    def _oi(items):
+        return sum(float(c.get('oi', 0) or 0) for c in items)
+
+    call_vol, put_vol = _vol(calls), _vol(puts)
+    if call_vol > 0:
         return put_vol / call_vol
-    call_oi = float(df.loc[df['call_put'] == 'C', 'oi'].sum())
-    put_oi = float(df.loc[df['call_put'] == 'P', 'oi'].sum())
-    return put_oi / call_oi if 'oi_pcr' in res else None
+    call_oi, put_oi = _oi(calls), _oi(puts)
+    return put_oi / call_oi if call_oi > 0 else None
 
 
 def _get_skew(exp_data, spot, r=0.02):
@@ -182,9 +178,16 @@ def _get_hv20(code, spot, index_proxy=None):
     return None
 
 
-def analyze_term_structure(code, name, target_type='etf', r=0.02):
+def analyze_term_structure(code, name, target_type='etf', r=0.02,
+                           chain=None, spot=None):
     """
     分析单一品种的波动率期限结构
+
+    Args:
+        chain: 可选，调用方直接给的期权链数据 —— DataFrame（tushare/DataHub 列名或
+               通用列名，见 calc/dfinput.py）或 fetch_option_chain 同款 chain dict。
+               给了就不取数（零网络、不依赖 DataHub）；不给则走原 fetch_option_chain。
+        spot: 可选，标的现价；与 chain 一起由调用方提供，避免再取一次。
 
     Returns:
         dict: {
@@ -196,9 +199,17 @@ def analyze_term_structure(code, name, target_type='etf', r=0.02):
         }
     """
     try:
-        chain, _ = fetch_option_chain(code)
-        # fetch_option_chain 返回的spot可能不准，单独取
-        spot = get_spot_price(code)
+        if chain is None:
+            chain, _ = fetch_option_chain(code)
+        else:
+            try:
+                from .dfinput import as_chain
+            except ImportError:              # 以脚本 / 顶层模块方式运行
+                from dfinput import as_chain
+            chain = as_chain(chain)
+        # fetch_option_chain 返回的spot可能不准，单独取；调用方给了就用给的
+        if spot is None:
+            spot = get_spot_price(code)
         if not chain or spot is None or spot <= 0:
             return {'name': name, 'error': '获取期权链或现货价失败'}
 
