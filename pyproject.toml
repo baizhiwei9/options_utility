@@ -1,0 +1,21 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "anchorstructor-options-utility"
+version = "0.1.0"
+description = "期权出图与分析工具集（AnchorStructor 子项目）"
+requires-python = ">=3.10"
+
+[project.urls]
+"AnchorStructor" = "https://github.com/baizhiwei9/AnchorStructor"
+
+[tool.setuptools.packages.find]
+where = ["."]
+include = ["alert*", "calc*"]
+namespaces = false
+
+[tool.setuptools]
+py-modules = ["cli", "deriv_src", "deriv_v2", "hub_option_api", "option_pcr",
+              "sync_pull", "topbottom_src", "topbottom_v2"]
