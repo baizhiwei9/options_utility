@@ -7,7 +7,7 @@
     alert/tasks/vix.py                    MIN_PCTL_SAMPLE = 120
     calc/cn/gex_weighted.py               MIN_PCTL_SAMPLE = 60
     calc/cn/iv_history.py                 MIN_PCTL_SAMPLE = 60
-    alert/tasks/derivative_sentiment.py   MIN_PCTL_SAMPLE = 60
+    precious-task/standalone/topbottom_v2/task_derivative_sentiment.py   MIN_PCTL_SAMPLE = 60
     calc/risk_layer.py                    SAMPLE_MIN      = 20   ← 语义不同，见下
 
 值的差异本身是有道理的（VIX 日频序列样本长、GEX/IV 历史短），但散落各处
