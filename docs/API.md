@@ -60,12 +60,16 @@ pct = rh.percentile("KC50", "gex_strength", recs[0]["gex"]["strength"])  # 252 �
 
 | 分组 | 子命令 | 说明 |
 |---|---|---|
-| A股报警 | `skew10` `oi-pcr` `pcr-macd` `basis-intraday` `basis-ma20` `oi-intraday` `oi-volume` `oi-realtime` `vix-alerts` `bottom` `topbottom` `derivative` | 各类预警轨（偏度、PCR、基差、持仓、VIX、底部红线、顶底、衍生品情绪） |
+| A股报警 | `skew10` `oi-pcr` `pcr-macd` `basis-intraday` `basis-ma20` `oi-intraday` `oi-volume` `oi-realtime` `vix-alerts` | 各类预警轨（偏度、PCR、基差、持仓、VIX 恐慌线） |
 | A股采集 | `vix` | 自算 VIX 采集落库 |
 | A股计算/日报 | `risk-layer` `gex` `iv-term` `rnd` `ev` `ev-io` `ev-skew` `option-risk` `option-risk-card` `option-risk-card-feishu` `basis-daily` `report-close` `report-midday` `report-oi` | 五轨判灯、GEX、期限结构、风险中性密度、EV、期权风险图/卡片、基差日更、收盘/午盘/持仓日报 |
 | 美股 | `us-index` `us-treasury` `us-index-fetch` `us-treasury-fetch` `us-treasury-backfill` | 三轨指数期权、美债 ETF 期权 R1~R6、取数与 OCC 回补 |
 | 合并日报 | `cn-us` `forecast` | 中美期权风险汇总、波动率 5 日预测 |
 | 本地收编 | `moments` `skew-dual` `gex-weighted` `wing` `iv-history` | 高阶矩（BKM）、双口径偏度、恒定期限加权 GEX、翼形归因、ATM IV 回补 |
+
+> 2026-11-28：`bottom` / `topbottom` / `derivative` 三个子命令（底部 12 红线、顶底 V1、衍生品情绪）
+> 随杨康平顶底策略迁至 `precious-task/standalone/topbottom_v2/`，本库不再提供；判定规则
+> `BOTTOM_REDLINE_RULES` 与 `alert/engine|trigger`、`calc/` 期权限算法仍留在本库被跨库 import。
 
 ## 4. 口径与单位（对错都在这里）
 
@@ -125,6 +129,8 @@ pct = rh.percentile("KC50", "gex_strength", recs[0]["gex"]["strength"])  # 252 �
 | `calc/multipliers.py` | `MULTIPLIER_MAP`（GEX 名→乘数）、`CODE_TO_GEX_NAME`（代码→名）、`CODE_MULTIPLIER`（代码→乘数） | 见 §4；唯一事实来源，新增标的只改这里 |
 
 ## 6. 环境变量（48 个）
+
+> 2026-11-28 起 `alert/tasks/bottom_redline.py`、`alert/tasks/topbottom.py`、`alert/tasks/derivative_sentiment.py`、`deriv_src.py`、`deriv_v2.py`、`topbottom_src.py`、`topbottom_v2.py` 已迁至 `precious-task/standalone/topbottom_v2/`。下表「出现位置」仍写这些文件的行，读取点已随代码迁走，本库只保留被跨库 import 的 `alert/`、`calc/`、`config/`。
 
 | 变量 | 默认值 | 出现位置（模块） |
 |---|---|---|

@@ -61,9 +61,9 @@
 | `oi_realtime_monitor.py` | `alert/tasks/oi_realtime.py` | 待接入 |
 | `vix_intraday_sampler.py` | `alert/tasks/vix.py` | 采集任务，无判定 |
 | B: `yangkangping_vix_alerts.py` | `alert/tasks/vix_alerts.py` | 规则已声明，待接入 |
-| B: `market_bottom_monitor.py` | `alert/tasks/bottom_redline.py` | 12 条红线规则已声明，待接入 |
-| B: `yangkangping_topbottom_monitor.py` | `alert/tasks/topbottom.py` | 待接入 |
-| B: `derivative_sentiment_monitor.py` | `alert/tasks/derivative_sentiment.py` | 待接入 |
+| B: `market_bottom_monitor.py` | `alert/tasks/bottom_redline.py` → 已迁 `precious-task/standalone/topbottom_v2/task_bottom_redline.py` | 2026-11-28 迁出，规则 `BOTTOM_REDLINE_RULES` 仍留本库 |
+| B: `yangkangping_topbottom_monitor.py` | `alert/tasks/topbottom.py` → 已迁 `precious-task/standalone/topbottom_v2/task_topbottom.py` | 2026-11-28 迁出 |
+| B: `derivative_sentiment_monitor.py` | `alert/tasks/derivative_sentiment.py` → 已迁 `precious-task/standalone/topbottom_v2/task_derivative_sentiment.py` | 2026-11-28 迁出 |
 
 ### 3.2 日报 `alert/reports/`
 
