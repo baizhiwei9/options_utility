@@ -41,12 +41,23 @@ A 股五轨期权、美股三轨指数期权、美债 ETF 期权，全部共用�
 
 ```bash
 python -m pip install -r requirements.txt      # numpy pandas scipy requests + akshare/tushare/matplotlib
+python -m pip install -e .                     # 本仓的 alert / calc / config 包（跨库 import 靠它）
 python cli.py selftest                         # 不联网自检：引擎 / 规则 / 数学 / 模块导入
 ```
 
 ### 2.2 目录约定
 
-工程自包含，**不要求**放在某个特定父目录下；所有脚本自带路径引导，任意目录 `python cli.py …` 都能跑。
+工程不再自带路径引导（2026-11-27 去掉了所有 `sys.path` / `PYTHONPATH` 自举）。
+先把它装进当前解释器，之后任意目录都能跑：
+
+```bash
+python -m pip install -e /path/to/options_utility
+# 或者用 AnchorStructor 一次装齐所有成员（不用 venv）：
+#   cd /path/to/AnchorStructor && ./install-system.sh
+python /任意目录/options_utility/cli.py selftest
+```
+
+`data_hub`、`charts` 等兄弟库也要装进**同一个**解释器；crontab 里用同一个 python 即可。
 
 ```
 options_utility/
