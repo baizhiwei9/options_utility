@@ -26,35 +26,8 @@
 - IM各月基差：新浪期货实时 + 本地basis_history
 缺数据一律写 "待更新"，绝不伪造。纯Python零LLM。
 """
+from config.credentials import (TS_TOKEN, FEISHU_CHAT_ID, FEISHU_PRIVATE_USER_ID, EMAIL_FROM_ADDR, EMAIL_FROM_PASS, EMAIL_TO_ADDR, AGENT_EMAIL)
 
-# ==================== options 项目路径引导（自动生成，勿手改） ====================
-# 向上查找项目根（同时含 calc/ 与 alert/ 的目录），把 calc、calc/db、alert/notifier
-# 及 data_hub 所在上层目录注入 sys.path，保证任意脚本都能 python3 直接运行，
-# 不依赖 crontab 里手工设置的 PYTHONPATH。
-# ==================== 凭证引导（自动生成，勿手改） ====================
-# 敏感信息统一放 config/private.py（.gitignore 排除）或同名环境变量，
-# 仓库里只保留 config/private.example.py 模板。取值逻辑见 config/credentials.py。
-import os as _cred_os, sys as _cred_sys
-_cd = _cred_os.path.dirname(_cred_os.path.abspath(__file__))
-while _cd != _cred_os.path.dirname(_cd) and not _cred_os.path.isdir(_cred_os.path.join(_cd, 'config')):
-    _cd = _cred_os.path.dirname(_cd)
-_cred_cfg = _cred_os.path.join(_cd, 'config')
-if _cred_cfg not in _cred_sys.path:
-    _cred_sys.path.insert(0, _cred_cfg)
-from credentials import (TS_TOKEN, FEISHU_CHAT_ID, FEISHU_PRIVATE_USER_ID,
-                         EMAIL_FROM_ADDR, EMAIL_FROM_PASS, EMAIL_TO_ADDR, AGENT_EMAIL)
-# =======================================================================
-import os as _opt_os, sys as _opt_sys
-_p = _opt_os.path.dirname(_opt_os.path.abspath(__file__))
-while _p != _opt_os.path.dirname(_p) and not (
-        _opt_os.path.isdir(_opt_os.path.join(_p, 'calc')) and _opt_os.path.isdir(_opt_os.path.join(_p, 'alert'))):
-    _p = _opt_os.path.dirname(_p)
-_OPT_ROOT = _p
-for _sub in (_OPT_ROOT, _opt_os.path.join(_OPT_ROOT, 'calc'), _opt_os.path.join(_OPT_ROOT, 'calc', 'db'),
-             _opt_os.path.join(_OPT_ROOT, 'config'), _opt_os.path.join(_OPT_ROOT, 'alert', 'notifier'), _opt_os.path.dirname(_OPT_ROOT)):
-    if _sub not in _opt_sys.path:
-        _opt_sys.path.insert(0, _sub)
-# ==================================================================================
 
 import os
 import sys
@@ -69,13 +42,12 @@ from scipy.stats import norm
 
 SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
 PROJECT_DIR = os.path.dirname(SCRIPT_DIR)
-sys.path.insert(0, SCRIPT_DIR)
 
-from fetch_eastmoney import fetch_option_chain, get_spot_price
-from option_monitor import bs_iv, bs_call, bs_put, bs_gamma
-import basis as bdf
-import gex as gex_engine  # 复用午盘/收盘期权任务同一套GEX引擎(Black-76 OI×Γ累计Flip)
-import risk_history as hdb      # 252日历史指标SQLite库(纯程序采集计算，分位从库读)
+from calc.fetch_eastmoney import fetch_option_chain, get_spot_price
+from calc.option_monitor import bs_iv, bs_call, bs_put, bs_gamma
+import calc.basis as bdf
+import calc.gex as gex_engine
+import calc.db.risk_history as hdb
 from alert.trigger import trigger  # noqa: E402
 
 OUTPUT_DIR = os.path.join(PROJECT_DIR, 'outputs')
@@ -650,7 +622,7 @@ def gex_proxy(gex_name, spot, mult, kind, levels=None):
     (gex_monitor.calc_gex_full, Black-76 gamma、call+/put-、oi×γ×mult×F²×0.01、多到期月
     累计曲线零交叉Flip)同一套，保证与中午/晚上日报数字一致。
     终版纪律：对外不报GEX绝对值，只给有符号强度(自身分位)+Flip距离；_local_yi仅内部留存。"""
-    import fetch as odf
+    import calc.fetch as odf
     contracts, source, err = odf.get_option_chain(gex_name, levels=levels)
     if not contracts:
         return {'strength': None, 'regime': '无数据', 'flip': None,
@@ -1442,9 +1414,7 @@ def build_feishu_card(p):
     """
     _HERE = os.path.dirname(os.path.abspath(__file__))
     _NOTIFIER = os.path.join(os.path.dirname(_HERE), 'alert', 'notifier')
-    if _NOTIFIER not in sys.path:
-        sys.path.insert(0, _NOTIFIER)
-    from feishu_card_utils import (
+    from alert.notifier.feishu_card_utils import (
         build_card_header, build_data_table, build_hr,
         build_note, build_markdown,
     )

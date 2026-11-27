@@ -50,12 +50,10 @@ HEADERS = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64)"}
 DEFAULT_SYMBOLS = ("TLT", "TLH", "IEF", "XLU")
 
 try:
-    from paths import US_DATA_DIR as DATA_DIR
+    from config.paths import US_DATA_DIR as DATA_DIR
 except ImportError:  # 以脚本方式直接运行时兜底
     import os as _os, sys as _s
-    _s.path.insert(0, _os.path.join(_os.path.dirname(_os.path.dirname(_os.path.dirname(
-        _os.path.abspath(__file__)))), "config"))
-    from paths import US_DATA_DIR as DATA_DIR
+    from config.paths import US_DATA_DIR as DATA_DIR
 
 
 def _month_end_yyyymmdd(y, m):

@@ -30,11 +30,8 @@ import pandas as pd
 
 _HERE = os.path.dirname(os.path.abspath(__file__))
 _OU = os.path.dirname(_HERE)
-for _p in (_OU, _HERE, os.path.join(_OU, "alert", "notifier")):
-    if _p not in sys.path:
-        sys.path.insert(0, _p)
 
-import option_risk_chart as m
+import calc.option_risk_chart as m
 
 TARGETS = [
     ("沪深300", "510300"),

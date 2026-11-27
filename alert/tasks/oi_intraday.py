@@ -6,53 +6,25 @@
 达到异动阈值（按档位）立即发邮件告警
 纯Python零token，幂等去重
 """
+from config.credentials import (TS_TOKEN, FEISHU_CHAT_ID, FEISHU_PRIVATE_USER_ID, EMAIL_FROM_ADDR, EMAIL_FROM_PASS, EMAIL_TO_ADDR, AGENT_EMAIL)
 
-# ==================== options 项目路径引导（自动生成，勿手改） ====================
-# 向上查找项目根（同时含 calc/ 与 alert/ 的目录），把 calc、calc/db、alert/notifier
-# 及 data_hub 所在上层目录注入 sys.path，保证任意脚本都能 python3 直接运行，
-# 不依赖 crontab 里手工设置的 PYTHONPATH。
-# ==================== 凭证引导（自动生成，勿手改） ====================
-# 敏感信息统一放 config/private.py（.gitignore 排除）或同名环境变量，
-# 仓库里只保留 config/private.example.py 模板。取值逻辑见 config/credentials.py。
-import os as _cred_os, sys as _cred_sys
-_cd = _cred_os.path.dirname(_cred_os.path.abspath(__file__))
-while _cd != _cred_os.path.dirname(_cd) and not _cred_os.path.isdir(_cred_os.path.join(_cd, 'config')):
-    _cd = _cred_os.path.dirname(_cd)
-_cred_cfg = _cred_os.path.join(_cd, 'config')
-if _cred_cfg not in _cred_sys.path:
-    _cred_sys.path.insert(0, _cred_cfg)
-from credentials import (TS_TOKEN, FEISHU_CHAT_ID, FEISHU_PRIVATE_USER_ID,
-                         EMAIL_FROM_ADDR, EMAIL_FROM_PASS, EMAIL_TO_ADDR, AGENT_EMAIL)
-# =======================================================================
-import os as _opt_os, sys as _opt_sys
-_p = _opt_os.path.dirname(_opt_os.path.abspath(__file__))
-while _p != _opt_os.path.dirname(_p) and not (
-        _opt_os.path.isdir(_opt_os.path.join(_p, 'calc')) and _opt_os.path.isdir(_opt_os.path.join(_p, 'alert'))):
-    _p = _opt_os.path.dirname(_p)
-_OPT_ROOT = _p
-for _sub in (_OPT_ROOT, _opt_os.path.join(_OPT_ROOT, 'calc'), _opt_os.path.join(_OPT_ROOT, 'calc', 'db'),
-             _opt_os.path.join(_OPT_ROOT, 'config'), _opt_os.path.join(_OPT_ROOT, 'alert', 'notifier'), _opt_os.path.dirname(_OPT_ROOT)):
-    if _sub not in _opt_sys.path:
-        _opt_sys.path.insert(0, _sub)
-# ==================================================================================
 
 import os
+_OPT_ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 import sys
 import json
 import time
 from datetime import datetime
-import opt_store as _store  # 统一存储层：历史数据落 data/options.db
+import config.opt_store as _store
 from collections import defaultdict
 from email.mime.text import MIMEText
 from email.mime.multipart import MIMEMultipart
 from email.utils import formataddr
 
-sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-from fetch import get_option_chain
+from calc.fetch import get_option_chain
 
 # 统一邮件出口（标题自动带「｜扣子·来源」后缀）
-sys.path.insert(0, os.path.dirname(_OPT_ROOT))  # 原为硬编码主对话目录，合并后按项目根推导
-from email_sender import send_email  # noqa: E402
+from alert.notifier.email_sender import send_email  # noqa: E402
 from alert.trigger import trigger  # noqa: E402
 
 # 判定内核统一走 alert 引擎：分档阈值、级别、口径文案全部来自 alert/rules.py
@@ -62,6 +34,7 @@ from alert.rules import (  # noqa: E402
     OI_INTRADAY_TIER_RULES, OI_INTRADAY_EMAIL_RULE,
     OI_INTRADAY_MIN_CHG,
 )
+
 
 WORK_DIR = _OPT_ROOT  # 项目根（原为 /Coze/Drive/期权风险监控）
 OUTPUT_DIR = os.path.join(WORK_DIR, 'outputs')
@@ -292,9 +265,8 @@ def send_alerts(today_str, run_time_str, new_alerts):
     
     # ============ 飞书推送（所有异动） ============
     try:
-        sys.path.insert(0, os.path.dirname(_OPT_ROOT))  # 原为硬编码主对话目录，合并后按项目根推导
-        from feishu_push import push_card_to_feishu
-        from feishu_card_utils import build_card_header, build_data_table, build_hr, build_markdown
+        from alert.notifier.feishu_push import push_card_to_feishu
+        from alert.notifier.feishu_card_utils import build_card_header, build_data_table, build_hr, build_markdown
         
         header = build_card_header(
             title=f"⚠️ OI盘中异动 {today_str} {run_time_str}",
@@ -457,7 +429,7 @@ def main():
     
     # 交易日检查
     try:
-        from trading_day import check_trading_day
+        from calc.trading_day import check_trading_day
         if not check_trading_day():
             print('  非交易日，跳过')
             return

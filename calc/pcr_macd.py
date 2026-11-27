@@ -23,24 +23,9 @@ PCR多空 + MACD 综合信号模块
 作者: 蓁宝 (Coze Agent)
 """
 
-# ==================== options 项目路径引导（自动生成，勿手改） ====================
-# 向上查找项目根（同时含 calc/ 与 alert/ 的目录），把 calc、calc/db、alert/notifier
-# 及 data_hub 所在上层目录注入 sys.path，保证任意脚本都能 python3 直接运行，
-# 不依赖 crontab 里手工设置的 PYTHONPATH。
-import os as _opt_os, sys as _opt_sys
-_p = _opt_os.path.dirname(_opt_os.path.abspath(__file__))
-while _p != _opt_os.path.dirname(_p) and not (
-        _opt_os.path.isdir(_opt_os.path.join(_p, 'calc')) and _opt_os.path.isdir(_opt_os.path.join(_p, 'alert'))):
-    _p = _opt_os.path.dirname(_p)
-_OPT_ROOT = _p
-for _sub in (_OPT_ROOT, _opt_os.path.join(_OPT_ROOT, 'calc'), _opt_os.path.join(_OPT_ROOT, 'calc', 'db'),
-             _opt_os.path.join(_OPT_ROOT, 'config'), _opt_os.path.join(_OPT_ROOT, 'alert', 'notifier'), _opt_os.path.dirname(_OPT_ROOT)):
-    if _sub not in _opt_sys.path:
-        _opt_sys.path.insert(0, _sub)
-# ==================================================================================
-
 
 import os
+_OPT_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 import sys
 import json
 import argparse
@@ -54,16 +39,13 @@ from datetime import datetime, timedelta
 SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
 
 # 同目录 option_pcr 模块
-if SCRIPT_DIR not in sys.path:
-    sys.path.insert(0, SCRIPT_DIR)
 
 # 飞书推送模块
-_feishu_dir = _opt_os.path.join(_OPT_ROOT, 'alert', 'notifier')
-if _feishu_dir not in sys.path:
-    sys.path.insert(0, _feishu_dir)
+_feishu_dir = os.path.join(_OPT_ROOT, 'alert', 'notifier')
 
 import akshare as ak
 from alert.trigger import trigger  # noqa: E402
+
 
 # ================================================================
 # 常量
@@ -380,7 +362,7 @@ def build_pcr_macd_message(trade_date=None):
     date_str = f'{trade_date[:4]}-{trade_date[4:6]}-{trade_date[6:]}'
     
     # ---------- 1. 获取 PCR ----------
-    import pcr
+    import calc.pcr as pcr
     all_pcr = pcr.get_all_index_pcr(
         trade_date, smooth_days=5, min_days=3, exclude_current_month=True
     )
@@ -494,7 +476,7 @@ def build_pcr_macd_message(trade_date=None):
     markdown_text = '\n'.join(lines)
     
     # ---------- 4. 构建卡片 ----------
-    from feishu_push import markdown_to_card
+    from alert.notifier.feishu_push import markdown_to_card
     card_title = f'📊 PCR多空 + MACD 综合信号 | {date_str}'
     card_data = markdown_to_card(card_title, markdown_text)
     

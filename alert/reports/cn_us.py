@@ -31,11 +31,6 @@ import sys
 
 _HERE = os.path.dirname(os.path.abspath(__file__))
 _ROOT = os.path.dirname(os.path.dirname(_HERE))
-for _p in (_ROOT, os.path.join(_ROOT, 'calc'), os.path.join(_ROOT, 'calc', 'db'),
-           os.path.join(_ROOT, 'calc', 'us'), os.path.join(_ROOT, 'config'),
-           os.path.join(_ROOT, 'alert', 'notifier')):
-    if _p not in sys.path:
-        sys.path.insert(0, _p)
 
 from alert.trigger import trigger      # noqa: E402
 
@@ -45,7 +40,7 @@ from alert.trigger import trigger      # noqa: E402
 # ---------------------------------------------------------------------------
 def collect_cn():
     try:
-        import risk_layer
+        import calc.risk_layer as risk_layer
         payload = risk_layer.run(verbose=True)
         return payload, None
     except Exception as exc:            # noqa: BLE001
@@ -236,7 +231,7 @@ def run(dry_run=False, with_cn=True, verbose=True):
     if err:
         gaps.append('5 日预测：%s' % err)
 
-    from paths import OUTPUTS_DIR
+    from config.paths import OUTPUTS_DIR
     out = os.path.join(str(OUTPUTS_DIR), 'cn_us_%s.html' % date_str)
     with open(out, 'w', encoding='utf-8') as fp:
         fp.write(build_html(cn, us, tre, fc, gaps, date_str))

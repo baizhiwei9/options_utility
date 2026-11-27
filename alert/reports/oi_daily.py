@@ -7,22 +7,6 @@
 - 幂等保护：同一天只推一次
 """
 
-# ==================== options 项目路径引导（自动生成，勿手改） ====================
-# 向上查找项目根（同时含 calc/ 与 alert/ 的目录），把 calc、calc/db、alert/notifier
-# 及 data_hub 所在上层目录注入 sys.path，保证任意脚本都能 python3 直接运行，
-# 不依赖 crontab 里手工设置的 PYTHONPATH。
-import os as _opt_os, sys as _opt_sys
-_p = _opt_os.path.dirname(_opt_os.path.abspath(__file__))
-while _p != _opt_os.path.dirname(_p) and not (
-        _opt_os.path.isdir(_opt_os.path.join(_p, 'calc')) and _opt_os.path.isdir(_opt_os.path.join(_p, 'alert'))):
-    _p = _opt_os.path.dirname(_p)
-_OPT_ROOT = _p
-for _sub in (_OPT_ROOT, _opt_os.path.join(_OPT_ROOT, 'calc'), _opt_os.path.join(_OPT_ROOT, 'calc', 'db'),
-             _opt_os.path.join(_OPT_ROOT, 'config'), _opt_os.path.join(_OPT_ROOT, 'alert', 'notifier'), _opt_os.path.dirname(_OPT_ROOT)):
-    if _sub not in _opt_sys.path:
-        _opt_sys.path.insert(0, _sub)
-# ==================================================================================
-
 
 import os
 import sys
@@ -33,17 +17,15 @@ SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
 PROJECT_DIR = os.path.dirname(SCRIPT_DIR)
 OUTPUT_DIR = os.path.join(PROJECT_DIR, 'outputs')
 
-sys.path.insert(0, SCRIPT_DIR)
-from basis import (
+from calc.basis import (
     get_basis_daily, calc_percentiles, calc_multi_percentiles, BASIS_TARGETS
 )
 
-sys.path.insert(0, os.path.dirname(_OPT_ROOT))  # 原为硬编码主对话目录，合并后按项目根推导
-from feishu_card_utils import (
+from alert.notifier.feishu_card_utils import (
     build_card_header, build_data_table, build_hr,
     build_note, build_markdown,
 )
-from feishu_push import push_card_to_feishu
+from alert.notifier.feishu_push import push_card_to_feishu
 from alert.trigger import trigger  # noqa: E402
 
 TRADE_DATE = sys.argv[1] if len(sys.argv) > 1 else datetime.datetime.now().strftime('%Y%m%d')
@@ -422,7 +404,7 @@ def main():
     # 展示页（stock-dashboard）靠这份文件搬 opt.oi.basis_abs.* 指标。
     if basis_ok:
         try:
-            from case_summary import write_summary
+            from alert.notifier.case_summary import write_summary
             write_summary('oi_basis',
                           {code: d['basis_abs'] for code, d in basis_data.items()
                            if 'error' not in d and d.get('basis_abs') is not None},

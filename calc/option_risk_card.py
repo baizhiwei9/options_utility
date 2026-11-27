@@ -19,9 +19,6 @@ warnings.filterwarnings("ignore")
 
 _HERE = os.path.dirname(os.path.abspath(__file__))
 OU = os.path.dirname(_HERE)
-for _p in (OU, _HERE):
-    if _p not in sys.path:
-        sys.path.insert(0, _p)
 
 # 同仓 data_hub 若与本仓库并列，则自动指过去（不再硬编码 /root/... 路径）
 _PKG_PARENT = os.path.dirname(OU)
@@ -35,7 +32,7 @@ import numpy as np
 import pandas as pd
 from matplotlib.patches import FancyBboxPatch, Rectangle
 
-import option_risk_chart as m
+import calc.option_risk_chart as m
 
 plt.rcParams["font.sans-serif"] = ["WenQuanYi Zen Hei", "Noto Sans CJK SC", "SimHei", "DejaVu Sans"]
 plt.rcParams["axes.unicode_minus"] = False

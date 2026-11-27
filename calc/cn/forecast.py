@@ -25,12 +25,10 @@ import datetime
 import numpy as np
 
 try:
-    from paths import CN_DATA_DIR as _CND, US_DATA_DIR as _USD
+    from config.paths import CN_DATA_DIR as _CND, US_DATA_DIR as _USD
 except ImportError:  # 以脚本方式直接运行时兜底
     import sys as _s
-    _s.path.insert(0, os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(
-        os.path.abspath(__file__)))), "config"))
-    from paths import CN_DATA_DIR as _CND, US_DATA_DIR as _USD
+    from config.paths import CN_DATA_DIR as _CND, US_DATA_DIR as _USD
 HERE = os.path.dirname(os.path.abspath(__file__))
 D = str(_CND)   # A股中间数据（QVIX / 链指标 / 标的日线）
 D_US = str(_USD)  # 美股中间数据（CBOE 指数 + ETF 日线）

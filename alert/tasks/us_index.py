@@ -24,10 +24,6 @@ import sys
 
 _HERE = os.path.dirname(os.path.abspath(__file__))
 _ROOT = os.path.dirname(os.path.dirname(_HERE))
-for _p in (_ROOT, os.path.join(_ROOT, 'calc'), os.path.join(_ROOT, 'config'),
-           os.path.join(_ROOT, 'alert', 'notifier')):
-    if _p not in sys.path:
-        sys.path.insert(0, _p)
 
 from alert.engine import judge_all            # noqa: E402
 from alert.rules import US_INDEX_RULES        # noqa: E402
@@ -36,7 +32,7 @@ from alert.trigger import trigger             # noqa: E402
 
 def _load_hist(fn, col):
     """读 CBOE 指数历史 JSON → [(YYYYMMDD, 值), ...]，缺失返回空列表。"""
-    from paths import US_DATA_DIR
+    from config.paths import US_DATA_DIR
     p = os.path.join(str(US_DATA_DIR), fn)
     if not os.path.exists(p):
         return []

@@ -31,9 +31,6 @@ while _p != _opt_os.path.dirname(_p) and not (
         _opt_os.path.isdir(_opt_os.path.join(_p, 'calc')) and _opt_os.path.isdir(_opt_os.path.join(_p, 'alert'))):
     _p = _opt_os.path.dirname(_p)
 _OPT_ROOT = _p
-for _sub in (_OPT_ROOT, _opt_os.path.join(_OPT_ROOT, 'calc'), _opt_os.path.join(_OPT_ROOT, 'config')):
-    if _sub not in _opt_sys.path:
-        _opt_sys.path.insert(0, _sub)
 # ======================================================================================
 
 import os
@@ -50,7 +47,7 @@ matplotlib.use('Agg')
 import matplotlib.pyplot as plt
 from matplotlib import font_manager as _fm
 
-from fetch_eastmoney import fetch_option_chain, get_spot_price
+from calc.fetch_eastmoney import fetch_option_chain, get_spot_price
 
 PROJECT_DIR = _OPT_ROOT
 DEFAULT_CODES = '510300,588000'

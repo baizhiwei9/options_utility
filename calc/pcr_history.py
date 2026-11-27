@@ -38,9 +38,6 @@ import pandas as pd
 _HERE = os.path.dirname(os.path.abspath(__file__))
 _OPT_ROOT = os.path.dirname(_HERE)
 _ROOT = os.path.dirname(_OPT_ROOT)
-for _p in (_ROOT, _OPT_ROOT, _HERE):
-    if _p not in sys.path:
-        sys.path.insert(0, _p)
 
 # 指数 → ETF 组合（与 pcr.py 的 INDEX_ETF_MAP 保持一致，改一处必须同步另一处）
 INDEX_ETF_MAP: Dict[str, List[str]] = {

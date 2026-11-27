@@ -43,11 +43,6 @@ while _p != os.path.dirname(_p) and not (
         os.path.isdir(os.path.join(_p, 'calc')) and os.path.isdir(os.path.join(_p, 'alert'))):
     _p = os.path.dirname(_p)
 _OPT_ROOT = _p
-for _sub in (_OPT_ROOT, os.path.join(_OPT_ROOT, 'calc'), os.path.join(_OPT_ROOT, 'calc', 'db'),
-             os.path.join(_OPT_ROOT, 'config'), os.path.join(_OPT_ROOT, 'alert'),
-             os.path.join(_OPT_ROOT, 'alert', 'notifier')):
-    if _sub not in sys.path:
-        sys.path.insert(0, _sub)
 
 TECH_ROOT = os.environ.get('TECH_ROOT', '/root/techAnly-summary')
 
@@ -80,11 +75,8 @@ import json, os, sys
 
 root = sys.argv[1]
 names = json.loads(sys.argv[2])
-sys.path.insert(0, os.path.join(root, 'misc', 'engine'))
-sys.path.insert(0, root)
 
-import tech_summary as TS
-import tech_buypoint as TB
+from misc.engine import tech_buypoint as TB, tech_summary as TS
 
 def f(v):
     try:
@@ -286,7 +278,7 @@ def fetch_tech(names, timeout=TECH_TIMEOUT):
 def fetch_risk(verbose=False):
     """调五轨期权风险，返回 (targets dict, cold_start, summary)。失败则全空。"""
     try:
-        import risk_layer as R
+        import calc.risk_layer as R
         p = R.run(verbose=verbose)
         return (p.get('targets') or {}), bool(p.get('cold_start')), (p.get('summary') or {})
     except Exception as e:                            # noqa: BLE001
@@ -549,7 +541,7 @@ def main(argv=None):
         if a.verbose:
             print('[3/3] 出图：%s …' % a.chart_index, file=sys.stderr)
         try:
-            import option_risk_chart as ORC
+            import calc.option_risk_chart as ORC
             ORC.main(['--index', a.chart_index, '--no-show'])
         except SystemExit:
             pass
@@ -558,7 +550,7 @@ def main(argv=None):
 
     if a.push:
         try:
-            from feishu_push import push_to_feishu
+            from alert.notifier.feishu_push import push_to_feishu
             ok = push_to_feishu(text=md, chat_id=a.chat)
             print('[推送] %s' % ('成功' if ok else '失败'), file=sys.stderr)
         except Exception as e:                        # noqa: BLE001

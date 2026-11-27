@@ -1179,8 +1179,6 @@ def build_circulation_daily_card(date_str, score, rating, risks, positives, key_
             import os as _os
             import sys as _sys
             _cf = _os.environ.get('CIRCFLOW_DIR')   # 可选外部依赖：环流报告工程目录
-            if _cf and _cf not in _sys.path:
-                _sys.path.insert(0, _cf)
             from pboc_liquidity_reader import render_card_lines
             elements.append(build_markdown("\n".join(render_card_lines(liq_data))))
         except Exception as _e:
@@ -1193,8 +1191,6 @@ def build_circulation_daily_card(date_str, score, rating, risks, positives, key_
             import os as _os
             import sys as _sys
             _cf = _os.environ.get('CIRCFLOW_DIR')   # 可选外部依赖：环流报告工程目录
-            if _cf and _cf not in _sys.path:
-                _sys.path.insert(0, _cf)
             from usd_fingerprint import render_card_lines as _fp_cards
             elements.append(build_markdown("\n".join(_fp_cards(fp_data))))
         except Exception as _e:

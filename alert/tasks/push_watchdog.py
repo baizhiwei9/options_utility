@@ -30,11 +30,8 @@ _p = os.path.dirname(os.path.abspath(__file__))
 while _p != os.path.dirname(_p) and not (
         os.path.isdir(os.path.join(_p, 'calc')) and os.path.isdir(os.path.join(_p, 'alert'))):
     _p = os.path.dirname(_p)
-if _p not in sys.path:
-    sys.path.insert(0, _p)
-sys.path.insert(0, os.path.join(_p, 'alert', 'notifier'))
 
-from email_sender import send_email  # noqa: E402
+from alert.notifier.email_sender import send_email  # noqa: E402
 
 ERR_LOG = '/var/log/feishu_push_error.log'
 PROJECT = _p

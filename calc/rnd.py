@@ -27,22 +27,6 @@ BS 函数: 复用 option_monitor (bs_call, bs_iv, delta_to_strike)
   - TXT: 预警文本 (当信号触发时)
 """
 
-# ==================== options 项目路径引导（自动生成，勿手改） ====================
-# 向上查找项目根（同时含 calc/ 与 alert/ 的目录），把 calc、calc/db、alert/notifier
-# 及 data_hub 所在上层目录注入 sys.path，保证任意脚本都能 python3 直接运行，
-# 不依赖 crontab 里手工设置的 PYTHONPATH。
-import os as _opt_os, sys as _opt_sys
-_p = _opt_os.path.dirname(_opt_os.path.abspath(__file__))
-while _p != _opt_os.path.dirname(_p) and not (
-        _opt_os.path.isdir(_opt_os.path.join(_p, 'calc')) and _opt_os.path.isdir(_opt_os.path.join(_p, 'alert'))):
-    _p = _opt_os.path.dirname(_p)
-_OPT_ROOT = _p
-for _sub in (_OPT_ROOT, _opt_os.path.join(_OPT_ROOT, 'calc'), _opt_os.path.join(_OPT_ROOT, 'calc', 'db'),
-             _opt_os.path.join(_OPT_ROOT, 'config'), _opt_os.path.join(_OPT_ROOT, 'alert', 'notifier'), _opt_os.path.dirname(_OPT_ROOT)):
-    if _sub not in _opt_sys.path:
-        _opt_sys.path.insert(0, _sub)
-# ==================================================================================
-
 
 import os
 import sys
@@ -57,7 +41,6 @@ from datetime import datetime, timedelta
 SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
 PROJECT_DIR = os.path.dirname(SCRIPT_DIR)
 
-sys.path.insert(0, SCRIPT_DIR)
 
 import numpy as np
 from scipy.interpolate import CubicSpline
@@ -70,8 +53,8 @@ import matplotlib.pyplot as plt
 _np_integrate = getattr(np, 'trapezoid', None) or getattr(np, 'trapz')
 
 # ---- 复用现有函数 ----
-from option_monitor import bs_call, bs_iv, delta_to_strike
-from fetch_eastmoney import fetch_option_chain, get_spot_price
+from calc.option_monitor import bs_call, bs_iv, delta_to_strike
+from calc.fetch_eastmoney import fetch_option_chain, get_spot_price
 
 # ---- 日志 (stderr) ----
 logging.basicConfig(
@@ -393,7 +376,7 @@ def make_chart(results, date_str, strike_pct, position_codes=None, position_data
     """
     # 中文字体：统一走仓位模块的入口（无中文字体时自动回退，不影响原图）
     try:
-        from position_panel import setup_font as _setup_font
+        from calc.position_panel import setup_font as _setup_font
         _setup_font()
     except Exception:
         pass
@@ -477,7 +460,7 @@ def make_chart(results, date_str, strike_pct, position_codes=None, position_data
 
     # ---- 仓位格（持仓量 / 成交量 × 行权价，双 Y 轴；沿用深色主题）----
     if pos_codes:
-        from position_panel import draw_panel as _draw_position_panel, build_position_data
+        from calc.position_panel import draw_panel as _draw_position_panel, build_position_data
         for j, code in enumerate(pos_codes):
             ax = axes.flat[n + j]
             ax.set_facecolor(COLORS['panel'])
@@ -889,8 +872,6 @@ def _chain_db_mod():
         return _CHAIN_DB
     try:
         _root = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-        if _root not in sys.path:
-            sys.path.insert(0, _root)
         from data_hub.collectors.misc import option_chain_db as _m
         _CHAIN_DB = _m
         return _m

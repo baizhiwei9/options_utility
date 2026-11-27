@@ -27,13 +27,6 @@ import os
 import sys
 
 _ROOT = os.path.dirname(os.path.abspath(__file__))
-for _p in (_ROOT, os.path.join(_ROOT, 'calc'), os.path.join(_ROOT, 'calc', 'db'),
-           os.path.join(_ROOT, 'calc', 'us'), os.path.join(_ROOT, 'calc', 'cn'),
-           os.path.join(_ROOT, 'config'), os.path.join(_ROOT, 'alert'),
-           os.path.join(_ROOT, 'alert', 'tasks'), os.path.join(_ROOT, 'alert', 'reports'),
-           os.path.join(_ROOT, 'alert', 'notifier')):
-    if _p not in sys.path:
-        sys.path.insert(0, _p)
 
 # 子命令 → (模块, 说明, 归属)
 COMMANDS = {
@@ -127,7 +120,7 @@ def _selftest():
     """自检：不联网、不发推送，覆盖引擎/规则/数学自洽/模块可导入。"""
     ok = True
     print('== 1. 报警引擎自检 ==')
-    import engine
+    import alert.engine as engine
     engine._self_test()
 
     print('== 2. 规则唯一性与条数 ==')

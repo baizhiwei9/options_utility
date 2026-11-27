@@ -7,35 +7,8 @@
 用法: python option_monitor.py [YYYYMMDD]
 输出: JSON到 stdout，同时保存到 市场情绪监控/outputs/{date}_option_data.json
 """
+from config.credentials import (TS_TOKEN, FEISHU_CHAT_ID, FEISHU_PRIVATE_USER_ID, EMAIL_FROM_ADDR, EMAIL_FROM_PASS, EMAIL_TO_ADDR, AGENT_EMAIL)
 
-# ==================== options 项目路径引导（自动生成，勿手改） ====================
-# 向上查找项目根（同时含 calc/ 与 alert/ 的目录），把 calc、calc/db、alert/notifier
-# 及 data_hub 所在上层目录注入 sys.path，保证任意脚本都能 python3 直接运行，
-# 不依赖 crontab 里手工设置的 PYTHONPATH。
-# ==================== 凭证引导（自动生成，勿手改） ====================
-# 敏感信息统一放 config/private.py（.gitignore 排除）或同名环境变量，
-# 仓库里只保留 config/private.example.py 模板。取值逻辑见 config/credentials.py。
-import os as _cred_os, sys as _cred_sys
-_cd = _cred_os.path.dirname(_cred_os.path.abspath(__file__))
-while _cd != _cred_os.path.dirname(_cd) and not _cred_os.path.isdir(_cred_os.path.join(_cd, 'config')):
-    _cd = _cred_os.path.dirname(_cd)
-_cred_cfg = _cred_os.path.join(_cd, 'config')
-if _cred_cfg not in _cred_sys.path:
-    _cred_sys.path.insert(0, _cred_cfg)
-from credentials import (TS_TOKEN, FEISHU_CHAT_ID, FEISHU_PRIVATE_USER_ID,
-                         EMAIL_FROM_ADDR, EMAIL_FROM_PASS, EMAIL_TO_ADDR, AGENT_EMAIL)
-# =======================================================================
-import os as _opt_os, sys as _opt_sys
-_p = _opt_os.path.dirname(_opt_os.path.abspath(__file__))
-while _p != _opt_os.path.dirname(_p) and not (
-        _opt_os.path.isdir(_opt_os.path.join(_p, 'calc')) and _opt_os.path.isdir(_opt_os.path.join(_p, 'alert'))):
-    _p = _opt_os.path.dirname(_p)
-_OPT_ROOT = _p
-for _sub in (_OPT_ROOT, _opt_os.path.join(_OPT_ROOT, 'calc'), _opt_os.path.join(_OPT_ROOT, 'calc', 'db'),
-             _opt_os.path.join(_OPT_ROOT, 'config'), _opt_os.path.join(_OPT_ROOT, 'alert', 'notifier'), _opt_os.path.dirname(_OPT_ROOT)):
-    if _sub not in _opt_sys.path:
-        _opt_sys.path.insert(0, _sub)
-# ==================================================================================
 
 
 import os, sys, json, math, time, socket, warnings
@@ -840,8 +813,7 @@ def get_option_contracts_sina(etf_code, exchange):
                 'close', 'volume', 'oi', 'amount'}, ...]
     """
     try:
-        sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-        from fetch_eastmoney import fetch_option_chain, TARGET_CONFIG
+        from calc.fetch_eastmoney import fetch_option_chain, TARGET_CONFIG
     except Exception as e:
         print(f"  [Sina] 导入eastmoney_option_crawler失败: {e}")
         return []
@@ -927,8 +899,6 @@ def _chain_db():
     try:
         import os as _o, sys as _s
         _root = _o.path.dirname(_o.path.dirname(_o.path.dirname(_o.path.abspath(__file__))))
-        if _root not in _s.path:
-            _s.path.insert(0, _root)
         from data_hub.collectors.misc import option_chain_db as _m
         _CHAIN_DB = _m
         return _m
@@ -1128,9 +1098,9 @@ def calc_skew(contracts, spot_price, trade_date, r=0.03):
 
     # ---- 偏度：统一口径（内部小数，此处转百分数） ----
     try:
-        from cn.skew_unified import skew_25d
+        from calc.cn.skew_unified import skew_25d
     except ImportError:      # 以脚本方式直接运行时 calc/cn 不在包路径
-        from skew_unified import skew_25d
+        from calc.cn.skew_unified import skew_25d
 
     _sk = skew_25d(contracts, spot_price, trade_date, r=r)
     if not _sk:
@@ -1236,9 +1206,9 @@ def calc_risk_reversal(contracts, spot_price, trade_date, r=0.03, target_delta=0
         return None
 
     try:
-        from cn.skew_unified import skew_25d
+        from calc.cn.skew_unified import skew_25d
     except ImportError:      # 以脚本方式直接运行时 calc/cn 不在包路径
-        from skew_unified import skew_25d
+        from calc.cn.skew_unified import skew_25d
 
     _sk = skew_25d(contracts, spot_price, trade_date, r=r,
                    delta_level=target_delta, normalize=False)
@@ -2299,10 +2269,8 @@ def main():
     import sys as _sys
     _HERE = os.path.dirname(os.path.abspath(__file__))
     _NOTIFIER = os.path.join(os.path.dirname(_HERE), 'alert', 'notifier')
-    if _NOTIFIER not in _sys.path:
-        _sys.path.insert(0, _NOTIFIER)
-    from feishu_card_utils import build_option_monitor_card
-    from feishu_push import push_card_to_feishu
+    from alert.notifier.feishu_card_utils import build_option_monitor_card
+    from alert.notifier.feishu_push import push_card_to_feishu
     
     date_display = f"{trade_date[:4]}-{trade_date[4:6]}-{trade_date[6:]}" if len(trade_date) == 8 else trade_date
     if skip_push:

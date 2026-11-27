@@ -5,22 +5,6 @@
 - 支持股指期货 + 国债期货
 """
 
-# ==================== options 项目路径引导（自动生成，勿手改） ====================
-# 向上查找项目根（同时含 calc/ 与 alert/ 的目录），把 calc、calc/db、alert/notifier
-# 及 data_hub 所在上层目录注入 sys.path，保证任意脚本都能 python3 直接运行，
-# 不依赖 crontab 里手工设置的 PYTHONPATH。
-import os as _opt_os, sys as _opt_sys
-_p = _opt_os.path.dirname(_opt_os.path.abspath(__file__))
-while _p != _opt_os.path.dirname(_p) and not (
-        _opt_os.path.isdir(_opt_os.path.join(_p, 'calc')) and _opt_os.path.isdir(_opt_os.path.join(_p, 'alert'))):
-    _p = _opt_os.path.dirname(_p)
-_OPT_ROOT = _p
-for _sub in (_OPT_ROOT, _opt_os.path.join(_OPT_ROOT, 'calc'), _opt_os.path.join(_OPT_ROOT, 'calc', 'db'),
-             _opt_os.path.join(_OPT_ROOT, 'config'), _opt_os.path.join(_OPT_ROOT, 'alert', 'notifier'), _opt_os.path.dirname(_OPT_ROOT)):
-    if _sub not in _opt_sys.path:
-        _opt_sys.path.insert(0, _sub)
-# ==================================================================================
-
 import os
 import json
 import time
@@ -29,7 +13,7 @@ import numpy as np
 import pandas as pd
 from collections import defaultdict
 
-import opt_store as _store  # 统一存储层：历史数据落 data/options.db
+import config.opt_store as _store
 
 # ========== 监控品种配置 ==========
 BASIS_TARGETS = {
@@ -226,8 +210,6 @@ def _fetch_level0_datahub(symbol, cfg, start_date=None, end_date=None):
         import sys as _sys
         import os as _os
         _root = _os.path.dirname(_os.path.dirname(_os.path.dirname(_os.path.abspath(__file__))))
-        if _root not in _sys.path:
-            _sys.path.insert(0, _root)
         from data_hub.collectors.futures.futures_main_daily import get_futures_main_daily
         from data_hub.collectors.stocks.index_daily import get_index_daily
         from data_hub.collectors.bond.interest_rate import get_bond_yield
@@ -396,8 +378,7 @@ def _fetch_level2_tushare(symbol, cfg, start_date=None, end_date=None):
     """Level 2: Tushare 期货日线 + 指数日线"""
     try:
         import sys
-        sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-        from option_monitor import pro, API_SLEEP
+        from calc.option_monitor import pro, API_SLEEP
         
         time.sleep(API_SLEEP)
         

@@ -31,13 +31,6 @@ _FIX = tempfile.mkdtemp(prefix='options_fixtures_')
 shutil.copytree(_FIX_SRC, _FIX, dirs_exist_ok=True)
 os.environ['OPTIONS_US_DATA_DIR'] = _FIX
 os.environ['OPTIONS_CN_DATA_DIR'] = _FIX
-for _p in (_ROOT, os.path.join(_ROOT, 'calc'), os.path.join(_ROOT, 'calc', 'db'),
-           os.path.join(_ROOT, 'calc', 'us'), os.path.join(_ROOT, 'calc', 'cn'),
-           os.path.join(_ROOT, 'config'), os.path.join(_ROOT, 'alert'),
-           os.path.join(_ROOT, 'alert', 'tasks'), os.path.join(_ROOT, 'alert', 'reports'),
-           os.path.join(_ROOT, 'alert', 'notifier')):
-    if _p not in sys.path:
-        sys.path.insert(0, _p)
 
 
 class TestMath(unittest.TestCase):

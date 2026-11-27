@@ -40,11 +40,6 @@ import sqlite3
 # ==================== 项目路径引导 ====================
 _HERE = os.path.dirname(os.path.abspath(__file__))
 _ROOT = os.path.dirname(os.path.dirname(_HERE))
-for _sub in (_ROOT, os.path.join(_ROOT, 'calc'), os.path.join(_ROOT, 'calc', 'cn'),
-             os.path.join(_ROOT, 'config'), os.path.join(_ROOT, 'alert'),
-             os.path.join(_ROOT, 'alert', 'notifier')):
-    if _sub not in sys.path:
-        sys.path.insert(0, _sub)
 
 from calc.cn.iv_history import (                      # noqa: E402
     atm_term_from_day, iv_percentile_thresholds, RISK_FREE,
@@ -120,7 +115,7 @@ def _feishu_chat_id():
     if v:
         return v
     try:
-        from credentials import FEISHU_CHAT_ID  # noqa
+        from config.credentials import FEISHU_CHAT_ID  # noqa
         if FEISHU_CHAT_ID:
             return FEISHU_CHAT_ID
     except Exception:

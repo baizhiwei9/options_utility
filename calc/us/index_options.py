@@ -12,12 +12,10 @@ import numpy as np
 import pandas as pd
 
 try:
-    from paths import US_DATA_DIR as D
+    from config.paths import US_DATA_DIR as D
 except ImportError:  # 以脚本方式直接运行时兜底
     import sys as _s
-    _s.path.insert(0, os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(
-        os.path.abspath(__file__)))), "config"))
-    from paths import US_DATA_DIR as D
+    from config.paths import US_DATA_DIR as D
 # 链快照日：由 main() 从 CBOE 延迟链文件的 timestamp（北京时间）折算为美东交易日。
 # 禁止硬编码，避免链快照日落后于实际抓取的链数据（曾出现 10-21 vs 实际 10-28）。
 SNAP = None

@@ -27,10 +27,6 @@ import sys
 
 _HERE = os.path.dirname(os.path.abspath(__file__))
 _ROOT = os.path.dirname(os.path.dirname(_HERE))
-for _p in (_ROOT, os.path.join(_ROOT, 'calc'), os.path.join(_ROOT, 'calc', 'us'),
-           os.path.join(_ROOT, 'config'), os.path.join(_ROOT, 'alert', 'notifier')):
-    if _p not in sys.path:
-        sys.path.insert(0, _p)
 
 from alert.engine import judge_all               # noqa: E402
 from alert.rules import US_TREASURY_RULES        # noqa: E402

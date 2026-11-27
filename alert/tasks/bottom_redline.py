@@ -29,39 +29,13 @@ v2.0更新：
 - 红线>5触发邮件告警
 - 全面注释和docstring
 """
+from config.credentials import (TS_TOKEN, FEISHU_CHAT_ID, FEISHU_PRIVATE_USER_ID, EMAIL_FROM_ADDR, EMAIL_FROM_PASS, EMAIL_TO_ADDR, AGENT_EMAIL, QQ_EMAIL_AUTH_CODE)
 
-# ==================== options 项目路径引导（自动生成，勿手改） ====================
-# 向上查找项目根（同时含 calc/ 与 alert/ 的目录），把 calc、calc/db、alert/notifier
-# 及 data_hub 所在上层目录注入 sys.path，保证任意脚本都能 python3 直接运行，
-# 不依赖 crontab 里手工设置的 PYTHONPATH。
-# ==================== 凭证引导（自动生成，勿手改） ====================
-# 敏感信息统一放 config/private.py（.gitignore 排除）或同名环境变量，
-# 仓库里只保留 config/private.example.py 模板。取值逻辑见 config/credentials.py。
-import os as _cred_os, sys as _cred_sys
-_cd = _cred_os.path.dirname(_cred_os.path.abspath(__file__))
-while _cd != _cred_os.path.dirname(_cd) and not _cred_os.path.isdir(_cred_os.path.join(_cd, 'config')):
-    _cd = _cred_os.path.dirname(_cd)
-_cred_cfg = _cred_os.path.join(_cd, 'config')
-if _cred_cfg not in _cred_sys.path:
-    _cred_sys.path.insert(0, _cred_cfg)
-from credentials import (TS_TOKEN, FEISHU_CHAT_ID, FEISHU_PRIVATE_USER_ID,
-                         EMAIL_FROM_ADDR, EMAIL_FROM_PASS, EMAIL_TO_ADDR, AGENT_EMAIL, QQ_EMAIL_AUTH_CODE)
-# =======================================================================
-import os as _opt_os, sys as _opt_sys
-_p = _opt_os.path.dirname(_opt_os.path.abspath(__file__))
-while _p != _opt_os.path.dirname(_p) and not (
-        _opt_os.path.isdir(_opt_os.path.join(_p, 'calc')) and _opt_os.path.isdir(_opt_os.path.join(_p, 'alert'))):
-    _p = _opt_os.path.dirname(_p)
-_OPT_ROOT = _p
-for _sub in (_OPT_ROOT, _opt_os.path.join(_OPT_ROOT, 'calc'), _opt_os.path.join(_OPT_ROOT, 'calc', 'db'),
-             _opt_os.path.join(_OPT_ROOT, 'config'), _opt_os.path.join(_OPT_ROOT, 'alert', 'notifier'), _opt_os.path.dirname(_OPT_ROOT)):
-    if _sub not in _opt_sys.path:
-        _opt_sys.path.insert(0, _sub)
-# ==================================================================================
 
 
 import sys
 import os
+_OPT_ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 import json
 import time
 import socket
@@ -196,6 +170,7 @@ from alert.trigger import trigger  # noqa: E402
 import pandas as pd
 import numpy as np
 
+
 # ---- lark-cli 配置引导（crontab 环境不会继承会话环境变量）----
 # 2026-10-23：crontab 直接调度时环境里没有 LARKSUITE_CLI_* 变量，lark-cli 会返回
 #   config/not_configured，导致「群卡片推送」和「私聊告警」双双静默失败。
@@ -324,8 +299,6 @@ def fetch_index_daily(symbol):
     try:
         import sys as _sys, os as _os
         _root = _os.path.dirname(_os.path.dirname(_os.path.dirname(_os.path.dirname(_os.path.abspath(__file__)))))
-        if _root not in _sys.path:
-            _sys.path.insert(0, _root)
         from data_hub.collectors.stocks.index_daily import get_index_daily
         _code = symbol[2:]
         _mkt = 'SH' if symbol.startswith('sh') else 'SZ'
@@ -359,8 +332,6 @@ def fetch_futures_main(symbol, start_date, end_date):
     try:
         import sys as _sys, os as _os
         _root = _os.path.dirname(_os.path.dirname(_os.path.dirname(_os.path.dirname(_os.path.abspath(__file__)))))
-        if _root not in _sys.path:
-            _sys.path.insert(0, _root)
         from data_hub.collectors.futures.futures_main_daily import get_futures_main_daily
         _df = get_futures_main_daily(symbol=symbol, start_date=start_date, end_date=end_date)
         if _df is not None and len(_df) > 0:
@@ -2411,7 +2382,7 @@ def run_bottom_monitor(trading_date=None, mode='intraday', force=False, skip_pus
     # 期权PCR（5日平滑+剔除当月合约）- 使用Tushare统一数据源
     print("  → 期权PCR（5日平滑+剔除当月合约，Tushare数据源）...")
     try:
-        from pcr import fetch_pcr_for_bottom_monitor
+        from calc.pcr import fetch_pcr_for_bottom_monitor
         pcr_excl_current = fetch_pcr_for_bottom_monitor(trading_date_compact)
         if pcr_excl_current and not pcr_excl_current.get('fallback', True):
             date_range = pcr_excl_current.get('date_range', '')

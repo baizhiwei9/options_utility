@@ -29,7 +29,6 @@ import shutil
 import sqlite3
 import sys
 
-sys.path.insert(0, '/Coze/Drive/dataHub_三级体系')
 
 DB_CLOUD = ('/Coze/Drive/蓁宝/所有对话/主对话/市场情绪监控/data/'
             'options_cache/style_drift.db')

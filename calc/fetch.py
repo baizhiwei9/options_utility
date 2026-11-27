@@ -9,31 +9,14 @@ Level 3: 新浪网页直连 (当前在用的 get_option_contracts_sina)
 全失败返回空列表，由上层判断是否跳过
 """
 
-# ==================== options 项目路径引导（自动生成，勿手改） ====================
-# 向上查找项目根（同时含 calc/ 与 alert/ 的目录），把 calc、calc/db、alert/notifier
-# 及 data_hub 所在上层目录注入 sys.path，保证任意脚本都能 python3 直接运行，
-# 不依赖 crontab 里手工设置的 PYTHONPATH。
-import os as _opt_os, sys as _opt_sys
-_p = _opt_os.path.dirname(_opt_os.path.abspath(__file__))
-while _p != _opt_os.path.dirname(_p) and not (
-        _opt_os.path.isdir(_opt_os.path.join(_p, 'calc')) and _opt_os.path.isdir(_opt_os.path.join(_p, 'alert'))):
-    _p = _opt_os.path.dirname(_p)
-_OPT_ROOT = _p
-for _sub in (_OPT_ROOT, _opt_os.path.join(_OPT_ROOT, 'calc'), _opt_os.path.join(_OPT_ROOT, 'calc', 'db'),
-             _opt_os.path.join(_OPT_ROOT, 'config'), _opt_os.path.join(_OPT_ROOT, 'alert', 'notifier'), _opt_os.path.dirname(_OPT_ROOT)):
-    if _sub not in _opt_sys.path:
-        _opt_sys.path.insert(0, _sub)
-# ==================================================================================
-
 import os
 import sys
 import time
 import traceback
 
 SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
-sys.path.insert(0, SCRIPT_DIR)
 
-from option_monitor import get_option_contracts_sina, API_SLEEP
+from calc.option_monitor import get_option_contracts_sina, API_SLEEP
 
 # 采集源名称
 SOURCE_AKSHARE = 'akshare'
@@ -231,7 +214,7 @@ def _fetch_level1_akshare(target_name, cfg, trade_date=None):
 def _fetch_level2_tushare(target_name, cfg, trade_date=None):
     """Level 2: Tushare"""
     try:
-        from option_monitor import pro
+        from calc.option_monitor import pro
         
         ts_exchange = cfg['ts_exchange']
         opt_code = cfg['ts_opt_code']
@@ -296,7 +279,7 @@ def _fetch_level2_tushare(target_name, cfg, trade_date=None):
 def _fetch_level3_sina(target_name, cfg, trade_date=None):
     """Level 3: 新浪财经（eastmoney_option_crawler 实现，全到期月+IV字段）"""
     try:
-        from fetch_eastmoney import fetch_option_chain
+        from calc.fetch_eastmoney import fetch_option_chain
         
         symbol = cfg['sina_code']
         exchange = cfg['sina_exchange']

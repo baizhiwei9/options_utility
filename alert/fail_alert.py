@@ -43,11 +43,6 @@ while _p != os.path.dirname(_p) and not (
         os.path.isdir(os.path.join(_p, 'calc')) and os.path.isdir(os.path.join(_p, 'alert'))):
     _p = os.path.dirname(_p)
 _OPT_ROOT = _p
-for _sub in (_OPT_ROOT, os.path.join(_OPT_ROOT, 'calc'), os.path.join(_OPT_ROOT, 'calc', 'db'),
-             os.path.join(_OPT_ROOT, 'config'), os.path.join(_OPT_ROOT, 'alert'),
-             os.path.join(_OPT_ROOT, 'alert', 'notifier'), os.path.dirname(_OPT_ROOT)):
-    if _sub not in sys.path:
-        sys.path.insert(0, _sub)
 
 STATE_DIR = os.path.join(_OPT_ROOT, 'outputs', 'fail_alert')
 os.makedirs(STATE_DIR, exist_ok=True)
@@ -84,7 +79,7 @@ def _db_file(name):
 
     if name == 'risk_history':
         try:
-            import risk_history as hdb
+            import calc.db.risk_history as hdb
             return hdb.DB_PATH
         except Exception:                              # noqa: BLE001
             pass
@@ -120,7 +115,7 @@ def _last_trade_date():
     except Exception:                                  # noqa: BLE001
         pass
     try:
-        import trading_day as td  # options/calc/trading_day.py
+        import calc.trading_day as td
         for fn in ('latest_trading_day', 'last_trading_day', 'get_latest_trade_date'):
             f = getattr(td, fn, None)
             if f:

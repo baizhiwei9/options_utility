@@ -4,12 +4,10 @@ import os, json, csv, io, subprocess, datetime
 import pandas as pd
 
 try:
-    from paths import US_DATA_DIR as D
+    from config.paths import US_DATA_DIR as D
 except ImportError:  # 直接以脚本方式运行时的兜底
     import sys as _s
-    _s.path.insert(0, os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(
-        os.path.abspath(__file__)))), "config"))
-    from paths import US_DATA_DIR as D
+    from config.paths import US_DATA_DIR as D
 
 UA = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/120 Safari/537.36"
 CBOE = "https://cdn.cboe.com/api/global/us_indices/daily_prices/{}_History.csv"

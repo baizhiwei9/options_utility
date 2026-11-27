@@ -103,7 +103,7 @@ UNDERLYING_ETF = {
 try:
     from .multipliers import CODE_MULTIPLIER as UNDERLYING_MULTIPLIER
 except ImportError:  # 以脚本 / 顶层模块方式运行（calc 已在 sys.path）
-    from multipliers import CODE_MULTIPLIER as UNDERLYING_MULTIPLIER
+    from calc.multipliers import CODE_MULTIPLIER as UNDERLYING_MULTIPLIER
 
 # ==================== 常量 ====================
 PCT_MIN_PERIODS = 60          # 因果分位最少样本
@@ -153,8 +153,6 @@ def _lock_module():
         root = os.environ.get("DATAHUB_ROOT") or os.path.dirname(here)
         for cand in (root, os.path.dirname(root), here):
             if cand and os.path.isdir(os.path.join(cand, "data_hub")):
-                if cand not in _sys_lock.path:
-                    _sys_lock.path.insert(0, cand)
                 break
         from data_hub.core import lock as _m
         return _m
@@ -219,8 +217,6 @@ def _ensure_datahub() -> None:
             "找不到 data_hub。请设 DATAHUB_ROOT=<含 data_hub 包的目录> 或 "
             "DATAHUB_PATH=<data_hub 包目录>。"
         )
-    if dh not in sys.path:
-        sys.path.insert(0, dh)
 
 
 # ==================== 指标计算（算法，留在 Options Utility） ====================
@@ -289,9 +285,7 @@ def load_metrics(underlying: str, start: str, end: str) -> pd.DataFrame:
         # 兜底：老库 risk_history.db（若本机存在）
         try:
             rh_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)), "db")
-            if rh_dir not in sys.path:
-                sys.path.insert(0, rh_dir)
-            import risk_history as rh
+            import calc.db.risk_history as rh
             key = _risk_db_key(underlying)
             dbp = getattr(rh, "DB_PATH", "")
             if key and dbp and os.path.exists(dbp) and os.path.getsize(dbp) > 0:
@@ -388,10 +382,9 @@ def load_gex_series(underlying: str, dates, use_cache: bool = True) -> pd.DataFr
     避免存量缓存把 10 倍错值原样带回来（见 issue #6）。
     """
     _ensure_datahub()
-    sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
     try:
         from data_hub.collectors.misc.option_chain_db import read_chain
-        from gex import calc_gex_full                    # noqa: E402
+        from calc.gex import calc_gex_full                    # noqa: E402
     except Exception as exc:                             # noqa: BLE001
         print(f"[warn] GEX 链路不可用（该类图退化为 6 子图，不影响其它子图）：{exc}")
         return pd.DataFrame()
