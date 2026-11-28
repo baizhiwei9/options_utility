@@ -52,15 +52,38 @@ _LEGACY_CANDIDATES = (
     '/opt/coze/.fuse_drive/期权风险监控/outputs',      # legacy 云盘真实 FUSE 路径
     '/app/data/期权风险监控/outputs',                  # 容器内数据路径
 )
+_PROJECT_OUTPUT_DIR = os.path.join(_OPT_ROOT_DIR, 'outputs')
+
+
+def _writable_dir(path):
+    """目录可写（已存在且可写，或父目录可写、能建出来）。
+
+    ⚠️ 2026-11-28：原来「一份库都找不到」时兜底 `_LEGACY_CANDIDATES[1]`
+    （/opt/coze/.fuse_drive/…）。新环境/容器里这个挂载点根本不存在，且
+    /opt 往往是只读层 → `_conn()` 里 makedirs 直接抛
+    `OSError: [Errno 30] Read-only file system`，任务在取数阶段就崩。
+    冷启动应该落「可写」的目录，而不是落一个写不进去的云盘路径。
+    """
+    try:
+        if os.path.isdir(path):
+            return os.access(path, os.W_OK)
+        return os.access(os.path.dirname(path) or path, os.W_OK)
+    except OSError:
+        return False
+
 
 if _DATA_ENV:
     OUTPUT_DIR = _DATA_ENV
-elif _db_ok(os.path.join(_OPT_ROOT_DIR, 'outputs', 'risk_history.db')):
-    OUTPUT_DIR = os.path.join(_OPT_ROOT_DIR, 'outputs')
 else:
+    # ① 任一候选里已有非空库 —— 用它（项目 outputs 优先，符合「数据迁入项目」的方向）
+    # ② 一份都没有（新环境冷启动）—— 落第一个可写候选，兜底项目 outputs
     OUTPUT_DIR = next(
-        (d for d in _LEGACY_CANDIDATES if _db_ok(os.path.join(d, 'risk_history.db'))),
-        _LEGACY_CANDIDATES[1],
+        (d for d in (_PROJECT_OUTPUT_DIR,) + _LEGACY_CANDIDATES
+         if _db_ok(os.path.join(d, 'risk_history.db'))),
+        None,
+    ) or next(
+        (d for d in (_PROJECT_OUTPUT_DIR,) + _LEGACY_CANDIDATES if _writable_dir(d)),
+        _PROJECT_OUTPUT_DIR,
     )
 _CLOUD_DB = os.path.join(OUTPUT_DIR, 'risk_history.db')
 
@@ -171,7 +194,12 @@ def _conn():
     只提交事务、不关闭连接（实测 30 次调用泄漏 30 个文件描述符）。
     内部一律走 `_locked()` / `_locked_write()`，它们必然 close。
     """
-    os.makedirs(OUTPUT_DIR, exist_ok=True)
+    try:
+        os.makedirs(OUTPUT_DIR, exist_ok=True)
+    except OSError:
+        # 云盘未挂载 / 只读层：活库在 DB_PATH（本地盘），这个目录只用于快照，
+        # 建不出来不该阻断读写（snapshot() 自己 try/except 静默）。
+        pass
     c = sqlite3.connect(DB_PATH, timeout=_DB_TIMEOUT)
     try:
         c.execute("PRAGMA journal_mode=WAL")
